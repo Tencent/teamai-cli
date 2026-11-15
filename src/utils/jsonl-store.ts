@@ -18,12 +18,13 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { openRegularFileForWrite, readRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { z } from 'zod';
-import { isJsonObject, type JsonObject, type JsonValue } from '../types.js';
+import { isJsonObject, type JsonlRecord, type JsonValue } from '@teamai/shared/json';
 import { acquireLock, releaseLock } from '../update.js';
 import { ensureDir, errnoCode } from './fs.js';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 
 /** How long a writer waits for the lock, in wall time. */
 export interface LockWait {
@@ -47,7 +48,6 @@ export interface JsonlStoreOptions {
 }
 
 /** A parsed record. The side-record id the store adds is never part of it. */
-export type JsonlRecord = JsonObject;
 
 const OWNER_ONLY = 0o600;
 
@@ -146,7 +146,7 @@ export async function rewriteJsonl(
     const target = await fs.promises.realpath(filePath);
     await removeOrphanTemps(target);
     await options.beforeSideFile?.();
-    const lines = (await fs.promises.readFile(target, 'utf-8')).split('\n').filter((l) => l.trim());
+    const lines = (await readRegularFile(target, 'utf-8')).split('\n').filter((l) => l.trim());
     const kept = keep(lines);
 
     if (!kept) return;
@@ -184,7 +184,8 @@ async function withLock(filePath: string, wait: LockWait, mode: number, fn: () =
   const deadline = Date.now() + wait.budgetMs;
 
   for (;;) {
-    if (await acquireLock(lockPath)) {
+    // Judging a live holder reads its start, through ps outside Linux: the budget cuts that read short too.
+    if (await acquireLock(lockPath, { signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())) })) {
       try {
         await foldSideRecords(filePath, mode);
         await fn();
@@ -227,7 +228,7 @@ async function foldSideRecords(filePath: string, mode: number): Promise<void> {
 
   for (const pendingPath of await sideRecordPaths(filePath)) {
     try {
-      const content = await fs.promises.readFile(pendingPath, 'utf-8');
+      const content = await readRegularFile(pendingPath, 'utf-8');
 
       if (!content.endsWith('\n')) continue;
       const known = folded ??= new Set((await readOrEmpty(filePath).catch(() => '')).split('\n').map(pendingIdOf).filter((i) => i !== undefined));
@@ -257,7 +258,7 @@ async function foldSideRecords(filePath: string, mode: number): Promise<void> {
  * that torn line stays malformed on its own instead of swallowing this one.
  */
 async function appendWhole(filePath: string, text: string, mode: number): Promise<void> {
-  const handle = await fs.promises.open(filePath, 'a+', mode);
+  const handle = await openRegularFileForWrite(filePath, { append: true, mode, read: true });
 
   try {
     const { size } = await handle.stat();
@@ -300,7 +301,7 @@ function pendingIdOf(line: string): string | undefined {
 
 async function readOrEmpty(filePath: string): Promise<string> {
   try {
-    return await fs.promises.readFile(filePath, 'utf-8');
+    return await readRegularFile(filePath, 'utf-8');
   } catch (e) {
     if (errnoCode(e) === 'ENOENT') return '';
     throw e;

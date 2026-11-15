@@ -1,0 +1,3 @@
+# teamai's sandbox runtime. A team replaces it with runtimes/sandbox.yaml, or runtimes/sandbox/RUNTIME.yaml with its code.
+protocol: 1
+entry: { bin: teamai-runtime-sandbox }

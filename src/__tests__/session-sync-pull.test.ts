@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { SyncManager, defaultSyncMeta, encodeRepoIdentity, type PullResult } from '../session-flow/sync.js';
 import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
-import type { Session } from '../session-flow/ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 
 const lock = vi.hoisted(() => ({
   /** When set, the session archive lock reports this path as held by another command. */

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(),
   },
@@ -173,7 +173,7 @@ describe('contribute --scope', () => {
   });
 
   it('refuses a scope it does not know instead of guessing one', async () => {
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     const { requireInit, detectProjectConfig } = await import('../config.js');
     vi.mocked(requireInit).mockClear();
     vi.mocked(detectProjectConfig).mockClear();

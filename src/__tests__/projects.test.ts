@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, chmodSync, symlinkSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
 import os from 'node:os';

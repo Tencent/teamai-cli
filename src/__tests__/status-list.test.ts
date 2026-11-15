@@ -15,7 +15,7 @@ vi.mock('../utils/git.js', () => ({
   getRepoStatus: vi.fn(async () => ({ ahead: 0, behind: 0, modified: [] })),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -30,7 +30,7 @@ vi.mock('../utils/logger.js', () => ({
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { list, status } from '../status.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resetWarnOnce } from '../utils/warn-once.js';
 
 function makeTeamConfig(): TeamaiConfig {

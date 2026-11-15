@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   setStderrOnly: vi.fn(() => false),
 }));
@@ -25,7 +25,7 @@ import {
 } from '../config.js';
 import type { LocalConfig } from '../types.js';
 import { projectDataHome } from '../utils/partition.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /**
  * `loadLocalConfig` returns null both for a missing file and for one it could

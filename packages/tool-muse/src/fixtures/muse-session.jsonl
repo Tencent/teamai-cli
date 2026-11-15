@@ -1,0 +1,2 @@
+{"id":"r1","recorded_at":1793352902306000,"payload":{"event":{"kind":"run_started"}}}
+{"id":"e1","recorded_at":1793352905912000,"payload":{"source_run_record_id":"r1","event":{"kind":"model_completed","model":"muse-spark-1.2","usage":{"input_tokens":12000,"output_tokens":600,"cached_input_tokens":10000}}}}

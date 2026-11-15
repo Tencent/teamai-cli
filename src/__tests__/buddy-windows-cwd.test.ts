@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { encodeCwdCodeBuddy } from '../session-flow/fs.js';
+import { encodeCwdCodeBuddy } from '@teamai/tool-core/sessions/fs';
 
 vi.mock('node:path', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:path')>();

@@ -27,6 +27,13 @@ the change. Upload evidence to GitHub and embed or link it here. Never commit PR
 - [ ] `npm run lint` passes
 - [ ] The test files that cover what I changed pass (`npx vitest run <test files>`); the full `npx vitest run` passes if the change touches `src/__tests__/helpers/`, a `vitest*.config.ts`, `package.json` or `package-lock.json`. CI runs the full suite on every push to a PR.
 - [ ] Added/updated tests for the change
+- [ ] Runtime change: one real-CLI run in a world (`npm run verify:world`; `npm run -s verify -- help` says how, and `help drivers` for where a step runs), pasted below with its verdict, combination and entry point, commands, build line and the ledger's last line. Not needed for a docs-only, tests-only or lint-rule-only change.
+
+<!-- Real-CLI record, for example:
+VERIFIED: claude x git x project scope via teamai pull
+$ npm run -s verify -- teamai <run> pull
+Build <commit>, teamai <version>, sha256 <prefix>
+Ledger: CLEAN -->
 
 ## Related Issues
 

@@ -17,7 +17,7 @@ vi.mock('../workflow/pr-delivery.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../workflow/pr-delivery.js')>(),
   findDelivered: (...args: unknown[]) => prMocks.findDelivered(...args),
 }));
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 

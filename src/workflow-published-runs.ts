@@ -8,27 +8,29 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DefaultWorkflows } from './default-workflows.js';
 import type { WorkflowEnv } from './env-resolution.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { getReportsDir, usesBranchWorktree, type LocalConfig } from './types.js';
 import { describeWorkflow, type WorkflowDescription } from './workflow/describe.js';
 import { canFor, ceilingOf, isLeft, listOf, localReason, personClauses } from './workflow/drivers/skill/skill-driver.js';
-import { launchToolFor } from './workflow/drivers/local/local-driver.js';
-import { memberTools, type MemberTool } from './tool-launch/member-tools.js';
-import { executableOf, type LaunchTool } from './tool-launch/tools.js';
-import { resolveCliPath } from './utils/cli-path.js';
+import { launchToolFor } from './workflow/steps/prompt.js';
+import { memberTools, type MemberTool } from './workflow/member-tools.js';
+import { launchExecutableOf, type LaunchTarget } from './launch-registry.js';
 import { sameEnvName } from './resources/env-key.js';
-import { envAdvice, type EnvFacts } from './workflow/requirements.js';
+import { envAdvice, lackedLabels, type EnvFacts } from './workflow/requirements.js';
 import { personSteps, type PersonStep } from './workflow/engine.js';
 import { definitionsOf, handedRun, settledSteps } from './workflow/handoff.js';
 import { invokeRefusal, type InvokeCaller } from './workflow/protocol.js';
 import { parseSnapshot, SNAPSHOTS_DIR, snapshotPath, type HandoffOwner, type RunSnapshot } from './workflow/snapshot.js';
 import { installOwner, readRuns, RunIdSchema, type RunId } from './workflow/store.js';
 import { onlyPersonAnswers, type RunState, type RunStatus, type WorkflowFailure } from './workflow/types.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /**
  * Who would take an offered run: the calling process, as `invoke` judges it, whether a person answers what the run asks
  * them, as its driver finds out, and the driver it would drive the run with: the local driver with `--tools` `tools`,
- * answering optional gates when `autoApprove`, or the skill driver, whose session runs the prompt steps.
+ * answering optional gates when `autoApprove`, or the skill driver, whose session runs the prompt steps. `sandbox`: a
+ * step that strictly needs a sandbox runs in one, as this host declares itself (`--sandbox`) or as a runtime of the
+ * definition `--driver` names keeps each step.
  */
 export type Taker = { caller: InvokeCaller; hasPerson: boolean } & ({ driver: 'local'; tools: Record<string, string>; sandbox: boolean; autoApprove?: boolean } | { driver: 'skill' });
 
@@ -83,6 +85,27 @@ export type ResumableRun =
   | { kind: 'ended'; run: RunState; owner: HandoffOwner; status: Exclude<RunStatus, 'running'> };
 
 /**
+ * How teamai-reports, as this machine last read it, holds a running run of this machine: here, by another install that
+ * claimed it since, which may offer it again (`isOffered`), or ended by that install.
+ */
+export type LocalStanding =
+  | { kind: 'here'; isOffered: boolean }
+  | { kind: 'claimed'; owner: HandoffOwner; ownedAt: string; isOffered: boolean }
+  | { kind: 'ended'; owner: HandoffOwner; status: Exclude<RunStatus, 'running'> };
+
+/** Where running run `run` of this machine stands on teamai-reports, for install `self`. Reads no network. */
+async function standing(config: LocalConfig, run: RunState, self: Pick<HandoffOwner, 'id'>): Promise<LocalStanding> {
+  const read = run.publication === undefined || !usesBranchWorktree(config) ? undefined : await readSnapshot(config, RunIdSchema.parse(run.id));
+  const snapshot = read?.createdAt === run.createdAt ? read : undefined;
+
+  if (snapshot === undefined || snapshot.owner.id === self.id) return { kind: 'here', isOffered: snapshot?.offered !== undefined };
+
+  if (snapshot.status !== 'running') return { kind: 'ended', owner: snapshot.owner, status: snapshot.status };
+
+  return { kind: 'claimed', owner: snapshot.owner, ownedAt: snapshot.ownedAt, isOffered: snapshot.offered !== undefined };
+}
+
+/**
  * Every running run on this machine's reports checkout, offered ones first, oldest offer first, then held ones, the
  * latest claim first. Each offered one says what holds it back from `taker`. A snapshot this teamai cannot read is left
  * out. Reads no network; reads the team commit a run's workflows came from when this machine's cache differs.
@@ -123,7 +146,7 @@ async function list(config: LocalConfig, { taker, env }: { taker: Taker; env: Wo
 }
 
 async function readSnapshot(config: LocalConfig, run: RunId): Promise<RunSnapshot | undefined> {
-  const text = await fs.readFile(path.join(getReportsDir(config), snapshotPath(run)), 'utf8').catch(() => undefined);
+  const text = await readRegularFile(path.join(getReportsDir(config), snapshotPath(run)), 'utf8').catch(() => undefined);
 
   if (text === undefined) return undefined;
   const parsed = parseSnapshot(text, run);
@@ -171,7 +194,7 @@ async function offerOf(config: LocalConfig, snapshot: RunSnapshot, at: string, {
 
   const isSandbox = taker.driver === 'local' && (taker.sandbox || config.workflows?.sandbox === true);
   const sealed = taker.driver === 'local' && !isSandbox ? sandboxLacks(description.facts.held.filter((held) => isLeft(held.step, settled))) : [];
-  const offer: Offer = { at, needs, mayNeed, uses, lacks: [...envLacks(left, env.facts), ...toolLacksOf(left), ...sealed] };
+  const offer: Offer = { at, needs, mayNeed, uses, lacks: [...envLacks(left, env.facts), ...labelLacks(left, config.workflows?.labels), ...toolLacksOf(left), ...sealed] };
 
   if (refusal) offer.refusal = refusal;
 
@@ -194,15 +217,18 @@ type ToolLacks = (runs: readonly StepRun[]) => Lack[];
 
 /** How long a PATH lookup holds, so a dashboard that lists every few seconds does not spawn a shell each time. */
 const PATH_LOOKUP_MS = 60_000;
-const pathLookups = new Map<LaunchTool, { isFound: boolean; at: number }>();
+const pathLookups = new Map<string, { isFound: boolean; at: number }>();
 
-/** Whether `tool`'s executable is on PATH here, as the launcher would find it, looked up at most once a minute. */
-function isOnPath(tool: LaunchTool): boolean {
-  const known = pathLookups.get(tool);
+/**
+ * Whether the command that starts `target` is on PATH here, as the launcher would find it, looked up at most once a
+ * minute. Keyed by name: an instance and a shipped tool with one command are looked up differently.
+ */
+function isOnPath(target: LaunchTarget): boolean {
+  const known = pathLookups.get(target.name);
 
   if (known && Date.now() - known.at < PATH_LOOKUP_MS) return known.isFound;
-  const isFound = resolveCliPath(executableOf(tool)) !== null;
-  pathLookups.set(tool, { isFound, at: Date.now() });
+  const isFound = launchExecutableOf(target) !== null;
+  pathLookups.set(target.name, { isFound, at: Date.now() });
 
   return isFound;
 }
@@ -233,9 +259,10 @@ function toolLacks(config: LocalConfig, flags: Record<string, string>, members: 
 
       if (choice.ok) {
         // A step's own tool wins over --tools, so only installing it helps.
-        const fix = tool === undefined ? `install ${choice.tool}, or pass --tools ${flag}=<tool> for one that is` : `install ${choice.tool}`;
+        const { name } = choice.target;
+        const fix = tool === undefined ? `install ${name}, or pass --tools ${flag}=<tool> for one that is` : `install ${name}`;
 
-        return isOnPath(choice.tool) ? [] : [{ reason: `${steps} ${prompts.length > 1 ? 'run' : 'runs'} on ${choice.tool}, which is not on PATH here`, fix }];
+        return isOnPath(choice.target) ? [] : [{ reason: `${steps} ${prompts.length > 1 ? 'run' : 'runs'} on ${name}, which is not on PATH here`, fix }];
       }
 
       if (choice.failure.code === 'tool_unconfigured') {
@@ -270,8 +297,23 @@ function sandboxLacks(held: WorkflowDescription['facts']['held']): Lack[] {
 
   return [{
     reason: `${listOf(steps)} need${steps.length > 1 ? '' : 's'} a sandbox, which this machine does not declare`,
-    fix: 'pass --sandbox on a disposable host, such as a CI runner or a container, or set workflows.sandbox: true',
+    fix: 'pass --sandbox on a disposable host, such as a CI runner or a container, set workflows.sandbox: true, or take it with teamai workflow resume --next --driver <a driver whose runtime is a sandbox>',
   }];
+}
+
+/** What `runs` require of labels that `declared`, this machine's `workflows.labels`, does not name. */
+function labelLacks(runs: readonly StepRun[], declared: readonly string[] | undefined): Lack[] {
+  const short = runs.filter((run) => lackedLabels(run, declared).length > 0);
+
+  if (short.length === 0) return [];
+  const labels = [...new Set(short.flatMap((run) => lackedLabels(run, declared)))];
+  const steps = short.map((run) => run.step);
+
+  const reason = steps.length > 1
+    ? `${listOf(steps)} require labels ${listOf(labels)}, which workflows.labels on this machine does not declare`
+    : `${listOf(steps)} requires labels ${listOf(labels)}, which workflows.labels on this machine does not declare`;
+
+  return [{ reason, fix: 'add them to workflows.labels on a machine that has them' }];
 }
 
 /** What `runs` require of env that `env` cannot give here: a key with no value, or any key while the team env is unreadable. */
@@ -317,14 +359,19 @@ async function resumable(config: LocalConfig, { taker, env, repository }: { take
   const local = runs.filter((run) => run.status === 'running').sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 
   const mine = await Promise.all(local.map(async (run): Promise<Exclude<ResumableRun, { kind: 'offered' }> | undefined> => {
-    const read = run.publication === undefined || !usesBranchWorktree(config) ? undefined : await readSnapshot(config, RunIdSchema.parse(run.id));
-    const snapshot = read?.createdAt === run.createdAt ? read : undefined;
+    const stands = await standing(config, run, self);
 
-    if (snapshot === undefined || snapshot.owner.id === self.id) return { kind: 'here', run, isOffered: snapshot?.offered !== undefined };
+    switch (stands.kind) {
+      case 'here': return { kind: 'here', run, isOffered: stands.isOffered };
+      case 'ended': return { kind: 'ended', run, owner: stands.owner, status: stands.status };
+      // One the other install offers again is listed with the offered ones.
+      case 'claimed': return stands.isOffered ? undefined : { kind: 'claimed', run, owner: stands.owner, ownedAt: stands.ownedAt };
+      default: {
+        const unhandled: never = stands;
 
-    if (snapshot.status !== 'running') return { kind: 'ended', run, owner: snapshot.owner, status: snapshot.status };
-
-    return snapshot.offered === undefined ? { kind: 'claimed', run, owner: snapshot.owner, ownedAt: snapshot.ownedAt } : undefined;
+        return unhandled;
+      }
+    }
   }));
 
   const held = mine.filter((row) => row !== undefined);
@@ -336,4 +383,4 @@ async function resumable(config: LocalConfig, { taker, env, repository }: { take
   return [...offered, ...held];
 }
 
-export const PublishedRuns = { list, candidates, resumable } as const;
+export const PublishedRuns = { list, candidates, resumable, standing } as const;

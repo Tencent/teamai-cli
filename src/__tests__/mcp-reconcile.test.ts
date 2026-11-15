@@ -6,7 +6,7 @@ import fse from 'fs-extra';
 import { execFileSync } from 'node:child_process';
 import { parse as parseToml } from 'smol-toml';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -25,8 +25,8 @@ vi.mock('../utils/logger.js', () => ({
 
 // Makes every `git ls-files` spawn fail, as a process table at its limit does.
 const failLsFilesSpawn = vi.hoisted(() => ({ on: false }));
-vi.mock('../utils/exec.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../utils/exec.js')>();
+vi.mock('@teamai/shared/exec', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@teamai/shared/exec')>();
   return {
     ...actual,
     execCommand: (cmd: string, args: string[], opts?: Parameters<typeof actual.execCommand>[2]) =>
@@ -57,16 +57,16 @@ vi.mock('../utils/fs.js', async (importOriginal) => {
 });
 
 import { _setExcludeLockRetryMs } from '../git-exclude.js';
-import { reconcileMcpForConfig, releaseCleanMcpGitExcludes, resolveMcpTargets, spliceCodexBlock, codexBlockIn, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
+import { reconcileMcpForConfig, releaseCleanMcpGitExcludes, resolveMcpTargets, saveMcpManifest, spliceCodexBlock, codexBlockIn, codexServerNames, writeCodexAtomic } from '../mcp-reconcile.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TeamaiConfigSchema, type TeamaiConfig, type LocalConfig } from '../types.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { projectDataHome } from '../utils/partition.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 import { folderVersion } from './helpers/folder-version.js';
-import { installFakeOpencode } from './helpers/fake-opencode.js';
+import { installFakeOpencode } from '@teamai/tool-opencode/testing';
 import { buildPluginSource, OPENCODE_HOOK_FILE, resolveOpencodePluginDir } from '../opencode-hooks.js';
 import YAML from 'yaml';
 
@@ -382,7 +382,7 @@ servers:
 `;
     await writeMcpYaml(`servers:${temp}`);
     await reconcileMcpForConfig(teamConfig, localConfig);
-    const { log: freshLog } = await import('../utils/logger.js');
+    const { log: freshLog } = await import('@teamai/shared/log');
     vi.mocked(freshLog.warn).mockClear();
 
     await writeMcpYaml(`server:${temp}`);
@@ -501,7 +501,7 @@ servers:
     transport: http
     url: https://example.com/shared
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       vi.mocked(freshLog.warn).mockClear();
 
       await reconcileMcpForConfig(teamConfig, { ...localConfig, primaryRole: 'frontend', additionalRoles: [] });
@@ -581,7 +581,7 @@ servers:
     transport: http
     url: https://billing.example.com/orders
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       vi.mocked(freshLog.warn).mockClear();
       resetWarnOnce();
 
@@ -617,7 +617,7 @@ servers:
     transport: http
     url: https://example.com/shared-again
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       resetWarnOnce();
 
       await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['checkout'] });
@@ -657,7 +657,7 @@ servers:
     transport: http
     url: https://example.com/shared
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       resetWarnOnce();
 
       await reconcileMcpForConfig(teamConfig, { ...localConfig, projects: ['billing'] });
@@ -671,7 +671,7 @@ servers:
 
     // A typo of a scoping key (#822) must not widen who gets the server.
     const warningsAbout = async (file: string, server: string): Promise<string[]> => {
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       return vi.mocked(freshLog.warn).mock.calls.map(([m]) => String(m))
         .filter((m) => m.includes(file) && m.includes(`"${server}"`));
     };
@@ -687,7 +687,7 @@ servers:
     transport: http
     url: https://example.com/shared
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       vi.mocked(freshLog.warn).mockClear();
       resetWarnOnce();
 
@@ -707,7 +707,7 @@ servers:
     url: https://checkout.example.com/db
     role: [frontend]
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       vi.mocked(freshLog.warn).mockClear();
       resetWarnOnce();
 
@@ -735,7 +735,7 @@ servers:
     tools: [claude]
     roles: [frontend]
 `);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       vi.mocked(freshLog.warn).mockClear();
       resetWarnOnce();
 
@@ -3988,6 +3988,89 @@ servers:
     expect(shared['claude:project']).toBeUndefined();
   });
 
+  it.each([
+    ['install', false], ['update', false], ['remove', false], ['update', true],
+  ] as const)('restores both MCP manifests when the local-scope write fails during %s, restore fails=%s', async (operation, restoreFails) => {
+    const { managedMcpManifestPath } = await import('../types.js');
+    const projectRoot = path.join(tmpDir, 'transaction-project');
+    for (const tool of ['.claude', '.cursor']) await fse.ensureDir(path.join(projectRoot, tool, 'skills'));
+    const dataHome = path.join(tmpDir, 'transaction-data');
+    const cfg = { ...localConfig, scope: 'project', projectRoot, dataHome, enabledAgents: ['claude', 'cursor'] } as LocalConfig;
+    const team = { ...teamConfig, sharing: { ...teamConfig.sharing, gitExclude: { enabled: true } } };
+    const definition = (version: number) => `servers:\n  - name: shared\n    transport: http\n    url: https://team.example/v${version}\n`;
+    await writeMcpYaml(definition(1));
+    if (operation !== 'install') await reconcileMcpForConfig(team, cfg);
+    const own = managedMcpManifestPath(dataHome, projectRoot);
+    const local = path.join(dataHome, 'managed-local-mcp.json');
+    const files = [own, local, path.join(homeDir, '.claude.json'), path.join(projectRoot, '.cursor', 'mcp.json')];
+    const read = () => Promise.all(files.map((file) => fse.readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    })));
+    const before = await read();
+    if (operation === 'update') await writeMcpYaml(definition(2));
+    const options = { removeAll: operation === 'remove' };
+    const fileIo = await import('../utils/fs.js');
+    const writeAtomic = fileIo.writeFileAtomic;
+    const restore = restoreFails ? vi.spyOn(fileIo, 'writeFileAtomic').mockImplementation(async (...args) => {
+      if (args[0] === own) throw new Error('ownership restore denied');
+      return writeAtomic(...args);
+    }) : undefined;
+    beforeJsonWrite.run = async (file) => {
+      if (file === local) {
+        beforeJsonWrite.run = null;
+        throw new Error('local ownership write failed');
+      }
+    };
+    try {
+      await expect(reconcileMcpForConfig(team, cfg, options)).rejects.toThrow(restoreFails
+        ? /local ownership write failed.*ownership restore denied.*Repair the ownership records/
+        : 'local ownership write failed');
+    } finally {
+      beforeJsonWrite.run = null;
+      restore?.mockRestore();
+    }
+    if (restoreFails) {
+      expect((await read()).slice(1)).toEqual(before.slice(1));
+      return;
+    }
+    expect(await read()).toEqual(before);
+    await reconcileMcpForConfig(team, cfg, options);
+    if (operation !== 'remove') {
+      expect((await fse.readJson(files[3])).mcpServers.shared.url).toBe(`https://team.example/v${operation === 'update' ? 2 : 1}`);
+      await reconcileMcpForConfig(team, cfg, { removeAll: true });
+    }
+    expect((await fse.readJson(files[3])).mcpServers.shared).toBeUndefined();
+    expect((await fse.readJson(files[2])).projects?.[fs.realpathSync(projectRoot)]?.mcpServers?.shared).toBeUndefined();
+  });
+
+  it('keeps both local-scope records when two worktrees save concurrently', async () => {
+    const dataHome = path.join(tmpDir, 'concurrent-data');
+    const projects = ['a', 'b'].map((name) => path.join(tmpDir, `concurrent-${name}`));
+    const own = projects.map((project) => path.join(project, 'managed-mcp.json'));
+    let waiting = 0;
+    let release!: () => void;
+    const bothReady = new Promise<void>((resolve) => { release = resolve; });
+    beforeJsonWrite.run = async (file) => {
+      if (!own.includes(file)) return;
+      if (++waiting === 2) release();
+      await Promise.race([bothReady, new Promise((resolve) => setTimeout(resolve, 100))]);
+    };
+
+    try {
+      await Promise.all(projects.map((project, index) => saveMcpManifest(
+        { ...localConfig, scope: 'project', projectRoot: project, dataHome } as LocalConfig,
+        own[index],
+        { [`codebuddy:local:${index}`]: [{ name: String(index), hash: 'a'.repeat(64) }] },
+      )));
+    } finally {
+      beforeJsonWrite.run = null;
+    }
+
+    expect(Object.keys(await fse.readJson(path.join(dataHome, 'managed-local-mcp.json'))).sort())
+      .toEqual(['codebuddy:local:0', 'codebuddy:local:1']);
+  });
+
   it('concurrent reconcile of two worktrees keeps BOTH ownership records (no lost update)', async () => {
     const { managedMcpManifestPath } = await import('../types.js');
     // Two worktrees sharing one partition data home — the exact concurrency the
@@ -4225,7 +4308,7 @@ servers:
       expect({ changes, wrote, unresolved }).toEqual({ changes: [], wrote: false, unresolved: true });
       expect(await fse.readFile(claudeJson(), 'utf-8')).toBe(jsonBefore);
       expect(await fse.readFile(codexToml(), 'utf-8')).toBe(tomlBefore);
-      const { log: freshLog } = await import('../utils/logger.js');
+      const { log: freshLog } = await import('@teamai/shared/log');
       expect(vi.mocked(freshLog.warn).mock.calls.map(([m]) => String(m)).join('\n')).toContain('env/secrets.yaml');
     });
 

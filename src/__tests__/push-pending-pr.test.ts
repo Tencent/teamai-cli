@@ -12,7 +12,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { push } from '../push.js';
 import { createGit as mockedCreateGit } from '../utils/git.js';
-import { log } from '../utils/logger.js';
+import { git as gitAt } from '../workflow/worktree.js';
+import { log } from '@teamai/shared/log';
 import {
   findPendingForItem, partiallySelectedEntries, pendingNamespaceFor, planPushGroups,
   prunePendingPushes, recordPendingPush,
@@ -73,6 +74,11 @@ vi.mock('../utils/git.js', () => ({
   getHeadCommit: vi.fn().mockResolvedValue('base000'),
 }));
 
+// No local branch unless a case says otherwise: `git show-ref` answers with its exit code.
+vi.mock('../workflow/worktree.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../workflow/worktree.js')>(),
+  git: vi.fn(async () => ({ code: 1, stdout: '', stderr: '' })),
+}));
 vi.mock('../resources/index.js', () => ({
   getHandler: (...args: unknown[]) => mockGetHandler(...args),
 }));
@@ -96,7 +102,7 @@ vi.mock('../update.js', () => ({
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(),
   },
@@ -403,6 +409,7 @@ describe('push() with an open PR', () => {
       teamConfig: makeTeamConfig(),
     });
     const git = mockedCreateGit();
+    vi.mocked(gitAt).mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
     (git.raw as unknown as ReturnType<typeof vi.fn>).mockImplementation(async (args: string[]) =>
       args[0] === 'rev-list' ? '2\n' : '');
 

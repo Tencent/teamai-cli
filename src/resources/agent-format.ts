@@ -8,7 +8,7 @@ import { agyToolsFor } from '../agy-hook-io.js';
 import { getDispatchCommand } from '../builtin-hooks.js';
 import type { AgentToolId } from '../tools.js';
 import type { Scope } from '../types.js';
-import { parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 
 // ─── Tool name type ──────────────────────────────────────────────────────────
 
@@ -1175,10 +1175,9 @@ const MERGE_COMMON_FIELDS = [
  * @returns Merged spec if all common fields agree, or conflict details otherwise.
  */
 export function mergeReverseResults(
-  perTool: Partial<Record<ToolName, AgentSpec>>,
+  perTool: Readonly<Record<string, AgentSpec>>,
 ): MergeResult {
-  // SAFETY: perTool is keyed by ToolName, and callers set a key only to a reversed spec, so each entry is a [ToolName, AgentSpec] pair.
-  const entries = Object.entries(perTool) as Array<[ToolName, AgentSpec]>;
+  const entries = Object.entries(perTool);
 
   if (entries.length === 0) {
     return { ok: false, conflicts: [{ field: 'all', values: {} }] };

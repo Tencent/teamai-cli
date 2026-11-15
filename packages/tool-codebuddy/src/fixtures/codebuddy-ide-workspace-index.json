@@ -1,0 +1,12 @@
+{
+  "conversations": [
+    {
+      "id": "{{sessionId}}",
+      "type": "craft",
+      "name": "Which test runner does this repo use?",
+      "createdAt": "2026-10-30T09:15:02.118Z",
+      "lastMessageAt": "2026-10-30T09:15:05.912Z"
+    }
+  ],
+  "current": "{{sessionId}}"
+}

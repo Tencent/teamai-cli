@@ -3,12 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), success: vi.fn(), dim: vi.fn() },
 }));
 
 import { ImportLearnings } from '../import-local.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const TODAY = new Date().toISOString().slice(0, 10);
 

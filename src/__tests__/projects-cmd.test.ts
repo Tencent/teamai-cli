@@ -30,7 +30,7 @@ const logMocks = vi.hoisted(() => ({
   debug: vi.fn(),
   dim: vi.fn(),
 }));
-vi.mock('../utils/logger.js', () => ({ log: logMocks }));
+vi.mock('@teamai/shared/log', () => ({ log: logMocks }));
 
 import { projectsAdd, projectsList, projectsRemove, projectsSet, projectsUpdate } from '../projects-cmd.js';
 import { autoDetectInit } from '../config.js';

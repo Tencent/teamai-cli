@@ -4,7 +4,7 @@ import { defineRule } from '@oxlint/plugins';
 import { inProductionSource, isOneOf } from '../utils.js';
 
 /** The one module that owns raw HOME reads. */
-const HOME_OWNER = 'src/utils/home.ts';
+const HOME_OWNER = 'packages/shared/src/home.ts';
 
 export default defineRule({
   meta: {
@@ -29,7 +29,7 @@ export default defineRule({
         if (!readsHome) return;
         context.report({
           node,
-          message: 'Read the user home through getUserHome() in src/utils/home.ts so USERPROFILE and platform fallbacks remain supported.',
+          message: 'Read the user home through getUserHome() in @teamai/shared/home so USERPROFILE and platform fallbacks remain supported.',
         });
       },
     };

@@ -9,7 +9,7 @@ function assertValidJs(src: string): void {
   expect(() => loadPluginDefinition(src)).not.toThrow();
 }
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 
@@ -24,7 +24,7 @@ import {
 import { reconcileHooksToAllTools } from '../hooks.js';
 import { loadOpencodePlugin, loadPluginDefinition, loadV2Plugin } from './helpers/opencode-plugin.js';
 import { bridgedTeamHookFile } from '../bridged-team-hooks.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import * as builtinHooks from '../builtin-hooks.js';
 
 describe('resolveOpencodePluginDir', () => {

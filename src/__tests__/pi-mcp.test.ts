@@ -5,7 +5,7 @@ import path from 'node:path';
 import { reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { buildMcpDeliveryChecks, mcpTransportNotes } from '../doctor-delivery.js';
 import { renderJsonEntry, supportsTransport } from '../resources/mcp-format.js';
-import { mcpFormatOf } from '../tools.js';
+import { mcpFormatOf } from '../tool-registry.js';
 import { TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 
 const yaml = `servers:

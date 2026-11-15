@@ -27,7 +27,7 @@ import { execFileSync } from 'node:child_process';
 import { Command } from 'commander';
 import { AgentSession, toolRootsLookup } from '../session-flow/agent-session.js';
 import { ClaudeCodeAdapter } from '../session-flow/adapters/index.js';
-import type { Session } from '../session-flow/ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
 import { SyncManager, defaultSyncMeta, encodeRepoIdentity } from '../session-flow/sync.js';
 

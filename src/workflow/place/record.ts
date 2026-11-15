@@ -1,10 +1,11 @@
 import { z } from 'zod';
 import { DATA_BRANCHES, type LocalConfig } from '../../types.js';
-import { readFileSafe, writeJsonAtomic } from '../../utils/fs.js';
+import { writeJsonAtomic } from '../../utils/fs.js';
 import { LeaseSetupSchema } from '../requirements.js';
 import { ChangesSchema, FailureSchema, ReadSchema } from '../step-state.js';
 import { AttemptIdSchema, placeRecordPath, RunIdSchema, type AttemptId, type RunId } from '../store.js';
 import { CopyContractSchema, TeamContractSchema } from '../workspace.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /** A lease without a workspace contract, in the checkout itself: what it changes there fails it, unless it is interactive and may write. */
 const CheckoutRoleSchema = z.object({ role: z.literal('checkout') });
@@ -41,7 +42,8 @@ const CloneRoleSchema = z.object({
 /**
  * A lease in `clone`, a fresh clone of the team repo, on `workspace.branch`, which commits there from `start` and pushes
  * the branch only where origin still has it as the clone found it. `base` is the commit of origin's default branch the
- * clone merged, or started from, which the step's changes are compared with.
+ * clone merged, or started from, which the step's changes are compared with. Git there runs without `withhold`, as in a
+ * clone, except the calls that reach origin.
  */
 const TeamRoleSchema = z.object({
   role: z.literal('team'),
@@ -51,6 +53,8 @@ const TeamRoleSchema = z.object({
   start: z.string(),
   /** The commit origin's branch was at when the clone was made; absent when origin had no such branch. */
   found: z.string().optional(),
+  /** Absent in a record an older teamai wrote, which withheld nothing. */
+  withhold: z.array(z.string()).default([]),
 });
 
 /** Where a `deliver: publish` step runs: a checkout of its data branch at `base`, or nowhere it could publish from, for `reason`. */
@@ -88,12 +92,14 @@ const PlaceFields = {
   /** The checkout the place belongs to: a copy is one of its worktrees. */
   root: z.string(),
   dir: z.string(),
-  /** The host made the place at `dir`, whatever the lease does there, so TeamAI never removes it. */
+  /** The session host made the place at `dir`, whatever the lease does there, so TeamAI never removes it. */
   adopted: z.literal(true).optional(),
   interactive: z.literal(true).optional(),
   readOnly: z.literal(true).optional(),
   /** The paths, relative to the checkout, under which a command reader's change is kept. */
   writes: z.array(z.string()).optional(),
+  /** The attempt of the step whose `kept` place this one went on in: what that attempt's tool did is here. */
+  keptFrom: AttemptIdSchema.optional(),
 };
 
 const PlaceBase = { ...PlaceFields, place: PlaceRoleSchema };
@@ -102,7 +108,7 @@ const PlaceRecordSchema = z.discriminatedUnion('phase', [
   /**
    * Git is not done in the copy at `dir`. Recorded before git touches it, so the next prepare of an attempt killed
    * meanwhile knows what this one did there: `created` when the copy is new to TeamAI, so its setup still runs: one
-   * that did not exist, or one the host made that no earlier attempt of the run finished in; and a writer's
+   * that did not exist, or one the session host made that no earlier attempt of the run finished in; and a writer's
    * `rangeFrom` once the copy is open, taken before any merge, so the merges stay in the step's changes.
    */
   z.object({ ...PlaceFields, phase: z.literal('opening'), created: z.literal(true).optional(), rangeFrom: z.string().optional() }),
@@ -125,13 +131,20 @@ const PlaceRecordSchema = z.discriminatedUnion('phase', [
   z.object({ ...PlaceBase, phase: z.literal('finished'), at: z.string(), finished: PlaceFinishedSchema }),
   /** The step ended without a report to finish it: the copy is as it was found, and nothing was committed. */
   z.object({ ...PlaceBase, phase: z.literal('abandoned'), at: z.string() }),
+  /** A place this attempt `kept` that the step's next attempt went on in, or that a fresh place replaced: no attempt goes on in it from this record. */
+  z.object({ ...PlaceBase, phase: z.literal('retired'), at: z.string() }),
+  /**
+   * The attempt was released after its tool ran, as on a usage limit: the clone, team clone or data checkout at `dir`
+   * keeps what the tool did there, and the step's next attempt goes on in it rather than in a fresh one.
+   */
+  z.object({ ...PlaceFields, phase: z.literal('kept'), at: z.string(), place: z.discriminatedUnion('role', [CloneRoleSchema, TeamRoleSchema, DataRoleSchema]) }),
 ]);
 
 export type PlaceRecord = z.infer<typeof PlaceRecordSchema>;
 
 /** The place an attempt was prepared in, from `attempts/<a>/place.json`. */
 export async function readPlaceRecord(config: LocalConfig, run: RunId, attempt: AttemptId): Promise<{ kind: 'found'; record: PlaceRecord } | { kind: 'missing' } | { kind: 'unreadable'; reason: string }> {
-  const raw = await readFileSafe(placeRecordPath(config, run, attempt));
+  const raw = await readRegularFile(placeRecordPath(config, run, attempt), 'utf8').catch(() => null);
 
   if (raw === null) return { kind: 'missing' };
 

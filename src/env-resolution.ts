@@ -22,7 +22,7 @@ import {
 import { getDataHome, getEnvBackupPath, type LocalConfig } from './types.js';
 import { readFileSafe } from './utils/fs.js';
 import { warnOnce } from './utils/warn-once.js';
-import { collectEnvSecrets, MIN_DECLARED_SECRET_LENGTH } from './utils/redact.js';
+import { collectEnvSecrets, MIN_DECLARED_SECRET_LENGTH } from '@teamai/shared/redact';
 import { isReservedTeamEnvKey } from './env-reserved.js';
 import type { EnvFacts } from './workflow/requirements.js';
 

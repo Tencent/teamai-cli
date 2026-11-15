@@ -5,17 +5,17 @@ import path from 'node:path';
 
 // Isolate getUserHome() so the bundled-runtime lookups see a per-test home.
 const homeState = vi.hoisted(() => ({ home: '' }));
-vi.mock('../utils/home.js', () => ({
+vi.mock('@teamai/shared/home', () => ({
   getUserHome: () => homeState.home,
 }));
 
 // Mock the logger so the module's debug traces do not reach the real log file.
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
 import { ensureBundledRuntimeOnPath, resetBundledRuntimeCache, resolveWorkbuddyNode } from '../bundled-runtime.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /** Lay out a WorkBuddy PortableGit runtime under the test home. */
 function makePortableGit(version: string, dirs = ['cmd', 'usr/bin', 'mingw64/bin'], dataRoot = '.workbuddy'): string {

@@ -11,7 +11,7 @@ import { ruleFileExtensionForTool, usesMdcRules } from '../resources/rule-format
 import { TeamaiConfigSchema, scopedToolPaths } from '../types.js';
 import { isInstalled } from './helpers/install-gate.js';
 import type { LocalConfig } from '../types.js';
-import { AGENT_TOOLS } from '../tools.js';
+import { AGENT_TOOLS } from '../tool-registry.js';
 
 describe('Qoder CN support', () => {
   afterEach(() => vi.unstubAllEnvs());

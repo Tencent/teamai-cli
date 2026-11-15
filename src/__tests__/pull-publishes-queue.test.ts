@@ -25,7 +25,7 @@ vi.mock('../utils/git.js', () => ({
   createGit: vi.fn(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   spinner: vi.fn(() => ({
     start: vi.fn().mockReturnThis(),
@@ -77,7 +77,7 @@ vi.mock('../update.js', () => ({
 const { pull } = await import('../pull.js');
 const { loadLocalConfigForScope, loadTeamConfig } = await import('../config.js');
 const { publishQueuedLearnings } = await import('../utils/learnings-publish.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 const business = path.join(testRoot, 'product');

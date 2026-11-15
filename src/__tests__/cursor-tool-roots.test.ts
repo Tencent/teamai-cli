@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -37,10 +37,9 @@ import {
 } from '../types.js';
 import type { LocalConfig, State, TeamaiConfig } from '../types.js';
 import { reconcileCoAuthorForConfig } from '../coauthor-reconcile.js';
-import { encodeCwdGeneric } from '../session-flow/fs.js';
+import { encodeCwdGeneric } from '@teamai/tool-core/sessions/fs';
 import { sessionStoreDir } from '../locate.js';
 import { getAdapter } from '../session-flow/adapters/index.js';
-import { getCursorStateRoot } from '../session-flow/cursor-store.js';
 
 const TOOL_PATHS = {
   claude: { skills: '.claude/skills', settings: '.claude/settings.json' },
@@ -130,14 +129,14 @@ describe('Cursor roots', () => {
       // `os.homedir()`, which is what the fs.ts helper reads, rather than the
       // stubbed HOME: on Windows the two disagree inside vitest.
       const fallback = path.join(os.homedir(), DEFAULT_CURSOR_ROOT, 'projects');
-      expect(sessionStoreDir('cursor', undefined)).toBe(fallback);
+      expect(sessionStoreDir('cursor', { kind: 'recorded', toolRoots: undefined })).toBe(fallback);
       // The config root is a separate directory and must not move the store.
-      expect(sessionStoreDir('cursor', { [CURSOR_CONFIG_TOOL_ID]: path.join(home, '.cursor-config') })).toBe(fallback);
+      expect(sessionStoreDir('cursor', { kind: 'recorded', toolRoots: { [CURSOR_CONFIG_TOOL_ID]: path.join(home, '.cursor-config') } })).toBe(fallback);
     });
 
     it('resolves <data root>/projects from the recorded root', () => {
       const root = path.join(home, '.cursor-data');
-      expect(sessionStoreDir('cursor', { [CURSOR_DATA_TOOL_ID]: root })).toBe(path.join(root, 'projects'));
+      expect(sessionStoreDir('cursor', { kind: 'recorded', toolRoots: { [CURSOR_DATA_TOOL_ID]: root } })).toBe(path.join(root, 'projects'));
     });
 
     it('keeps the recorded root when the profile home is not HOME, as on Windows', () => {
@@ -145,8 +144,8 @@ describe('Cursor roots', () => {
       const root = path.join(home, '.cursor-data');
       const profile = vi.spyOn(os, 'homedir').mockReturnValue(path.join(tmpDir, 'profile'));
       try {
-        expect(sessionStoreDir('cursor', { [CURSOR_DATA_TOOL_ID]: root })).toBe(path.join(root, 'projects'));
-        expect(sessionStoreDir('cursor', undefined)).toBe(path.join(tmpDir, 'profile', DEFAULT_CURSOR_ROOT, 'projects'));
+        expect(sessionStoreDir('cursor', { kind: 'recorded', toolRoots: { [CURSOR_DATA_TOOL_ID]: root } })).toBe(path.join(root, 'projects'));
+        expect(sessionStoreDir('cursor', { kind: 'recorded', toolRoots: undefined })).toBe(path.join(tmpDir, 'profile', DEFAULT_CURSOR_ROOT, 'projects'));
       } finally {
         profile.mockRestore();
       }
@@ -224,32 +223,6 @@ describe('Cursor roots', () => {
       expect(await fse.readJson(path.join(root, 'cli-config.json')))
         .toEqual({ attribution: { attributeCommitsToAgent: false } });
       expect(await fse.pathExists(path.join(home, DEFAULT_CURSOR_ROOT, 'cli-config.json'))).toBe(false);
-    });
-  });
-
-  describe('the IDE store root', () => {
-    const originalPlatform = process.platform;
-
-    afterEach(() => {
-      Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true });
-    });
-
-    it('honors XDG_CONFIG_HOME on Linux, as ide-history does', () => {
-      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-      const xdg = path.join(home, 'xdg');
-      vi.stubEnv('XDG_CONFIG_HOME', xdg);
-      expect(getCursorStateRoot()).toBe(path.join(xdg, 'Cursor'));
-
-      vi.stubEnv('XDG_CONFIG_HOME', undefined);
-      // `os.homedir()`, which is what cursor-store reads.
-      expect(getCursorStateRoot()).toBe(path.join(os.homedir(), '.config', 'Cursor'));
-    });
-
-    it('treats a blank XDG_CONFIG_HOME as unset, not as the working directory', () => {
-      Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
-      vi.stubEnv('XDG_CONFIG_HOME', '');
-      // `??` would keep the empty string, leaving the result a relative `Cursor`.
-      expect(getCursorStateRoot()).toBe(path.join(os.homedir(), '.config', 'Cursor'));
     });
   });
 });

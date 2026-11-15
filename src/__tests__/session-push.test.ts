@@ -9,7 +9,7 @@ import { loadLocalConfig, saveLocalConfig } from '../config.js';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { openSessionArchive } from '../session-flow/archive.js';
 import { SessionCaptures } from '../session-flow/captures.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import { syncTeamDefinitions } from '../benchmark/suite-cache.js';
 import { registerSessionFlowCommands } from '../session-flow/session-cmd.js';
 import { encodeRepoIdentity, withSessionPublicationLock } from '../session-flow/sync.js';

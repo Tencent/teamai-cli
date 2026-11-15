@@ -6,7 +6,7 @@ import os from 'node:os';
 import fse from 'fs-extra';
 import { execFileSync } from 'node:child_process';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

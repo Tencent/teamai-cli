@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -272,7 +272,7 @@ describe('skillShow locator', () => {
     await makeSkill(path.join(fx.repoPath, 'skills'), 'other-team-skill', 'belongs to the user-scope team');
 
     const text = (await runSkillShow('other-team-skill', fx, { unreadableProjectConfig: '/work/proj/.teamai/config.yaml: bad indentation' })).join('\n');
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     expect(process.exitCode).toBe(1);
     expect(text).not.toContain(fx.repoPath);
     expect(vi.mocked(log.dim)).toHaveBeenCalledWith(expect.stringContaining('/work/proj/.teamai/config.yaml: bad indentation'));
@@ -283,7 +283,7 @@ describe('skillShow locator', () => {
     const loadError = new Error('The teamai config at /h/.teamai/config.yaml could not be read: it is empty.');
 
     const text = (await runSkillShow('core', fx, { loadError })).join('\n');
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     expect(text).toContain('skill: core');
     expect(vi.mocked(log.error)).toHaveBeenCalledWith(expect.stringContaining('could not be read: it is empty'));
     expect(process.exitCode).toBe(1);

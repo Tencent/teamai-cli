@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { getCurrentVersion, packageRoot } from './package-info.js';
@@ -27,6 +28,9 @@ import type { CachedWorkflow, ResolvedWorkflow, WorkflowDefinition, WorkflowDiag
 
 /** Every default's name starts with this, so its generated skill, named after it, is one prune and uninstall look at. */
 const PREFIX = 'teamai-';
+
+/** The default that shares what a session taught, then the session: the one the friction reminder offers. */
+const SHARE_LEARNINGS = 'teamai-share-learnings';
 
 const parsedDefaults = new Map<string, CachedWorkflow>();
 
@@ -82,6 +86,17 @@ function readDefault({ relativePath, content, folder }: ShippedFile): CachedWork
 
 /** teamai's default workflows, the bottom layer of a tree `Resources` resolves workflows in: `{ teamai: layer }` alone. */
 const layer: TeamaiLayer<CachedWorkflow> = { root: packageRoot(), read: readDefault };
+
+/**
+ * Whether teamai ships a default named `name`, as a file or a folder, by its name alone: a team copy under that name
+ * keeps the pin to this machine that teamai derives from it (`isPinnedToHost`).
+ */
+function isShipped(name: string): boolean {
+  if (!name.startsWith(PREFIX)) return false;
+  const dir = path.join(layer.root, RESOURCE_LAYOUTS.workflows.dir);
+
+  return fs.existsSync(path.join(dir, `${name}.yaml`)) || fs.existsSync(path.join(dir, name, RESOURCE_LAYOUTS.workflows.marker));
+}
 
 /**
  * Where the definition a run executes came from: the team's files, or the default the teamai that started it ships, by
@@ -153,4 +168,4 @@ function callerWarnings(file: string, definition: WorkflowDefinition): string[] 
   return [...CONTRACTS.values()].flatMap((contract) => contract.callerWarnings(file, definition));
 }
 
-export const DefaultWorkflows = { PREFIX, layer, originOf, sourceOfRun, overrideProblems, callerWarnings, isGuarded } as const;
+export const DefaultWorkflows = { PREFIX, SHARE_LEARNINGS, layer, isShipped, originOf, sourceOfRun, overrideProblems, callerWarnings, isGuarded } as const;

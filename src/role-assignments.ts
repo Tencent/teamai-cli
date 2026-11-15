@@ -1,13 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { parseYaml } from './utils/yaml.js';
-import type { JsonValue } from './types.js';
+import { parseYaml } from '@teamai/shared/yaml';
+import type { JsonValue } from '@teamai/shared/json';
 import { z } from 'zod';
 import { caseFoldKey, emptyManifestError, parseManifest, parseManifestOnce, readManifestFile } from './manifest-schema.js';
 import { getDefaultBranch, getFileContentAtRev, getHeadCommit, readFileAtRev } from './utils/git.js';
-import { readOriginHeadFromFiles } from './utils/git-ref-files.js';
+import { readFetchedDefaultFromFiles } from './utils/git-ref-files.js';
 import { GitAnswers } from './utils/git-answers.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /** Where a team declares who holds which role. Relative to the team repo root. */
 export const ROLE_ASSIGNMENTS_FILE = 'manifest/members.yaml';
@@ -110,7 +110,7 @@ async function fetchedDefaultBranch(repoPath: string): Promise<string | null> {
  * `.teamai/` inside the business repo rather than its root.
  */
 async function membersAtFetchedTip(repoPath: string): Promise<{ tip: string; content: string | null } | null> {
-  const remembered = await membersAtOriginHead(repoPath);
+  const remembered = await membersAtFetchedDefault(repoPath);
 
   if (remembered) return remembered;
   const tip = await fetchedDefaultBranch(repoPath);
@@ -124,16 +124,16 @@ async function membersAtFetchedTip(repoPath: string): Promise<{ tip: string; con
 const membersAtCommit = GitAnswers.of('members', z.object({ content: z.string().nullable() }));
 
 /**
- * `membersAtFetchedTip` without a git process while `origin/HEAD` points at
- * the commit it was last read at (#1788). A hook loads the config on every
+ * `membersAtFetchedTip` without a git process while the fetched default branch
+ * points at the commit it was last read at (#1788). A hook loads the config on every
  * tool call, and the three git calls this replaces were most of that load.
  * The stamp is the ref and its commit, read from files, so any move of the ref
  * (a pull, a member's own `git fetch`) reads again. Null when the ref cannot
  * be read from files, or the file at that commit cannot be read; the caller
  * then asks git as before.
  */
-async function membersAtOriginHead(repoPath: string): Promise<{ tip: string; content: string | null } | null> {
-  const head = await readOriginHeadFromFiles(repoPath);
+async function membersAtFetchedDefault(repoPath: string): Promise<{ tip: string; content: string | null } | null> {
+  const head = await readFetchedDefaultFromFiles(repoPath);
   const repo = head ? await fs.realpath(repoPath).catch(() => null) : null;
 
   if (!head || !repo) return null;

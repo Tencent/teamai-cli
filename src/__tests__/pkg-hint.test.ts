@@ -15,7 +15,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   loadLocalConfig: mockLoadLocalConfig,
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { debug: vi.fn(), error: vi.fn() },
 }));
 

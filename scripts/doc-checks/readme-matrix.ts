@@ -1,12 +1,15 @@
+import fs from 'node:fs';
+import { readMarkdown } from './read-markdown.js';
 import assert from 'node:assert/strict';
 import { check } from '../doc-check.js';
-import fs from 'node:fs';
 import path from 'node:path';
 
 import { ALL_MODEL_AGENTS } from '../../src/models/profile.js';
 import { runsTeamHookOn } from '../../src/hooks.js';
-import { isLaunchTool } from '../../src/tool-launch/tools.js';
-import { isToolId, TOOLS, type Support, type ToolId } from '../../src/tools.js';
+import { isLaunchTool } from '../../src/launch-registry.js';
+import { type ToolId } from '../../src/tools.js';
+import { type Support } from '@teamai/tool-core/definition';
+import { isToolId, descriptorOf } from '../../src/tool-registry.js';
 import { DEFAULT_TOOL_PATHS } from '../../src/types.js';
 
 const ROOT = process.cwd();
@@ -64,7 +67,7 @@ const LABELS: ReadonlyMap<string, ToolId> = new Map(Object.entries({
 const UNLISTED: ReadonlySet<ToolId> = new Set(['claude-internal', 'codex-internal', 'tclaude', 'tcodex']);
 
 function rows(file: string): Map<string, readonly string[]> {
-  const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+  const text = readMarkdown(path.join(ROOT, file));
 
   return new Map(
     [...text.matchAll(/<tr><td>([^<]+)<\/td>(.*?)<\/tr>/g)].map(([, label, cells]) => {
@@ -109,7 +112,7 @@ for (const [label, row] of matrix) {
   await check(`${label} agrees with the tool descriptor`, () => {
     const tool = LABELS.get(label);
     assert.ok(tool, `${label} is not a README label`);
-    const d = TOOLS[tool];
+    const d = descriptorOf(tool);
     const blocks = d.blocks.user instanceof Object || d.blocks.project instanceof Object;
 
     if (d.rules.user instanceof Object && d.rules.user.channel === 'inline') assert.equal(cell(row, 'rules'), '✓¹');

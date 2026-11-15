@@ -12,7 +12,7 @@ vi.mock('../utils/prompt.js', () => mocks);
 vi.mock('../utils/fs.js', () => ({ pathExists: mocks.pathExists }));
 vi.mock('../roles.js', () => ({ saveRolesManifest: mocks.saveRolesManifest }));
 vi.mock('../push.js', () => ({ createPrWithFallback: mocks.createPrWithFallback }));
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn() },
   spinner: () => ({ start: () => ({ succeed: vi.fn(), warn: vi.fn() }) }),
 }));

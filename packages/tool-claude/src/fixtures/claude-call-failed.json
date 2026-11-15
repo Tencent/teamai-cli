@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":true,"duration_ms":412,"result":"There's an issue with the selected model (claude-nonexistent). It may not exist or you may not have access to it. Run /model to pick a different model.","session_id":"0b9c2a44-6f0e-4d39-9a2d-1f6e2c7a9b11"}

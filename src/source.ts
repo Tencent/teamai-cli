@@ -2,13 +2,13 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import fse from 'fs-extra';
 import YAML from 'yaml';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
 import { loadTeamConfig, autoDetectInit, loadLocalConfig, detectProjectConfig } from './config.js';
 import { assertAttachedTeamRepo, createGit, DetachedTeamRepoError, pullRepo } from './utils/git.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import { detectProvider, getProvider } from './providers/index.js';
-import { log, spinner } from './utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
 import {
   pathExists,
   readFileSafe,
@@ -25,7 +25,7 @@ import {
 } from './utils/fs.js';
 import { getHandler } from './resources/index.js';
 import {
-  CODEX_TOOL, codexSkillConflictLine, resolveSkillDestination, skillOrigin, skillTargetsFor,
+  CODEX_TOOL, codexSkillConflictLine, readsCodexSharedSkills, resolveSkillDestination, skillOrigin, skillTargetsFor,
 } from './resources/skills.js';
 import {
   deliveredSkillFiles, describeKeptEntry, describeMembersLink, describeSkippedLink, holdsGitDir, holdsNonRegular, isLink, isTeamaiSkillCopy,
@@ -33,12 +33,12 @@ import {
 } from './resources/delivered-copies.js';
 import { warnOnce } from './utils/warn-once.js';
 import { blobIdOf, historicalVersions } from './utils/team-history.js';
-import { installOf, locate, ownOf } from './locate.js';
+import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH } from './locate.js';
 import { resolveOpenclawWorkspace } from './openclaw-home.js';
-import { isToolId, TOOLS } from './tools.js';
+import { TOOL_ORDER } from './tool-registry.js';
 import { toolHome } from './tool-home.js';
-import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './builtin-skills.js';
-import { getUserHome } from './utils/home.js';
+import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './cli-skill-names.js';
+import { getUserHome } from '@teamai/shared/home';
 import { acquireLock, releaseLock } from './update.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 import type {
@@ -48,8 +48,10 @@ import type {
   SourceInstallManifest,
   GlobalOptions,
 } from './types.js';
-import { isAgentExcluded, isJsonObject, resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
+import { isJsonObject } from '@teamai/shared/json';
+import { isAgentExcluded, resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 // ─── Source repo management ──────────────────────────────
 
@@ -169,7 +171,7 @@ function isCanonicalSkillName(value: string): boolean {
  * destination recorded as an absolute path must lie inside one.
  */
 async function externalToolHomes(): Promise<string[]> {
-  const homes = Object.keys(TOOLS).filter(isToolId).map((tool) => toolHome(tool));
+  const homes = TOOL_ORDER.map((tool) => toolHome(tool));
   // The workspace OpenClaw is configured to read, even once its directory is gone:
   // a record of a copy there stays valid, so pull and `source remove` keep working.
   const workspace = await resolveOpenclawWorkspace();
@@ -268,7 +270,7 @@ async function readSourceManifest(manifestPath: string): Promise<SourceInstallRe
   let raw: string;
 
   try {
-    raw = await fse.readFile(manifestPath, 'utf8');
+    raw = await readRegularFile(manifestPath, 'utf8');
   } catch (error) {
     if (errnoCode(error) === 'ENOENT') return null;
     throw new Error(`Cannot read source ownership record: ${manifestPath}`, { cause: error });
@@ -451,7 +453,7 @@ export async function sourceAdd(repoUrl: string, options: { name?: string } & Gl
 }
 
 async function sourceAddLocked(repoUrl: string, options: { name?: string } & GlobalOptions, localConfig: LocalConfig, initialTeamConfig: TeamaiConfig): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath) ?? initialTeamConfig;
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig) ?? initialTeamConfig;
   const repoPath = localConfig.repo.localPath;
 
   // Derive name from repo URL if not provided
@@ -505,7 +507,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   // source's `publicSkills` declaration, so a repo without a teamai.yaml (or
   // with an empty publicSkills list) syncs 0 skills. Say so here, at add time,
   // instead of letting pull skip it silently later.
-  const sourceConfig = await loadTeamConfig(cloneResult);
+  const sourceConfig = await loadTeamConfig(cloneResult, null);
 
   for (const line of sourceSyncWarnings(name, sourceConfig)) {
     log.warn(line);
@@ -548,7 +550,7 @@ export async function sourceRemove(name: string, options: GlobalOptions): Promis
 }
 
 async function sourceRemoveLocked(name: string, options: GlobalOptions, localConfig: LocalConfig, initialTeamConfig: TeamaiConfig): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath) ?? initialTeamConfig;
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig) ?? initialTeamConfig;
   const repoPath = localConfig.repo.localPath;
 
   const existing = teamConfig.sources ?? [];
@@ -809,7 +811,7 @@ export async function sourceBrowse(name: string, options: GlobalOptions): Promis
 }
 
 async function sourceBrowseLocked(name: string, options: GlobalOptions, localConfig: LocalConfig, initialTeamConfig: TeamaiConfig): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath) ?? initialTeamConfig;
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig) ?? initialTeamConfig;
   const sources = teamConfig.sources ?? [];
   const source = sources.find((s) => s.name === name);
 
@@ -828,7 +830,7 @@ async function sourceBrowseLocked(name: string, options: GlobalOptions, localCon
     return;
   }
 
-  const sourceTeamConfig = await loadTeamConfig(repoDir);
+  const sourceTeamConfig = await loadTeamConfig(repoDir, null);
 
   if (!sourceTeamConfig) {
     log.warn(`Source "${name}" has no teamai.yaml.`);
@@ -879,7 +881,7 @@ async function sourceBrowseLocked(name: string, options: GlobalOptions, localCon
  * Called from pull() at the top level (not inside pullForScope).
  */
 export async function pullSources(localConfig: LocalConfig, options: GlobalOptions, recorder?: DeliveryRecorder): Promise<void> {
-  if (!(await loadTeamConfig(localConfig.repo.localPath))?.sources?.length) {
+  if (!(await loadTeamConfig(localConfig.repo.localPath, localConfig))?.sources?.length) {
     // No source configured delivers nothing: copies an earlier pull left stay
     // where they are, and are no longer teamai's to keep out of git (#915).
     recorder?.succeeded('sources');
@@ -896,7 +898,7 @@ export async function pullSources(localConfig: LocalConfig, options: GlobalOptio
 }
 
 async function pullSourcesLocked(localConfig: LocalConfig, options: GlobalOptions, recorder?: DeliveryRecorder): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
   if (!teamConfig) {
     recorder?.failed('sources');
@@ -941,7 +943,7 @@ async function pullSingleSource(
   if (!repoDir) return false;
 
   // Load source's teamai.yaml
-  const sourceTeamConfig = await loadTeamConfig(repoDir);
+  const sourceTeamConfig = await loadTeamConfig(repoDir, null);
 
   if (!sourceTeamConfig) {
     log.debug(`[source:${source.name}] No teamai.yaml, skipping`);
@@ -1034,7 +1036,7 @@ async function pullSingleSource(
       .map((relative) => ({ path: getSourcePhysicalPin(oldManifest!, baseDir, relative), relative, skillName: skill })));
 
   const plannedTargets: Array<{ path: string; skillName: string; lexicalPath: string; replacesSymlink: boolean }> = [];
-  const plans: Array<{ skill: (typeof skillsToDeploy)[number]; targets: string[]; retained: string[]; codexSkillsPath?: string; conflictingPath?: string; conflictingRecord?: string }> = [];
+  const plans: Array<{ skill: (typeof skillsToDeploy)[number]; targets: string[]; retained: string[]; codexSkillsPaths: string[]; conflictingPath?: string; conflictingRecord?: string }> = [];
   // The source manifest is the delivery record (#993). A destination this
   // installation, or another one of the same repository, records for the skill
   // is the source's. Any other existing copy is the source's only on proof
@@ -1076,7 +1078,7 @@ async function pullSingleSource(
     const targets: string[] = [];
     // Recorded copies holding a file of the member's where the source now has one: kept on record, not copied.
     const retainedTargets: string[] = [];
-    let codexSkillsPath: string | undefined;
+    const codexSkillsPaths: string[] = [];
     let conflictingPath: string | undefined;
     let conflictingRecord: string | undefined;
     const toolPaths = scopedToolPaths(teamConfig, localConfig);
@@ -1140,11 +1142,11 @@ async function pullSingleSource(
       }
 
       // oxlint-disable-next-line teamai/configured-tool-paths -- compare Codex own directory with the shared destination
-      if (tool === CODEX_TOOL && target !== path.join(baseDir, toolPath.skills, skill.name)) codexSkillsPath = toolPath.skills;
+      if (readsCodexSharedSkills(tool) && target !== path.join(baseDir, toolPath.skills, skill.name)) codexSkillsPaths.push(toolPath.skills);
       targets.push(target);
     }
 
-    if (targets.length > 0 || retainedTargets.length > 0) plans.push({ skill, targets, retained: retainedTargets, codexSkillsPath, conflictingPath, conflictingRecord });
+    if (targets.length > 0 || retainedTargets.length > 0) plans.push({ skill, targets, retained: retainedTargets, codexSkillsPaths, conflictingPath, conflictingRecord });
   }
 
   // Directory copies merge content. Crossing an existing parent/child boundary
@@ -1194,9 +1196,11 @@ async function pullSingleSource(
   // cleanup, and planned destinations (including physical aliases) must survive.
   const reconciliations: Array<{ skill: (typeof skillsToDeploy)[number]; skillsPath: string; target: string; physical: string }> = [];
 
-  for (const { skill, codexSkillsPath, conflictingPath } of plans) {
-    if (!codexSkillsPath || conflictingPath) continue;
-    const target = path.join(baseDir, codexSkillsPath, skill.name);
+  const codexDuplicates = plans.flatMap(({ skill, codexSkillsPaths, conflictingPath }) =>
+    conflictingPath ? [] : codexSkillsPaths.map((skillsPath) => ({ skill, skillsPath })));
+
+  for (const { skill, skillsPath } of codexDuplicates) {
+    const target = path.join(baseDir, skillsPath, skill.name);
     assertWithinRoot(baseDir, target);
 
     if (!isRelativeDescendant(path.relative(baseDir, target))) throw new Error('Refusing to reconcile a source destination root');
@@ -1217,7 +1221,7 @@ async function pullSingleSource(
     if ([...otherOwners, ...previousTargets, ...plannedTargets].some((owner) => pathsOverlap(owner.path, physical))
       || previousTargets.some((owner) => pathsOverlap(path.resolve(baseDir, owner.relative), target))
       || plannedTargets.some((planned) => pathsOverlap(planned.lexicalPath, target))) continue;
-    reconciliations.push({ skill, skillsPath: codexSkillsPath, target, physical });
+    reconciliations.push({ skill, skillsPath, target, physical });
   }
 
   if (!options.dryRun) {
@@ -1228,7 +1232,7 @@ async function pullSingleSource(
 
       // The existing resolver alone decides whether both copies and the
       // incoming source match. Different local drafts are never removed.
-      await resolveSkillDestination(CODEX_TOOL, skillsPath, baseDir, skill.name, (dir) => isSourcesCopy(dir, skill), skill.sourcePath);
+      await resolveSkillDestination(CODEX_TOOL, skillsPath, { own: path.join(baseDir, skillsPath), shared: path.join(baseDir, SHARED_AGENT_SKILLS_PATH) }, skill.name, (dir) => isSourcesCopy(dir, skill), skill.sourcePath);
     }
   }
 
@@ -1787,7 +1791,7 @@ async function membersFileInTheWay(target: string, sourcePath: string, repoDir: 
     const versions = await historicalVersions(repoDir, `${skillOrigin(repoDir, skillName).pathspec}/${rel}`);
 
     if (versions === null) return null;
-    const blob = await blobIdOf(repoDir, await fse.readFile(dest));
+    const blob = await blobIdOf(repoDir, await readRegularFile(dest));
 
     if (!versions.some((version) => version.blob === blob && version.mode !== '120000')) return rel;
   }
@@ -1814,6 +1818,7 @@ async function legacyCopyKeeper(
     const configured = toolPaths[tool]?.skills;
 
     if (!configured) continue;
+    // oxlint-disable-next-line teamai/configured-tool-paths -- the scope-root copy releases before #993 wrote, compared with the one locate gives
     const legacy = path.join(baseDir, configured);
 
     if (legacy !== ownOf(await locate(tool, 'skills', install))?.path) legacyRoots.push(legacy);
@@ -1835,10 +1840,10 @@ async function legacyCopyKeeper(
 
       // `foreign`: a path of a skill the source has or had, but never this file, which only history can tell.
       const fromSource = async (rel: string): Promise<'today' | 'history' | 'changed' | 'foreign'> => {
-        const bytes = await fse.readFile(path.join(skillDir, rel));
+        const bytes = await readRegularFile(path.join(skillDir, rel));
         const source = sourcePath ? await fse.lstat(path.join(sourcePath, rel)).catch(() => null) : null;
 
-        if (source?.isFile() && bytes.equals(await fse.readFile(path.join(sourcePath!, rel)))) return 'today';
+        if (source?.isFile() && bytes.equals(await readRegularFile(path.join(sourcePath!, rel)))) return 'today';
 
         if (!history) return 'changed';
 

@@ -35,7 +35,7 @@ function importEnded(updated: boolean) {
   return { run: 'r1', outcome: 'succeeded', outputs: { text: '', exit_code: 0, imported: [{ source: 'checkout', slug: 'github__org__repo', updated, failed: false }] } };
 }
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   spinner: vi.fn(() => ({ start: vi.fn().mockReturnThis(), succeed: vi.fn().mockReturnThis(), fail: vi.fn().mockReturnThis() })),
 }));

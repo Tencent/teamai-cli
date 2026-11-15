@@ -1,0 +1,1 @@
+{"type": "result", "subtype": "success", "is_error": true, "duration_ms": 812, "num_turns": 1, "result": "Authentication failed: run `codebuddy login` or set CODEBUDDY_API_KEY.", "session_id": "0b6f2a52-5d7e-4c7e-9a43-6a1b2c3d4e60"}

@@ -17,13 +17,13 @@
  * responseOf. A name not listed here is `unknown` and never counts.
  */
 import { isAbsolutePath, isWithin, resolvePath, samePath, withoutReadSelector } from './agent-path.js';
-import { getUserHome } from './home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { resolveHookCwd } from './hook-cwd.js';
 import { classifyShellCommand } from './shell-command.js';
 import { normalizeToolName } from './tool-names.js';
 import { z } from 'zod';
 import { HookPayloadSchema, type HookPayload } from '../types.js';
-import { isToolId, TOOLS } from '../tools.js';
+import { baseDescriptorOf } from '../tool-registry.js';
 
 /** What a call did: `read`/`search`/`list` whether a tool or a shell command did it; `shell` for any other shell call. */
 export type ToolCategory = 'read' | 'shell' | 'search' | 'list' | 'unknown';
@@ -90,7 +90,7 @@ const READ_SELECTORS = new Set(['omp']);
 
 /** Whether a line rule reads `agent`'s search tool output (`searchEvidence`); an unknown agent's is read. */
 function readsSearchEvidence(agent: string | undefined): boolean {
-  return agent === undefined || !isToolId(agent) || TOOLS[agent].searchEvidence;
+  return agent === undefined || (baseDescriptorOf(agent)?.searchEvidence ?? true);
 }
 
 /** A string, or undefined for any other value. */

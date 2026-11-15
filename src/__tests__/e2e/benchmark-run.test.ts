@@ -222,28 +222,29 @@ describe('a team benchmark workflow', () => {
 
 /** A team benchmark workflow whose plan step prints a plan of a schemaVersion no teamai reads, and a bundle of `steps`. */
 function futurePlan(steps: ReadonlyArray<Record<string, unknown>>): string {
-  const printed = { definition: { definition: { schemaVersion: 'v1alpha1', name: 'future', description: 'A newer plan.', steps } }, plan: { schemaVersion: 99 } };
+  const printed = { definition: { definition: { schemaVersion: 'v1alpha1', name: 'future', description: 'A newer plan.', steps } }, plan: { schemaVersion: 99, suite: { name: 'fix' } } };
   return RELAXED.replace('command: teamai benchmark plan "$SUITE"', `command: node -e 'process.stdout.write(process.argv[1])' '${JSON.stringify(printed)}'`);
 }
 
 const StepsSchema = z.object({ steps: z.array(z.object({ id: z.string(), status: z.string(), message: z.string().optional() }).passthrough()) }).passthrough();
-const FUTURE = 'measures a benchmark plan of schemaVersion 99, which the teamai that started it froze, and this teamai reads only schemaVersion 2, so the run cannot go on here. Run it with the teamai that started it, or start the suite again with teamai benchmark run <suite>.';
+const FUTURE = 'measures a benchmark plan of schemaVersion 99, which the teamai that started it froze, and this teamai reads only schemaVersion 3, so the run cannot go on here. Run it with the teamai that started it, or start the suite again with teamai benchmark run fix.';
 
 describe('a plan of an unknown schemaVersion', () => {
-  it('fails the report, and benchmark run exits 1 though the run succeeded', async () => {
+  it('runs none of the steps it planned, and benchmark run exits 1 naming teamai benchmark run', async () => {
     const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: false });
     fixtures.push(fixture);
     fixture.pushTeam({ 'workflows/teamai-benchmark.yaml': futurePlan([{ id: 'noop', command: 'node -e 0' }]) });
     const pulled = await fixture.teamai(['pull']);
 
     const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
-    const done = z.object({ run: z.string() }).passthrough().parse(envelope(ran).data?.done);
-    const report = StepsSchema.parse(fixture.runFile(done.run)).steps.find((step) => step.id === 'report');
+    const refused = z.object({ code: z.string(), message: z.string() }).parse(envelope(ran).error);
+    const runId = /^Run (r[0-9a-f]+) /.exec(refused.message)?.[1] ?? '';
+    const started = StepsSchema.parse(fixture.runFile(runId)).steps.filter((step) => !['pending', 'running'].includes(step.status)).map((step) => step.id);
 
     expect(pulled.code, said(pulled)).toBe(0);
     expect(ran.code, said(ran)).toBe(1);
-    expect(done).toMatchObject({ outcome: 'succeeded', finally: [{ id: 'report', outcome: 'failed' }] });
-    expect(report).toMatchObject({ status: 'failed', message: expect.stringContaining(FUTURE) });
+    expect(refused).toEqual({ code: 'benchmark_plan_outdated', message: `Run ${runId} ${FUTURE}` });
+    expect(started).toEqual(['plan']);
   }, 180_000);
 
 });

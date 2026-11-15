@@ -2,18 +2,20 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { ruleHarness } from '../test/harness.ts';
 
-const TOOLS_SOURCE = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'tools.ts'), 'utf8');
-const files = { 'src/tools.ts': TOOLS_SOURCE };
-/** The ids `TOOL_IDS` lists, which the type check holds `TOOLS` to: a second source for the keys the rule reads. */
-const TOOL_IDS = [...(/export const TOOL_IDS = \[([^\]]*)\] as const/.exec(TOOLS_SOURCE)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((match) => match[1]);
+const TOOL_IDS_FILE = 'oxlint-plugin-teamai/tool-ids.generated.json';
+/** The shipped tool ids `node scripts/check-docs.mjs --write` generates from the tool registry, which the rule reads. */
+const TOOL_IDS = z.array(z.string()).parse(JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', TOOL_IDS_FILE), 'utf8')));
+const WORKSPACE = JSON.stringify({ name: 'teamai-cli', workspaces: ['packages/*'] });
+const files = { 'package.json': WORKSPACE, [TOOL_IDS_FILE]: JSON.stringify(TOOL_IDS) };
 const rule = ruleHarness('teamai/tool-facts', { filename: 'src/hooks.ts' });
 
 describe('teamai/tool-facts', () => {
   rule.invalid('reports a partial set of tools', `const SUBAGENT_STOP_TOOLS = new Set(['claude', 'codebuddy']);`, (output) => {
-    expect(output).toContain('TOOLS');
+    expect(output).toContain('packages/tool-<family>/');
   }, { files });
 
   rule.invalid('reports a list typed against ToolId', `const LIST = ['claude', 'codex'] as const satisfies readonly ToolId[];`, undefined, { files });
@@ -60,7 +62,60 @@ const SHELLS = { workbuddy: 'bundled', codebuddy: 'bundled' } as const;
 
   rule.valid('allows one tool id', `if (tool === 'claude' || ['x', 'claude'].includes(name)) run();`, { files });
 
-  rule.valid('allows a list in TOOLS itself', `const ORDER = ['claude', 'codex'];`, { filename: 'src/tools.ts', files: { 'src/tools.ts': TOOLS_SOURCE } });
+  rule.valid('allows a list in TOOLS itself', `const ORDER = ['claude', 'codex'];`, { filename: 'src/tools.ts', files });
+
+  rule.invalid('reports a partial set of tools in a workspace package', `export const SHELLS = { workbuddy: 'bundled', codebuddy: 'bundled' } as const;`, undefined, {
+    filename: 'packages/tool-codebuddy/src/shells.ts',
+    files: { ...files, 'packages/tool-codebuddy/package.json': JSON.stringify({ name: '@teamai/tool-codebuddy', private: true }) },
+  });
+
+  rule.valid('stays out of a test beside its source in a workspace package', `const LIST = ['claude', 'codex'];`, {
+    filename: 'packages/tool-claude/src/launch.test.ts',
+    files: { ...files, 'packages/tool-claude/package.json': JSON.stringify({ name: '@teamai/tool-claude', private: true }) },
+  });
+
+  const family = { ...files, 'packages/tool-claude/package.json': JSON.stringify({ name: '@teamai/tool-claude', private: true }) };
+
+  rule.valid('allows the descriptors a family declares', `
+export const tools = { claude: { launch: 'claude' }, tclaude: { launch: 'claude' } } as const satisfies Record<string, ToolDescriptor>;
+`, { filename: 'packages/tool-claude/src/definitions.ts', files: family });
+
+  rule.valid('allows the session platforms a family declares', `
+export const platforms = { tclaude: TCLAUDE, 'claude-internal': INTERNAL } as const satisfies Record<string, SessionPlatformDefinition>;
+`, { filename: 'packages/tool-claude/src/sessions.ts', files: family });
+
+  rule.valid('allows the launch profiles a family declares', `
+export const launch = { pi: PI, omp: OMP } as const satisfies Record<string, LaunchAdapter>;
+`, { filename: 'packages/tool-pi/src/launch.ts', files: { ...files, 'packages/tool-pi/package.json': JSON.stringify({ name: '@teamai/tool-pi', private: true }) } });
+
+  rule.valid('allows the version detectors a family declares', `
+export const detect = { codebuddy: CLI, workbuddy: () => app('/Applications/WorkBuddy.app') } as const satisfies Record<string, VersionDetector>;
+`, { filename: 'packages/tool-codebuddy/src/detect.ts', files: { ...files, 'packages/tool-codebuddy/package.json': JSON.stringify({ name: '@teamai/tool-codebuddy', private: true }) } });
+
+  rule.valid('allows the families tool-definitions lists', `
+export const BUILT_IN_TOOLS = { claude, codex } as const satisfies Readonly<Record<string, ToolFamily>>;
+`, { filename: 'packages/tool-definitions/src/registry.ts', files: { ...files, 'packages/tool-definitions/package.json': JSON.stringify({ name: '@teamai/tool-definitions', private: true }) } });
+
+  rule.invalid('reports descriptors declared outside a family package', `
+export const tools = { claude: { launch: 'claude' }, tclaude: { launch: 'claude' } } as const satisfies Record<string, ToolDescriptor>;
+`, undefined, { files });
+
+  rule.invalid('reports another table keyed by tools in a family package', `
+export const COMMANDS = { claude: 'claude', tclaude: 'tclaude' } as const satisfies Record<string, string>;
+`, undefined, { filename: 'packages/tool-claude/src/commands.ts', files: family });
+
+  rule.invalid('reports a family list outside tool-definitions', `
+export const FAMILIES = { claude, codex } as const satisfies Readonly<Record<string, ToolFamily>>;
+`, undefined, { files });
+
+  rule.invalid('fails when the generated tool ids are missing, instead of checking nothing', `export const ok = 1;`, (output) => {
+    expect(output).toContain('oxlint-plugin-teamai/tool-ids.generated.json');
+    expect(output).toContain('node scripts/check-docs.mjs --write');
+  }, { files: { 'package.json': WORKSPACE } });
+
+  rule.invalid('fails when the generated tool ids are empty', `export const ok = 1;`, (output) => {
+    expect(output).toContain('node scripts/check-docs.mjs --write');
+  }, { files: { 'package.json': WORKSPACE, [TOOL_IDS_FILE]: '[]' } });
 
   rule.valid('allows an explained exception', `
 // oxlint-disable-next-line teamai/tool-facts -- the picker order; membership comes from TOOLS
@@ -69,8 +124,8 @@ const CHOICES = ['claude', 'codex'];
 
   rule.valid('stays out of tests', `const LIST = ['claude', 'codex'];`, { filename: 'src/__tests__/x.test.ts', files });
 
-  // A tool missing from what the rule reads would let its tables through, so every id of TOOLS must be caught.
-  it('finds the TOOL_IDS list it checks against', () => {
+  // A tool missing from what the rule reads would let its tables through, so every shipped id must be caught.
+  it('reads the shipped tool ids it checks against', () => {
     expect(TOOL_IDS).toContain('claude');
     expect(TOOL_IDS).toContain('agy');
   });

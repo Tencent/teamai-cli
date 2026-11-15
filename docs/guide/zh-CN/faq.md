@@ -6,7 +6,17 @@
 
 ## 卸载
 
-`teamai uninstall` 删除 TeamAI 装上去的 Agent 资源。你自己建的文件会留下；只有把 TeamAI 写进去的部分去掉后整份文件空了，它才一起删掉。user scope 卸载会保留本机仍登记的项目的数据。请先逐个卸载项目，再在任何项目之外运行 `teamai uninstall`，移除剩余的共享数据。
+`teamai uninstall` 删除 TeamAI 装上去的 Agent 资源。你自己建的文件会留下；只有把 TeamAI 写进去的部分去掉后整份文件空了，它才一起删掉。user scope 卸载会删除 `~/.teamai`，但保留其中你自己的 `drivers/`、`runtimes/`、`sandboxes/` 和 `tools/`，预览和输出都会列出保留了什么。最后一次卸载还会删除 teamai 的沙箱记录过的预热镜像和 sbx 模板，留下的会列出来。它还会保留本机仍登记的项目的数据。请先逐个卸载项目，再在任何项目之外运行 `teamai uninstall`，移除剩余的共享数据。
+
+在项目中，卸载还会删除失败或取消的工作流运行保留下来的 worktree，前提是其中没有分支之外的内容：没有未提交的改动，也没有被 git 忽略的文件。这些分支会保留，运行的提交都在上面。没有运行 worktree 剩下后，它会删除 TeamAI 为它们做的设置：`.git/info/exclude` 中它的那一段、它打开的 `extensions.worktreeConfig`，以及空的 `.teamai/`。其他 worktree 会保留，例如有未提交改动、有被忽略的 `.env`、或 HEAD 不在任何分支上的。预览和输出会列出它，并给出删除它的 `git worktree remove --force` 命令；上面这些设置也随它保留。
+
+如果某个工作流运行仍在步骤运行时（例如沙箱、T3 线程或 Paseo agent）上占用一个位置，会删除共享数据的卸载会拒绝执行：删掉 TeamAI 的记录后，就没有东西能关闭它了。请等运行结束，或用 `teamai workflow cancel <run>` 停止它，然后再次卸载。teamai 正在这台机器上驱动某个工作流运行时，它也会拒绝：
+
+```text
+✖ Cannot uninstall while teamai drives run r844ee61183cc4915 on this machine (process 83460): it would write the run again into what the uninstall removes. Stop that driver (Ctrl-C), then run `teamai uninstall` again.
+```
+
+`--dry-run` 仍会照常预览，并对每个会导致卸载被拒绝的运行给出警告。
 
 卸载工作区时，TeamAI 可能会保留工具主目录中的内置 hooks，供其他安装使用。如果卸载预览将 hooks 列在 "Kept for other teamai installs" 下，并且你已确认没有其他工作区、checkout、用户级安装或 HTTP agent 使用它们，请在仍配置了 TeamAI 的工作区中先运行 `teamai hooks remove`，再卸载该工作区。之后在工作区之外卸载时，可能只会移除 `~/.teamai`。
 
@@ -129,7 +139,7 @@ pull 之前                            pull 之后
 
 **Q: `teamai.yaml` 里的 `toolPaths` 条目——没有写到的键会怎样？**
 
-该条目会整体替换此工具的默认值：没写的键*消失*，不会被继承。只自定义 `skills` 而省略 `settings` 的条目会让该工具没有 settings 文件，hook 对账会静默跳过它；省略 `skills` 或 `rules` 则是有意停用对应投递。`teamai doctor` 会点名自定义条目丢掉的、默认表提供的每一个键，以及补回用的值。
+该条目会整体替换此工具的默认值：没写的键*消失*，不会被继承。只自定义 `skills` 而省略 `settings` 的条目会让该工具没有 settings 文件，hook 对账会静默跳过它；省略 `skills` 或 `rules` 则是有意停用对应投递。`teamai doctor` 会点名自定义条目丢掉的、默认表提供的每一个键，以及补回用的值。与工具同名的团队[工具实例](./reference.md#团队工具tools)（带 `paths` 的 `tools/claude.yaml`）也以同样方式替换该条目，`doctor` 会指出是哪个文件。
 
 **Q: Hooks 没有自动触发？**
 

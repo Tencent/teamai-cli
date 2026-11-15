@@ -25,7 +25,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
 vi.mock('../pull.js', () => ({ pull: vi.fn(async () => undefined), settleLateUsageReport: vi.fn(async () => undefined) }));
 vi.mock('../update.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../update.js')>()), doUpdate: vi.fn(async () => undefined) }));
 vi.mock('../local-agent.js', () => ({ reportAndSyncFromHook: vi.fn(async () => null) }));
-vi.mock('../utils/cli-path.js', () => ({ resolveCliPath: () => null }));
+vi.mock('@teamai/shared/cli-path', async (importOriginal) => ({ ...(await importOriginal<typeof import('@teamai/shared/cli-path')>()), resolveCliPath: () => null, resolvePathCommand: () => null }));
 vi.mock('../session-flow/finished-sessions.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../session-flow/finished-sessions.js')>();
   return { ...actual, FinishedSessions: { ...actual.FinishedSessions, start: vi.fn(async () => ({ kind: 'idle' })) } };
@@ -36,7 +36,7 @@ const { loadLocalConfig } = await import('../config.js');
 const { SESSION_RUN_PAYLOAD_KEY, sessionRun } = await import('../launch-context.js');
 const { syncScorerDefinitions } = await import('../scorers/cache.js');
 const { Drain } = await import('../score-drain.js');
-const { encodeCwdClaude } = await import('../session-flow/fs.js');
+const { encodeCwdClaude } = await import('@teamai/tool-core/sessions/fs');
 const { AGENT_SESSION_ENV } = await import('../utils/session-id.js');
 const { FinishedSessions } = await import('../session-flow/finished-sessions.js');
 

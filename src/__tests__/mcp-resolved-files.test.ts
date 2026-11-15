@@ -3,7 +3,7 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn() },
 }));
 

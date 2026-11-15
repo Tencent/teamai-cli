@@ -7,7 +7,7 @@ import { KNOWN_AGENTS } from '../known-agents.js';
 import { getHookStatus, hasTeamaiHooks, reconcileHooks } from '../hooks.js';
 import { agentFileExtensionForTool } from '../resources/agent-format.js';
 import { HookDef, TeamaiConfigSchema } from '../types.js';
-import { AGENT_TOOLS } from '../tools.js';
+import { AGENT_TOOLS } from '../tool-registry.js';
 
 describe('ZCode support', () => {
   afterEach(() => vi.unstubAllEnvs());

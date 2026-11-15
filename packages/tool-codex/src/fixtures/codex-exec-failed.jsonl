@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"01a19d2f-0a77-7b12-8d41-9c3e5b7a2f60"}
+{"type":"turn.started"}
+{"type":"error","message":"The 'gpt-nonexistent' model is not supported when using Codex with a ChatGPT account."}
+{"type":"turn.failed","error":{"message":"The 'gpt-nonexistent' model is not supported when using Codex with a ChatGPT account."}}

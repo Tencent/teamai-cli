@@ -38,6 +38,9 @@ tester.run("anti-slop/no-known-value-widening", noKnownValueWideningRule, {
 		"function isString(value: unknown): value is string { return true; } declare const input: unknown; isString(input);",
 		"function isString(value: string | unknown): value is string { return true; } declare const input: string | unknown; isString(input);",
 		"function isString(value: unknown): value is string { return true; } declare function readInput(): unknown; isString(readInput());",
+		"function isString(value: unknown): value is string { return true; } function check(known: string | number): boolean { return isString(known); }",
+		"type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }; type JsonObject = { [key: string]: JsonValue }; function isJsonObject(value: unknown): value is JsonObject { return true; } function walk(value: JsonValue): boolean { return isJsonObject(value); }",
+		"type Shape = { readonly kind: string }; type Circle = Shape & { readonly radius: number }; function isCircle(value: unknown): value is Circle { return true; } function parse(): Shape { return { kind: 'circle' }; } const shape = parse(); isCircle(shape);",
 	],
 	invalid: [
 		{ code: "const value: unknown = {};", errors: [error] },

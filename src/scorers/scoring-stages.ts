@@ -6,7 +6,7 @@
  */
 import type { ScorerDefinition, ScorerLabel } from './definition.js';
 import type { Decider, RunSubject } from './label.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { runCheckAt } from './check-run.js';
 import { runPasses } from '../workflow/loop.js';
 import { deliveredCi } from '../workflow/pr-delivery.js';
@@ -38,7 +38,7 @@ export function failingLabel(definition: Pick<ScorerDefinition, 'labels' | 'pass
 }
 
 export const passOf = (run: RunState, subject: RunSubject): StepPass | undefined =>
-  runPasses(run, agentPassOf).find((each) => each.step === subject.step && each.pass === subject.pass);
+  runPasses(run, agentPassOf).findLast((each) => each.step === subject.step && each.pass === subject.pass);
 
 /**
  * The CI of the pull request the pass delivered, read once: a failed one decides; a pending one says it

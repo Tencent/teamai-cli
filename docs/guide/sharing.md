@@ -780,7 +780,7 @@ sessions:
 
 ## Docs
 
-Put files in the team repo's `docs/`. Members receive them on `pull`. To limit a directory, declare it under `resources.docs`:
+Put files in the team repo's `docs/`. Members receive them on `pull` in their docs mirror (`sharing.docs.localDir`). An edit to a doc the team has, made in that mirror, is what `teamai status` and `teamai push` offer, at its team path `docs/<rel>`; a file that is a version of one the team already has, current or older, is a copy, not an edit, and is left out, so a stale copy never proposes to overwrite the team's newer file. The user-scope mirror is machine-wide, so a file for a doc the team does not have is left alone: add a new doc in the team repo. An edit in the team clone's checkout is offered too, and wins for the same path. To limit a directory, declare it under `resources.docs`:
 
 ```yaml
 # manifest/projects.yaml
@@ -807,6 +807,10 @@ A directory that holds its type's marker, at any depth, is a folder: one resourc
 | `benchmarks/` | `SUITE.yaml` | Reads it: [suites](benchmarks.md#write-a-suite) |
 | `scorers/` | `SCORER.md` | Reads it: [scorer folders](scorers.md#a-scorer-folder) |
 | `agents/` | `AGENT.md` | Reads it: [agent folders](#agents-as-folders) |
+| `drivers/` | `DRIVER.yaml` | Reads it: [where each part lives](workflow-advanced.md#where-each-part-lives) |
+| `runtimes/` | `RUNTIME.yaml` | Reads it: [where each part lives](workflow-advanced.md#where-each-part-lives) |
+| `sandboxes/` | `SANDBOX.yaml` | Reads it: [where each part lives](workflow-advanced.md#where-each-part-lives) |
+| `tools/` | `TOOL.yaml` | Reads it: [where each part lives](workflow-advanced.md#where-each-part-lives) |
 
 A folder is one resource, whatever else it holds:
 

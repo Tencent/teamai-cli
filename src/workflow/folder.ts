@@ -3,9 +3,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { FOLDER_MARKERS } from '../folder-markers.js';
 import { FolderFiles, type FolderFilesRead } from '../resources/folder-files.js';
+import { WORKFLOW_DIR_ENV } from '../launch-context.js';
 import { getDataHome, type LocalConfig } from '../types.js';
 import { pathExists } from '../utils/fs.js';
 import { createGit } from '../utils/git.js';
+import { withFileLock } from '../update.js';
 
 // ─── Workflow folders (#1787) ────────────────────────────
 //
@@ -120,22 +122,65 @@ function dir(config: LocalConfig, sourceHash: string): string | undefined {
 }
 
 /**
+ * What every process of a step of the folder with `sourceHash` gets, as it gets $TEAMAI_RUN_DIR: the folder's {@link dir},
+ * with forward slashes on Windows too, which Git Bash, node and PowerShell all read. Nothing for a malformed hash.
+ */
+function env(config: LocalConfig, sourceHash: string): Record<string, string> {
+  const at = dir(config, sourceHash);
+
+  return at === undefined ? {} : { [WORKFLOW_DIR_ENV]: at.split(path.sep).join('/') };
+}
+
+/** The folder `value` names when it is a value {@link env} gives, and undefined for any other path, which a step's own `env:` may set. */
+function named(config: LocalConfig, value: string | undefined): string | undefined {
+  const sourceHash = value === undefined ? undefined : path.basename(value);
+
+  return sourceHash !== undefined && env(config, sourceHash)[WORKFLOW_DIR_ENV] === value ? dir(config, sourceHash) : undefined;
+}
+
+/**
+ * The lock {@link pin} and {@link prune} both take on a stored folder, so a prune never removes a folder a pin found
+ * there and kept: beside the folder, under a name the prune passes over.
+ */
+function lockOf(target: string): string {
+  return path.join(path.dirname(target), `.${path.basename(target)}.lock`);
+}
+
+/** How long a pin waits for a prune or another pin of the same folder: each holds the lock for one look and one write or removal. */
+const PIN_WAIT = { attempts: 200, delayMs: 50 } as const;
+
+/**
  * Writes `files` to {@link dir} once, for every run that uses the folder with `sourceHash`: into a new sibling first,
- * renamed into place, so a run never sees a folder half written. A folder already there is kept as it is.
+ * renamed into place, so a run never sees a folder half written. A folder already there is kept as it is, its time set
+ * to now, so {@link prune} keeps it for a run that pins it before its record names it, as a start and a claim do.
  */
 async function pin(config: LocalConfig, { sourceHash, files }: { sourceHash: string; files: readonly WorkflowFolderFile[] }): Promise<void> {
   const target = dir(config, sourceHash);
 
   if (target === undefined) throw new Error(`${sourceHash} is not the sourceHash of a workflow folder`);
+  const locked = await withFileLock(lockOf(target), PIN_WAIT, () => store(target, files));
 
-  if (await pathExists(target)) return;
-  const staging = path.join(path.dirname(target), `.${sourceHash}.${randomBytes(4).toString('hex')}`);
+  if (!locked.held) {
+    throw new Error(`Could not store the workflow folder ${sourceHash}: another teamai process held ${lockOf(target)} for ${(PIN_WAIT.attempts * PIN_WAIT.delayMs) / 1000} s. Run the command again; if no teamai process is running, delete that file.`);
+  }
+}
+
+/** {@link pin}'s write, under its lock. */
+async function store(target: string, files: readonly WorkflowFolderFile[]): Promise<void> {
+  if (await pathExists(target)) {
+    const now = new Date();
+    await fs.utimes(target, now, now);
+
+    return;
+  }
+
+  const staging = path.join(path.dirname(target), `.${path.basename(target)}.${randomBytes(4).toString('hex')}`);
 
   try {
     for (const file of files) {
       const full = path.join(staging, ...file.path.split('/'));
       await fs.mkdir(path.dirname(full), { recursive: true });
-      await fs.writeFile(full, file.content, { mode: file.executable ? 0o755 : 0o644 });
+      await fs.writeFile(full, file.content, { mode: file.executable ? 0o755 : 0o644, flag: 'wx' });
     }
 
     await fs.mkdir(staging, { recursive: true });
@@ -153,7 +198,8 @@ const UNREFERENCED_GRACE_MS = 60 * 60 * 1000;
 
 /**
  * Removes each stored folder whose sourceHash is not in `referenced` and that was stored more than an hour before `now`,
- * so a run whose start or claim stored its folder but has not yet written its record keeps it.
+ * so a run whose start or claim stored its folder but has not yet written its record keeps it. Each folder is looked at
+ * and removed under {@link pin}'s lock; one a pin holds now is in use, and stays.
  */
 async function prune(config: LocalConfig, { referenced, now }: { referenced: ReadonlySet<string>; now: number }): Promise<void> {
   const root = path.join(getDataHome(config), 'workflows', 'folders');
@@ -161,9 +207,13 @@ async function prune(config: LocalConfig, { referenced, now }: { referenced: Rea
 
   for (const name of names) {
     if (!SOURCE_HASH.test(name) || referenced.has(name)) continue;
-    const stored = await fs.stat(path.join(root, name)).catch(() => undefined);
+    const target = path.join(root, name);
 
-    if (stored && stored.mtimeMs + UNREFERENCED_GRACE_MS <= now) await fs.rm(path.join(root, name), { recursive: true, force: true });
+    await withFileLock(lockOf(target), { attempts: 1, delayMs: 0 }, async () => {
+      const stored = await fs.stat(target).catch(() => undefined);
+
+      if (stored && stored.mtimeMs + UNREFERENCED_GRACE_MS <= now) await fs.rm(target, { recursive: true, force: true });
+    });
   }
 }
 
@@ -172,4 +222,4 @@ function shipped(found: FolderFilesRead): WorkflowFolderRead {
   return fromFiles(found, new Map());
 }
 
-export const WorkflowFolder = { MAX_BYTES, read, withinLimit, shipped, hash, dir, pin, prune } as const;
+export const WorkflowFolder = { MAX_BYTES, read, withinLimit, shipped, hash, dir, env, named, pin, prune } as const;

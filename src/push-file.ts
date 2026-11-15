@@ -29,7 +29,7 @@ import { getDataHome, SYNC_LOCK_FILENAME, type GlobalOptions } from './types.js'
 import { acquireLock, releaseLock } from './update.js';
 import { createGit, generateBranchName, getConfiguredRemoteUrl, getDefaultBranch, isDedicatedRepoRoot } from './utils/git.js';
 import { withoutGitRepositoryEnv } from './utils/git-env.js';
-import { log, spinner } from './utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
 
 export interface PushFileOptions {
   file?: string;

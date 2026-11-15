@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { vi } from 'vitest';
 import { z } from 'zod';
-import * as cliPath from '../../utils/cli-path.js';
+import * as cliPath from '@teamai/shared/cli-path';
 
 const CallSchema = z.object({ args: z.array(z.string()), cwd: z.string(), prompt: z.string().optional() });
 export type GhCall = z.infer<typeof CallSchema>;

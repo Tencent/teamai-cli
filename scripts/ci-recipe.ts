@@ -1,8 +1,8 @@
-import fs from 'node:fs';
+import { readMarkdown } from './doc-checks/read-markdown.js';
 import { parseDocument } from 'yaml';
 import { z } from 'zod';
 
-import { isJsonObject, type JsonValue } from '../src/types.js';
+import { isJsonObject, type JsonValue } from '@teamai/shared/json';
 
 const RecipeSchema = z.object({
   jobs: z.record(z.string(), z.object({
@@ -16,7 +16,7 @@ export type CiRecipe = z.infer<typeof RecipeSchema>;
 
 /** Each GitHub Actions workflow the page at `file` shows: a yaml fence whose document has `jobs`. */
 export function ciRecipesOf(file: string): CiRecipe[] {
-  const text = fs.readFileSync(file, 'utf8');
+  const text = readMarkdown(file);
 
   return [...text.matchAll(/^```yaml\n([\s\S]*?)^```/gm)].flatMap((match) => {
     const value: JsonValue = parseDocument(match[1] ?? '').toJS();

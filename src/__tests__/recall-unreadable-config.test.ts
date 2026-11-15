@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(), persist: vi.fn() },
 }));
 vi.mock('../code-knowledge-recall.js', () => ({
@@ -20,7 +20,7 @@ vi.mock('../code-knowledge-recall.js', () => ({
 const { recall } = await import('../recall.js');
 const { resolveProjectDataHome, saveLocalConfigForScope } = await import('../config.js');
 const { readRecallQuality } = await import('../recall-quality.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 const SESSION = 'recall-unreadable-session';
 const QUERY = 'deployment timeout';

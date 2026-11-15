@@ -1,0 +1,2 @@
+{"payload_type":"run.started","payload":{"run_id":"run_02"}}
+{"payload_type":"run.terminal.failed","payload":{"terminal":"failed","text":null,"reason":"Not signed in: run `muse login`."}}

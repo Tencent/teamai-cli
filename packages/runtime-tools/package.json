@@ -1,0 +1,12 @@
+{
+  "name": "@teamai/runtime-tools",
+  "private": true,
+  "type": "module",
+  "description": "The tools step runtime: it launches the member's tools on this machine for workflow prompt steps, in teamai's own process behind the StepRuntime interface; bundled into teamai-cli, which builds its dependencies once.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./answer": "./src/answer.ts",
+    "./confined": "./src/confined.ts",
+    "./headless": "./src/headless.ts"
+  }
+}

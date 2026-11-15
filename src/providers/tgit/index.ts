@@ -80,4 +80,6 @@ export class TGitProvider implements GitProvider {
 }
 
 // Re-export commonly used items for backward compatibility
-export { gfIsAuthenticated, gfGetOAuthToken, isGfInstalled } from './gf-cli.js';
+export { gfIsAuthenticated, isGfInstalled } from './gf-cli.js';
+
+export { gfGetOAuthToken } from './oauth-token.js';

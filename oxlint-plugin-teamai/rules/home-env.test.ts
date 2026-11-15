@@ -2,7 +2,7 @@ import { expect } from 'vitest';
 
 import { ruleHarness } from '../test/harness.ts';
 
-const rule = ruleHarness('teamai/home-env', { filename: 'src/utils/home.ts' });
+const rule = ruleHarness('teamai/home-env', { filename: 'packages/shared/src/home.ts' });
 
 rule.valid('allows the canonical home resolver to read HOME', `
 export function getUserHome(): string {

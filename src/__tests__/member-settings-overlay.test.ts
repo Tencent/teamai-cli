@@ -4,13 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   setStderrOnly: vi.fn(() => false),
 }));
 
-import { loadLocalConfigForScope, refreshRoleAssignment, saveLocalConfigForScope } from '../config.js';
-import { log } from '../utils/logger.js';
+import { loadLocalConfigForScope, loadMemberSettings, markMemberSettingsWritten, refreshRoleAssignment, saveLocalConfigForScope } from '../config.js';
+import type { LocalConfig, MemberWorkflowSettingsSchema } from '../types.js';
+import { log } from '@teamai/shared/log';
 
 function writeConfig(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -67,6 +68,38 @@ describe('member settings overlay', () => {
     });
   });
 
+  it('reads the labels this machine declares in workflows.labels', async () => {
+    writeConfig(machineConfig, { workflows: { labels: ['computer-use', 'gpu'] } });
+    writeConfig(projectConfig, {
+      repo: { localPath: path.join(home, 'team-repo'), remote: 'https://example.test/team.git' },
+      username: 'member',
+      scope: 'project',
+      projectRoot,
+    });
+
+    expect(await loadLocalConfigForScope('project', projectRoot)).toMatchObject({ workflows: { labels: ['computer-use', 'gpu'] } });
+  });
+
+  it('reads every workflows key this machine sets, each through its schema', async () => {
+    // One valid value per key of the schema: a key added to it fails the type check here until it has one.
+    const valid: { [K in keyof typeof MemberWorkflowSettingsSchema.shape]-?: unknown } = {
+      tools: { default: 'codex' },
+      max_parallel: 3,
+      idle_timeout: '10m',
+      auto_approve: true,
+      sandbox: true,
+      allow: { network: false, env: ['CI'] },
+      labels: ['gpu'],
+      retention: '7d',
+      driver: 'local',
+      drivers: { sandboxed: { runtimes: { sandbox: { max_parallel: 2 } } } },
+    };
+
+    writeConfig(machineConfig, { workflows: valid });
+
+    expect((await loadMemberSettings(machineConfig)).workflows).toEqual(valid);
+  });
+
   it('does not persist machine-only values when saving a workspace config', async () => {
     writeConfig(machineConfig, {
       recallEnabled: false,
@@ -91,6 +124,29 @@ describe('member settings overlay', () => {
     expect(saved).toMatchObject({ workflows: { tools: { review: 'claude' } } });
     expect((saved.workflows as Record<string, unknown>).tools).not.toHaveProperty('default');
     expect((saved.workflows as Record<string, unknown>).max_parallel).toBeUndefined();
+  });
+
+  it.each([
+    ['', (config: LocalConfig) => config],
+    [', even once another setting is marked written', (config: LocalConfig) => markMemberSettingsWritten(config, { recallEnabled: true })],
+  ])('refuses to save a workspace config whose member setting changed without being marked written%s, naming it', async (_case, mark) => {
+    writeConfig(machineConfig, { recallEnabled: false });
+    writeConfig(projectConfig, {
+      repo: { localPath: path.join(home, 'team-repo'), remote: 'https://example.test/team.git' },
+      username: 'member',
+      scope: 'project',
+      projectRoot,
+      workflows: { tools: { review: 'claude' } },
+    });
+    const loaded = await loadLocalConfigForScope('project', projectRoot);
+    if (!loaded?.workflows) throw new Error('the workspace config did not load');
+    const before = fs.readFileSync(projectConfig, 'utf8');
+
+    loaded.ai = { tool: 'codex' };
+    loaded.workflows.tools.review = 'codex';
+
+    await expect((async () => saveLocalConfigForScope(mark(loaded), 'project', projectRoot))()).rejects.toThrow(/member settings ai, workflows /);
+    expect(fs.readFileSync(projectConfig, 'utf8')).toBe(before);
   });
 
   it('fails closed when a workflow policy value has the wrong type', async () => {

@@ -10,7 +10,8 @@ import type { CiStatus, PullRequestRef } from '../providers/types.js';
 import { sanitizePrUrl, type PrUrl } from './pr-url.js';
 import type { DeliveryKey, UnresolvedCreate } from './delivery-schema.js';
 import type { DeliveryFailure } from './step-state.js';
-import { fetchMissingCommits, git, protectedPaths } from './worktree.js';
+import { fetchMissingCommits, git, gitAnswer, protectedPaths } from './worktree.js';
+import { retryCommand } from './runtimes/retry-command.js';
 
 /** Everything a delivery needs, read from the run under its lock. */
 export interface DeliveryJob {
@@ -301,9 +302,12 @@ async function contains({ runId, checkout, key }: DeliveryJob, { commit, ancesto
 
   // A commit the checkout holds brings its history, so an ancestor still missing is not in it.
   if (fetched.missing.length > 0) return { contains: false };
-  const { code } = await git(checkout, ['merge-base', '--is-ancestor', ancestor, commit]);
+  const contained = gitAnswer(await git(checkout, ['merge-base', '--is-ancestor', ancestor, commit]));
 
-  return code === 0 || code === 1 ? { contains: code === 0 } : { fault: { kind: 'unreadable' } };
+  // Only a git that ran and said no at exit 1 answers no: 128 is a git that failed, and a git that did not start said nothing.
+  if (contained.said === 'yes') return { contains: true };
+
+  return contained.said === 'no' && contained.result.code === 1 ? { contains: false } : { fault: { kind: 'unreadable' } };
 }
 
 const LISTED_FILES = 20;
@@ -318,7 +322,7 @@ function listedFiles(files: string[]): string {
 export function deliveryFailure({ runId, key, recordedHead, openedBy }: Pick<DeliveryJob, 'runId' | 'key' | 'recordedHead' | 'openedBy'>, fault: DeliveryFault): DeliveryFailure {
   const { step, branch } = key;
   const head = recordedHead ?? key.head;
-  const retry = `teamai workflow retry ${runId} ${step}`;
+  const retry = retryCommand({ run: runId, step });
 
   switch (fault.kind) {
     case 'no_checkout':
@@ -337,7 +341,7 @@ export function deliveryFailure({ runId, key, recordedHead, openedBy }: Pick<Del
         message: `Step "${step}" changed protected paths against the run base: ${listedFiles(fault.files)}. TeamAI delivers no pull request that changes CI, hooks or agent configuration. The work is kept on origin in branch ${branch}. Have the step leave those paths alone, then run: ${retry}`,
       };
     case 'later_protected_path': {
-      const rerun = openedBy ? `. Or, once workflow step "${openedBy}" has stopped, run its steps again in a new branch: teamai workflow retry ${runId} ${openedBy}` : '';
+      const rerun = openedBy ? `. Or, once workflow step "${openedBy}" has stopped, run its steps again in a new branch: ${retryCommand({ run: runId, step: openedBy })}` : '';
 
       return {
         code: 'delivery_failed',

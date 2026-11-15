@@ -15,7 +15,7 @@ import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
 import { collectEvidence, evidencePlan } from '../scorers/scoring-evidence.js';
 import { readRun } from '../workflow/store.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import { AgentSession } from '../session-flow/agent-session.js';
 import { leaseNext, reportAttempt, startRun, type NextOptions } from '../workflow/engine.js';
 import { scoreEvidenceDir } from './helpers/score-run.js';

@@ -1,10 +1,10 @@
 import { realpath } from 'node:fs/promises';
 import { locate, writable, writesOf, type Install } from '../locate.js';
-import { realHost, toolHome, type Host } from '../tool-home.js';
-import { isToolId, skillsFollowSession } from '../tools.js';
+import { realHost, toolHomeOf, type Host } from '../tool-home.js';
+import { skillsFollowSession } from '../tool-registry.js';
 import type { State } from '../types.js';
 import { samePath } from '../utils/agent-path.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 type CheckoutRecord = NonNullable<State['lastPullByWorkspace']>[string];
 
@@ -67,7 +67,12 @@ export async function placesOf(install: Install, host: Host = realHost()): Promi
 export function sessionToolHomesOf(current: PlacesRecord, host: Host = realHost()): SessionToolHomes {
   const tools = new Set(Object.values(current).flatMap((places) => Object.keys(places)));
 
-  return Object.fromEntries([...tools].sort().filter(isToolId).filter(skillsFollowSession).map((tool) => [tool, toolHome(tool, host)]));
+  return Object.fromEntries([...tools].sort().filter(skillsFollowSession)
+    .flatMap((tool) => {
+      const home = toolHomeOf(tool, host)?.dir;
+
+      return home === undefined ? [] : [[tool, home]];
+    }));
 }
 
 /**

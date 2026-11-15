@@ -326,6 +326,14 @@ describe('StateSchema pushedEnvVars', () => {
   });
 });
 
+describe('StateSchema claudeMdExcludes', () => {
+  // Its folder is the configured Claude settings file's, which only the team config gives.
+  it('keeps the one list an older release kept as it is', () => {
+    const result = StateSchema.parse({ lastPullByWorkspace: { key: { rev: 'r1', targets: ['claude'], claudeMdExcludes: ['/ws/CLAUDE.md'] } } });
+    expect(result.lastPullByWorkspace?.key?.claudeMdExcludes).toEqual(['/ws/CLAUDE.md']);
+  });
+});
+
 describe('StateSchema update fields', () => {
   it('should default lastUpdateCheck to null', () => {
     const result = StateSchema.parse({});

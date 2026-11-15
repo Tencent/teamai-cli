@@ -7,7 +7,7 @@ import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -34,12 +34,20 @@ vi.mock('../utils/fs.js', async (importOriginal) => {
   };
 });
 
+vi.mock('@teamai/shared/regular-file', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@teamai/shared/regular-file')>();
+  return { ...actual, moveRegularTree: vi.fn(actual.moveRegularTree) };
+});
+
 import { planMigration, runMigration, maybeMigrate, queueKeptInCheckout } from '../migrate.js';
 import { readConfigFrom, saveLocalConfigForScope } from '../config.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { projectDataHome } from '../utils/partition.js';
 import { queueLockPath, savePendingLearning, setAsideQueueOnModeSwitch, type QueueWrite } from '../utils/pending-learnings.js';
 import { acquireLock, releaseLock } from '../update.js';
+import { moveRegularTree } from '@teamai/shared/regular-file';
+
+const actualMove = async () => (await vi.importActual<typeof import('@teamai/shared/regular-file')>('@teamai/shared/regular-file')).moveRegularTree;
 
 /**
  * Start a queue write as a contribute already running beside the migration
@@ -1095,8 +1103,8 @@ describe('superseded install (#808)', () => {
     if (plan?.mode !== 'superseded') throw new Error('expected a superseded plan');
 
     // As Windows refuses to move a directory another process has open.
-    const move = fse.move.bind(fse);
-    const spy = vi.spyOn(fse, 'move').mockImplementation(async (src: string, dest: string) => {
+    const move = await actualMove();
+    const spy = vi.mocked(moveRegularTree).mockImplementation(async (src: string, dest: string) => {
       if (path.basename(src) === 'team-repo') throw new Error('EBUSY: resource busy or locked');
       return move(src, dest);
     });
@@ -1130,8 +1138,8 @@ describe('superseded install (#808)', () => {
     if (plan?.mode !== 'superseded') throw new Error('expected a superseded plan');
 
     // As an older `contribute` running beside the migration queues one.
-    const move = fse.move.bind(fse);
-    const spy = vi.spyOn(fse, 'move').mockImplementation(async (src: string, dest: string) => {
+    const move = await actualMove();
+    const spy = vi.mocked(moveRegularTree).mockImplementation(async (src: string, dest: string) => {
       await move(src, dest);
       if (src === queue) await fse.outputFile(path.join(queue, 'late.md'), '# late\n');
     });
@@ -1176,8 +1184,8 @@ describe('superseded install (#808)', () => {
 
     // Between the last queue check and the config.yaml move.
     let late: { result: Promise<QueueWrite> } | undefined;
-    const move = fse.move.bind(fse);
-    const spy = vi.spyOn(fse, 'move').mockImplementation(async (src: string, dest: string) => {
+    const move = await actualMove();
+    const spy = vi.mocked(moveRegularTree).mockImplementation(async (src: string, dest: string) => {
       if (src === path.join(legacyDir, 'config.yaml') && !late) {
         late = await startBeside(() => savePendingLearning(config, 'late.md', '# late\n'));
       }

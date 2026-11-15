@@ -26,13 +26,13 @@
 import path from 'node:path';
 import { hookSourceMatches } from './utils/hook-source.js';
 import { writeIfChanged, pathExists, readFileSafe, remove } from './utils/fs.js';
-import { probeBinary } from './utils/exec.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { earlierHookAdapterDir, hookAdapterDir } from './locate.js';
 import { toolHome } from './tool-home.js';
 import { isGitExcludeEnabled, type LocalConfig, type TeamaiConfig } from './types.js';
 import { resolveCliEntry } from './builtin-hooks.js';
 import { bridgedTeamHookFile } from './bridged-team-hooks.js';
+import { opencodeMajorVersion } from './opencode-version.js';
 
 /** Plugin directory name under an OpenCode config dir. OpenCode scans both
  *  `plugin/` and `plugins/`; we use the singular, matching the docs examples. */
@@ -173,7 +173,7 @@ const TeamaiHooks = async ({ directory, worktree }) => {
           }
         };
         const timer = setTimeout(() => {
-          try { child.kill(); } catch {}
+          try { if (child.pid !== undefined) child.kill(); } catch {}
           out = '';
           finish();
         }, TEAM_HOOKS_TIMEOUT_MS);
@@ -485,28 +485,6 @@ export async function injectOpencodeHooks(baseDir: string, scope: 'project' | 'u
   } else {
     log.debug(`teamai OpenCode hook already up-to-date in ${file}`);
   }
-}
-
-const majorVersions = new Map<string, Promise<number>>();
-
-/**
- * OpenCode's major version, from `<binary> --version` (`opencode v2.0.24` on
- * V2, `1.18.35` on V1), asked once per binary per run. 1 when the binary is
- * absent or prints no version.
- */
-export function opencodeMajorVersion(binary = 'opencode'): Promise<number> {
-  let version = majorVersions.get(binary);
-
-  if (!version) {
-    version = probeBinary(binary).then((output) => {
-      const match = /(\d+)\.\d+/.exec(output);
-
-      return match ? Number(match[1]) : 1;
-    });
-    majorVersions.set(binary, version);
-  }
-
-  return version;
 }
 
 /**

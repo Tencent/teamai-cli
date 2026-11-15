@@ -30,7 +30,7 @@ vi.mock('../roles.js', () => ({
     listRoleIds: vi.fn().mockReturnValue(['hai', 'pm']),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
     log: {
         info: vi.fn(),
         success: vi.fn(),
@@ -57,7 +57,7 @@ import {
     loadStateForScope,
     saveStateForScope,
 } from '../config.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { LocalConfig } from '../types.js';
 
 describe('rolesSet — state invalidation', () => {

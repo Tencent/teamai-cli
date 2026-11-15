@@ -5,7 +5,7 @@ import {
 } from '../resources/agent-format.js';
 import { ruleFileExtensionForTool, usesMdcRules } from '../resources/rule-format.js';
 import { TeamaiConfigSchema } from '../types.js';
-import { AGENT_TOOLS } from '../tools.js';
+import { AGENT_TOOLS } from '../tool-registry.js';
 
 describe('Qoder support', () => {
   afterEach(() => vi.unstubAllEnvs());

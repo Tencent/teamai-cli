@@ -1,0 +1,17 @@
+schemaVersion: v1alpha1
+name: related-recall
+description: Pilot for declared relations with recall enabled on both arms.
+repo: PROJECT_URL
+defaults:
+  tool: claude
+  model: PILOT_MODEL
+  team: WITH_RELATIONS_COMMIT
+arms:
+  - name: with-relations
+    recall: true
+  - name: without-relations
+    team: WITHOUT_RELATIONS_COMMIT
+    recall: true
+repetitions: 1
+parallel: 1
+timeout: 30m

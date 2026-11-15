@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -7,7 +8,7 @@ import { getCurrentPackageName, getCurrentVersion } from './package-info.js';
 import { isVoltaPackageImage, prefixFromEntryPath } from './install-prefix.js';
 import { compareVersions } from './version.js';
 import { getTeamaiHomeDir } from './types.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /**
  * A TeamAI copy this machine has run. The record is local only: it never leaves
@@ -52,7 +53,7 @@ export function packageDirFromEntry(entry: string): string {
 export function readInstallations(): InstallationRecord[] {
   try {
     const file = z.object({ installations: z.array(z.unknown()).default([]) })
-      .safeParse(JSON.parse(fs.readFileSync(installationsPath(), 'utf-8')));
+      .safeParse(JSON.parse(readRegularFileSync(installationsPath(), 'utf-8')));
 
     if (!file.success) return [];
 
@@ -199,7 +200,7 @@ export function selectOtherInstallation(latest: string, runningEntry: string): I
 
 export function readInstalledVersion(pkgDir: string): string | null {
   try {
-    const parsed = z.object({ version: z.string() }).safeParse(JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8')));
+    const parsed = z.object({ version: z.string() }).safeParse(JSON.parse(readRegularFileSync(path.join(pkgDir, 'package.json'), 'utf-8')));
 
     return parsed.success ? parsed.data.version : null;
   } catch {

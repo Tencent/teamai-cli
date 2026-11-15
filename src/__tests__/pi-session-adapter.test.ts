@@ -2,8 +2,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PiAdapter } from '../session-flow/adapters/pi.js';
-import { ToolUnavailableError } from '../session-flow/adapters/base.js';
+import { BUILT_IN_TOOLS } from '@teamai/tool-definitions';
+import { ToolUnavailableError, type AgentAdapter } from '@teamai/tool-core/sessions/base';
 import { ADAPTER_REGISTRY, getAdapter, listInstalledPlatforms } from '../session-flow/adapters/index.js';
 
 const roots: string[] = [];
@@ -13,7 +13,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(platform: 'pi' | 'omp', extra: Record<string, unknown>[] = []): { adapter: PiAdapter; file: string; cwd: string; id: string } {
+function fixture(platform: 'pi' | 'omp', extra: Record<string, unknown>[] = []): { adapter: AgentAdapter; file: string; cwd: string; id: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `teamai-${platform}-`));
   roots.push(root);
   const dir = path.join(root, '--work-app--');
@@ -36,10 +36,10 @@ function fixture(platform: 'pi' | 'omp', extra: Record<string, unknown>[] = []):
     ...extra,
   ];
   fs.writeFileSync(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n{partial`, 'utf8');
-  return { adapter: new PiAdapter(platform, root), file, cwd, id };
+  return { adapter: BUILT_IN_TOOLS.pi.platforms[platform].adapter(root), file, cwd, id };
 }
 
-describe('PiAdapter', () => {
+describe('the pi and omp session platforms', () => {
   it.each(['pi', 'omp'] as const)('lists and reads the active v3 branch for %s', async (platform) => {
     const { adapter, file, cwd, id } = fixture(platform);
     const [meta] = await adapter.listConversations(cwd);
@@ -118,7 +118,8 @@ describe('PiAdapter', () => {
     fs.mkdirSync(projectStore);
     fs.writeFileSync(path.join(project, '.pi', 'settings.json'), JSON.stringify({ sessionDir: projectStore }));
 
-    const adapter = new PiAdapter('pi', missingGlobalStore);
+    vi.stubEnv('PI_CODING_AGENT_SESSION_DIR', '');
+    const adapter = BUILT_IN_TOOLS.pi.platforms.pi.adapter(missingGlobalStore);
     expect(adapter.isReady(project)).toBe(true);
     expect(adapter.isReady(path.join(root, 'other-project'))).toBe(false);
 
@@ -135,7 +136,8 @@ describe('PiAdapter', () => {
     const { file, cwd, id } = fixture('pi');
     fs.mkdirSync(path.join(cwd, '.pi'), { recursive: true });
     fs.writeFileSync(path.join(cwd, '.pi', 'settings.json'), JSON.stringify({ sessionDir: path.join(cwd, 'other') }));
-    const adapter = new PiAdapter('pi', path.dirname(path.dirname(file)), false);
+    vi.stubEnv('PI_CODING_AGENT_SESSION_DIR', path.dirname(path.dirname(file)));
+    const adapter = BUILT_IN_TOOLS.pi.platforms.pi.adapter(path.dirname(path.dirname(file)));
 
     expect((await adapter.readSession({ sessionId: id, projectPath: cwd })).sessionId).toBe(id);
   });

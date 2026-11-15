@@ -122,7 +122,7 @@ function member(name: string) {
     child.on('close', (code) => resolve({ code, output }));
     child.stdin.end('');
   });
-  return { cli, config: path.join(home, '.teamai', 'projects', projectSlug(root), 'config.yaml') };
+  return { cli, config: path.join(home, '.teamai', 'projects', projectSlug(root), 'config.yaml'), machineConfig: path.join(home, '.teamai', 'config.yaml') };
 }
 
 const INITS: Array<[string, () => string[]]> = [
@@ -130,6 +130,27 @@ const INITS: Array<[string, () => string[]]> = [
   ['self mode', () => ['init', '.', '--provider', 'git', '--agent', 'claude']],
   ['an HTTP team repo', () => ['init', '--http', server.url, '--token', API_KEY, '--agent', 'claude']],
 ];
+
+// The answer step and the prompt step both run on ai.tool: init --agent names it, so neither falls back on another tool.
+describe('init --agent names the member\'s AI tool', () => {
+  it.each(INITS)('sets ai.tool to the first --agent that runs steps, on %s', async (name, args) => {
+    const m = member(`agent-tool-${name.replaceAll(' ', '-')}`);
+    const first = await m.cli([...args().slice(0, -2), '--agent', 'cursor,codex,claude']);
+    expect(first.code, first.output).toBe(0);
+
+    expect(YAML.parse(fs.readFileSync(m.config, 'utf8'))).toMatchObject({ ai: { tool: 'codex' } });
+  }, 120_000);
+
+  it('leaves ai.tool unset when the machine already names the member\'s tool', async () => {
+    const m = member('agent-tool-machine');
+    fs.mkdirSync(path.dirname(m.machineConfig), { recursive: true });
+    fs.writeFileSync(m.machineConfig, YAML.stringify({ ai: { tool: 'claude' } }));
+    const first = await m.cli(['init', '.', '--provider', 'git', '--agent', 'codex']);
+    expect(first.code, first.output).toBe(0);
+
+    expect(YAML.parse(fs.readFileSync(m.config, 'utf8'))).not.toHaveProperty('ai');
+  }, 120_000);
+});
 
 describe('init --force in a workspace keeps the member\'s own settings (#1458)', () => {
   it.each(INITS)('keeps every setting the member wrote, on %s', async (name, args) => {

@@ -3,6 +3,7 @@
  * once into the reply its row takes, and a lease, read as the step this driver runs.
  */
 import { z } from 'zod';
+import { WORKFLOW_DIR_ENV } from '@teamai/runtime-protocol';
 import { LeaseWireSchema } from '../../lease-wire.js';
 import { StartedRunSchema, type StartedRun } from '../../protocol.js';
 import { FailureSchema } from '../../step-state.js';
@@ -16,7 +17,7 @@ export function readLease(raw: unknown): ReadLease | undefined {
   const read = LeaseWireSchema.safeParse(raw);
 
   if (!read.success) return undefined;
-  const { attempt, step: id, revision, expiresAt, command, env, envScope, prompt, workspace, agent, model, defaultModel, output, interactive, readOnly, requires, confined } = read.data;
+  const { attempt, step: id, revision, expiresAt, command, env, envScope, prompt, workspace, agent, model, defaultModel, output, interactive, readOnly, requires, confined, session } = read.data;
   let lease: ReadLease;
 
   if (command !== undefined) {
@@ -49,6 +50,13 @@ export function readLease(raw: unknown): ReadLease | undefined {
     if (output !== undefined) lease.output = output;
 
     if (confined) lease.confined = confined;
+
+    if (session) lease.session = { tool: session.tool, id: session.id };
+
+    // The child's shell is the session's, so its brief names the folder the env would.
+    const folder = env?.[WORKFLOW_DIR_ENV];
+
+    if (folder !== undefined) lease.folder = folder;
   }
 
   if (expiresAt !== undefined) lease.expiresAt = expiresAt;
@@ -66,7 +74,7 @@ const NextDataSchema = z.object({
     step: z.string(), pass: z.number().int(), kind: z.enum(['approve', 'choose']), message: z.string(), options: z.array(z.string()), default: z.string().optional(), required: z.boolean(),
   }).optional(),
   wait: z.object({
-    reason: z.string(), delivering: z.array(z.string()).optional(), held: z.array(z.object({ step: z.string(), missing: z.array(z.string()) })).optional(),
+    reason: z.string(), delivering: z.array(z.string()).optional(), held: z.array(z.object({ step: z.string(), missing: z.array(z.string()), limitedTool: z.string().optional() })).optional(),
   }).optional(),
   done: z.object({ outcome: z.enum(['succeeded', 'failed', 'cancelled']), failure: FailureSchema.optional(), prs: z.array(z.string()).optional(), outputs: z.record(z.string(), z.json()).optional(), notPublished: z.object({ code: z.string() }).optional() }).optional(),
 });

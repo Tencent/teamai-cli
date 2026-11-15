@@ -247,6 +247,90 @@ describe('hook runs and the scope they belong to (#748)', () => {
   });
 });
 
+describe('a hook of a tool instance', () => {
+  afterEach(async () => {
+    const { resetToolInstancesForTests } = await import('../tool-instances.js');
+    resetToolInstancesForTests();
+  });
+
+  it.skipIf(process.platform === 'win32')('records what its login environment sees of HTTP enrolment, as the tool it extends does, so its next prompt can take the fast path', async () => {
+    userScope();
+    const teamRepo = path.join(teamaiHome(), 'team-repo');
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
+    fs.mkdirSync(path.join(teamRepo, 'tools'));
+    fs.writeFileSync(path.join(teamRepo, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n');
+    const cwd = gitRepo('project-i');
+
+    const stdinFile = path.join(tmp, 'stdin-instance.json');
+    fs.writeFileSync(stdinFile, JSON.stringify({ session_id: 'sid-i', cwd, hook_event_name: 'UserPromptSubmit', prompt: 'hello' }));
+    // The foreground pass alone: in a host it is a process of its own, and the background pass it starts records nothing.
+    await hookDispatchCli('prompt-submit', 'acme-claude', '*', { stdinFile });
+
+    expect(JSON.parse(fs.readFileSync(path.join(teamaiHome(), 'sessions', 'sid-i.http-enrolment.json'), 'utf8'))).toMatchObject({ cwd });
+  });
+
+  it.each([
+    ['that shares Claude\'s home runs no handler', '', false],
+    ['with a home of its own, which Cursor never loads, runs its handlers', 'home: { dir: .acme-claude }\n', true],
+  ])('inside Cursor while Cursor has teamai hooks of its own, a Claude instance %s', async (_, home, runs) => {
+    userScope();
+    const teamRepo = path.join(teamaiHome(), 'team-repo');
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: acme\nrepo: acme/team\n');
+    fs.mkdirSync(path.join(teamRepo, 'tools'));
+    fs.writeFileSync(path.join(teamRepo, 'tools', 'acme-claude.yaml'), `schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\n${home}`);
+    for (const skill of ['skill-a', 'skill-g']) fs.cpSync(path.join(tmp, 'home', '.claude', 'skills', skill), path.join(tmp, 'home', '.acme-claude', 'skills', skill), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'home', '.cursor'));
+    fs.writeFileSync(path.join(tmp, 'home', '.cursor', 'hooks.json'), JSON.stringify({ hooks: { postToolUse: [{ command: 'teamai hook-dispatch post-tool-use --tool cursor' }] } }));
+    const used = (skill: string) => ({ session_id: `sid-${skill}`, cwd: tmp, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill } });
+
+    await hook('post-tool-use', '*', used('skill-a'), 'acme-claude');
+    vi.stubEnv('CURSOR_VERSION', '1.2.3');
+    try {
+      await hook('post-tool-use', '*', used('skill-b'), 'claude');
+      await hook('post-tool-use', '*', used('skill-g'), 'acme-claude');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const usage = fs.readFileSync(path.join(teamaiHome(), 'user-usage.jsonl'), 'utf-8');
+    expect(usage).toContain('skill-a');
+    expect(usage).not.toContain('skill-b');
+    expect(usage.includes('skill-g')).toBe(runs);
+  });
+
+  it.each([
+    { file: 'the project\'s .claude/settings.json Cursor loads', toolPaths: '', runs: false },
+    // The team's paths of Claude put the instance's project settings where Cursor reads none.
+    { file: 'the settings file the team names for Claude, which Cursor does not load', toolPaths: 'toolPaths:\n  claude: { skills: .claude/skills, settings: .claude-team/settings.json }\n', runs: true },
+  ])('inside Cursor while Cursor has teamai hooks of its own, a project\'s Claude instance with a home of its own, whose hooks sit in $file, runs its handler: $runs', async ({ toolPaths, runs }) => {
+    const root = gitRepo('project-c');
+    const dataHome = await resolveProjectDataHome(root);
+    const teamRepo = path.join(dataHome, 'team-repo');
+    fs.mkdirSync(path.join(teamRepo, 'tools'), { recursive: true });
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), `team: acme\nrepo: acme/team\n${toolPaths}`);
+    fs.writeFileSync(path.join(teamRepo, 'tools', 'acme-claude.yaml'), 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n');
+    await saveLocalConfigForScope({
+      repo: { localPath: teamRepo, remote: 'https://example.test/acme/team.git' },
+      username: 'tester', scope: 'project', projectRoot: root, additionalRoles: [], dataHome,
+    });
+    for (const skill of ['skill-a', 'skill-g']) fs.cpSync(path.join(tmp, 'home', '.claude', 'skills', skill), path.join(root, '.claude', 'skills', skill), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'home', '.cursor'));
+    fs.writeFileSync(path.join(tmp, 'home', '.cursor', 'hooks.json'), JSON.stringify({ hooks: { postToolUse: [{ command: 'teamai hook-dispatch post-tool-use --tool cursor' }] } }));
+    const used = (skill: string) => ({ session_id: `sid-${skill}`, cwd: root, hook_event_name: 'PostToolUse', tool_name: 'Skill', tool_input: { skill } });
+
+    await hook('post-tool-use', '*', used('skill-a'), 'acme-claude');
+    vi.stubEnv('CURSOR_VERSION', '1.2.3');
+    try {
+      await hook('post-tool-use', '*', used('skill-g'), 'acme-claude');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const usage = fs.readFileSync(path.join(dataHome, 'usage.jsonl'), 'utf-8');
+    expect([usage.includes('skill-a'), usage.includes('skill-g')]).toEqual([true, runs]);
+  });
+});
+
 describe('skill use through the CLI (#1221)', () => {
   it('counts a Codex `$name` mention and the `cat` of its SKILL.md in one turn once', async () => {
     userScope();

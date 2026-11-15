@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { copyRegularFile } from '@teamai/shared/regular-file';
 import { ResourceHandler } from './base.js';
 import { loadStateForScope } from '../config.js';
 import { isSelfMode, type LocalConfig, type ResourceItem, type ResourceType, type State, type TeamaiConfig } from '../types.js';
@@ -225,7 +226,7 @@ export async function pushRepoResourceItem(
     // Byte-level copy: a PNG or other binary under docs/ must survive intact.
     // readFileSafe/writeFile are UTF-8 text I/O and corrupt non-text bytes
     // (e.g. 0x89 → U+FFFD → 0xEF 0xBF 0xBD on round-trip).
-    await fs.copyFile(originalSource, dest);
+    await copyRegularFile(originalSource, dest);
     const repoRoot = path.resolve(localConfig.repo.localPath);
 
     if (originalSource.startsWith(repoRoot + path.sep)) {

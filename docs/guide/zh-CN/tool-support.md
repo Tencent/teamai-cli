@@ -141,3 +141,19 @@ teamai 为每个工具把每类 Agent 资源写到哪里，以及工具读取哪
 33. agy 1.4.10 session read 2026-10-31; it names no model, so its tokens show unpriced
 34. invoke_subagent starts a fresh conversation that gets only its prompt (agy 1.4.8); no session variable, so the session names its tool with --tools; not run
 35. runs from teamai's team-hook bridge, which can block a tool call; the dispatcher hands it a Claude payload
+
+## 工具实例
+
+团队或成员只能为以下工具添加[实例](./reference.md#团队工具tools)，teamai 拒绝其他任何工具的实例：
+
+- Claude Code (`claude`)
+- Codex CLI (`codex`)
+
+## 在迁移后的主目录启动的工作流步骤
+
+工作流步骤在以下工具上启动时，即使 shell 没有设其后列出的变量，或把它设为另一个目录，也会把它设为 teamai 写入的主目录：`init` 记录的根目录（`toolRoots`），或[记录的主目录](./reference.md#记录的工具主目录teamaitool-homesjson)。记录的目录不存在时，步骤不会启动该工具，失败信息会说明如何修正记录。其他工具沿用 shell 的变量，所以请在设了这些变量的 shell 里启动运行：
+
+- Claude Code (`claude`): `CLAUDE_CONFIG_DIR`
+- Codex CLI (`codex`): `CODEX_HOME`
+- Pi Coding Agent (`pi`): `PI_CODING_AGENT_DIR`
+- CodeBuddy (`codebuddy`): `CODEBUDDY_CONFIG_DIR`

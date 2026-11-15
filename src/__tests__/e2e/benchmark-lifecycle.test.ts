@@ -229,7 +229,7 @@ describe('a benchmark run once it has started', () => {
     expect(resumed.code).toBe(1);
     expect(envelope(resumed).error).toMatchObject({
       code: 'benchmark_plan_outdated',
-      message: `Run ${runId} measures a benchmark plan of schemaVersion 1, which the teamai that started it froze, and this teamai reads only schemaVersion 2, so the run cannot go on here. Run it with the teamai that started it, or start the suite again with teamai benchmark run fix.`,
+      message: `Run ${runId} measures a benchmark plan of schemaVersion 1, which the teamai that started it froze, and this teamai reads only schemaVersion 3, so the run cannot go on here. Run it with the teamai that started it, or start the suite again with teamai benchmark run fix.`,
     });
     expect(fixture.toolLaunches()).toEqual([]);
   }, 120_000);

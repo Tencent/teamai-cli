@@ -19,7 +19,7 @@ vi.mock('node:os', async (importOriginal) => {
 
 import { getAdapter, listInstalledPlatforms } from '../session-flow/adapters/index.js';
 import { AgentSession } from '../session-flow/agent-session.js';
-import type { Session } from '../session-flow/ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 
 const SESSION_ID = '11111111-2222-4333-8444-555555555555';
 

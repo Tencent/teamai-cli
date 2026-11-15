@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -20,7 +20,7 @@ vi.mock('../utils/logger.js', () => ({
   })),
 }));
 
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { reconcileHooks } from '../hooks.js';
 
 async function zcodeHome(): Promise<{ home: string; configPath: string }> {

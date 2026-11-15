@@ -7,21 +7,9 @@
  * the content in a <thinking> tag.
  */
 
-import { SESSION_PLATFORM_FACTS } from './adapters/platform-facts.js';
-import type { Session, ContentBlock } from './ir.js';
+import type { Session, ContentBlock } from '@teamai/tool-core/sessions/ir';
+import { platformFactsOf } from '../tool-registry.js';
 import { getAdapter, listAvailablePlatforms, listInstalledPlatforms } from './adapters/index.js';
-
-export const THINKING_SUPPORT: Record<string, boolean> = Object.fromEntries(
-  Object.entries(SESSION_PLATFORM_FACTS).map(([name, facts]) => [name, facts.thinking]),
-);
-
-export const IMAGE_SUPPORT: Record<string, boolean> = Object.fromEntries(
-  Object.entries(SESSION_PLATFORM_FACTS).map(([name, facts]) => [name, facts.images]),
-);
-
-export const NATIVE_TOOLS: Record<string, ReadonlySet<string>> = Object.fromEntries(
-  Object.entries(SESSION_PLATFORM_FACTS).map(([name, facts]) => [name, facts.nativeTools]),
-);
 
 // ---------------------------------------------------------------------------
 // FidelityReport
@@ -55,9 +43,11 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
   let imageCount = 0;
   const unknownTools = new Set<string>();
 
-  const targetSupportsThinking = THINKING_SUPPORT[targetPlatform] ?? true;
-  const targetSupportsImage = IMAGE_SUPPORT[targetPlatform] ?? false;
-  const nativeTools = NATIVE_TOOLS[targetPlatform] ?? new Set();
+  // An instance's platform has the facts of the platform it extends.
+  const facts = platformFactsOf(targetPlatform);
+  const targetSupportsThinking = facts?.thinking ?? true;
+  const targetSupportsImage = facts?.images ?? false;
+  const nativeTools: ReadonlySet<string> = facts?.nativeTools ?? new Set();
 
   for (const msg of session.messages) {
     for (const block of msg.content) {
@@ -137,9 +127,7 @@ export function fidelityFromSession(session: Session, targetPlatform: string): F
 // ---------------------------------------------------------------------------
 
 export function degradeThinkingBlocks(session: Session, targetPlatform: string): Session {
-  const targetSupportsThinking = THINKING_SUPPORT[targetPlatform] ?? true;
-
-  if (targetSupportsThinking) return session;
+  if (platformFactsOf(targetPlatform)?.thinking ?? true) return session;
 
   return {
     ...session,

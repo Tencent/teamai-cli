@@ -11,7 +11,7 @@ function assertValidJs(src: string): void {
   expect(() => new vm.Script(body)).not.toThrow();
 }
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 
@@ -22,7 +22,7 @@ import {
   OMP_HOOK_FILE,
 } from '../omp-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { loadOmpExtension, type ExtensionDispatch } from './helpers/pi-extensions.js';
 import { hookAdapterDir } from '../locate.js';
 import { bridgedTeamHookFile } from '../bridged-team-hooks.js';

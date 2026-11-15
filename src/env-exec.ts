@@ -10,13 +10,13 @@
  * piped. No value is written anywhere: the child gets it in its environment
  * only.
  */
-import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
-import crossSpawn from 'cross-spawn';
+import type { ChildProcess } from 'node:child_process';
+import { spawnCommand } from '@teamai/shared/exec';
+import { ownGroups, signalChild, signalPid } from '@teamai/shared/process-group';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
 import { resolveConfigForDir } from './config.js';
 import { reportMissingSecrets } from './env-advisories.js';
@@ -27,7 +27,7 @@ import { ENV_KEY_RE, envTable, sameEnvName } from './resources/env-key.js';
 import { envExecBashEnvPath, envLoaderPath, writeEnvExecBashEnv } from './resources/env-loader.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { getDataHome, type GlobalOptions, type LocalConfig } from './types.js';
-import { log, setStderrOnly } from './utils/logger.js';
+import { log, setStderrOnly } from '@teamai/shared/log';
 import { reservedTeamEnvWarning } from './env-reserved.js';
 import { readWorkspaceChildren } from './workspace-children.js';
 import { envAdvice } from './workflow/requirements.js';
@@ -65,17 +65,6 @@ export function commandSignalPolicy(reachesCommand: boolean): CommandSignalPolic
 }
 
 /**
- * Whether `ps -o pgid=,tpgid=` says the process is in its terminal's
- * foreground process group. No controlling terminal prints a tpgid of 0
- * (macOS) or -1 (Linux).
- */
-export function inTerminalForeground(ps: string): boolean {
-  const [pgid, tpgid] = ps.trim().split(/\s+/).map(Number);
-
-  return Number.isInteger(tpgid) && tpgid > 0 && pgid === tpgid;
-}
-
-/**
  * Whether a terminal delivers Ctrl-C to the command as well as to teamai.
  * Windows delivers it to every process on the console. Elsewhere, when `ps`
  * cannot say, teamai takes a SIGINT to be its alone: passing on one the
@@ -85,13 +74,9 @@ export function inTerminalForeground(ps: string): boolean {
 export async function terminalReachesCommand(): Promise<boolean> {
   if (process.platform === 'win32') return true;
 
-  try {
-    const { stdout } = await promisify(execFile)('ps', ['-o', 'pgid=,tpgid=', '-p', String(process.pid)]);
+  const groups = await ownGroups();
 
-    return inTerminalForeground(stdout);
-  } catch {
-    return false;
-  }
+  return groups !== undefined && groups.foreground > 0 && groups.pgid === groups.foreground;
 }
 
 /**
@@ -148,7 +133,7 @@ export function exitLike(outcome: ExecOutcome): void {
     case 'signaled':
       process.exitCode = 128 + os.constants.signals[outcome.signal];
 
-      if (!SURVIVED_SIGNALS.has(outcome.signal)) process.kill(process.pid, outcome.signal);
+      if (!SURVIVED_SIGNALS.has(outcome.signal)) signalPid(process.pid, outcome.signal);
 
       return;
     default: {
@@ -380,9 +365,20 @@ function run(
   const { forwarded, ignored } = commandSignalPolicy(reachesCommand);
 
   return new Promise((resolve) => {
-    // cross-spawn: on Windows, npm installs CLIs as .cmd shims spawn can't start.
-    const child = crossSpawn(file, [...args], { cwd, env, stdio: 'inherit' });
-    const forward = (signal: NodeJS.Signals): void => { child.kill(signal); };
+    // On Windows, npm installs CLIs as .cmd shims, whose arguments spawnCommand escapes for cmd.exe twice.
+    let child: ChildProcess;
+
+    try {
+      child = spawnCommand(file, args, { cwd, env, stdio: 'inherit' });
+    } catch (cause) {
+      // cmd.exe cannot carry the arguments: reported as exit 127, like a command that could not start.
+      log.error(`Could not run ${file}: ${cause instanceof Error ? cause.message : String(cause)}`);
+      resolve({ kind: 'exited', code: 127 });
+
+      return;
+    }
+
+    const forward = (signal: NodeJS.Signals): void => { signalChild(child, signal); };
     const ignore = (): void => {};
 
     for (const signal of forwarded) process.on(signal, forward);

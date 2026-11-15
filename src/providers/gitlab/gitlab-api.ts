@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { z } from 'zod';
 import { GITLAB_HOST } from './repo-url.js';
-import { sanitizeGitUrl } from '../../utils/redact.js';
+import { sanitizeGitUrl } from '@teamai/shared/redact';
 import { endedRequest, mergedAs, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
 
 /**

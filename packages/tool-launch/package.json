@@ -1,0 +1,12 @@
+{
+  "name": "@teamai/tool-launch",
+  "private": true,
+  "type": "module",
+  "description": "How teamai runs a tool's launch profile over a process port it is given: a workflow step's limits and result, without starting a process itself; bundled into teamai-cli.",
+  "exports": {
+    "./call-launch": "./src/call-launch.ts",
+    "./confined-launch": "./src/confined-launch.ts",
+    "./run-step-launch": "./src/run-step-launch.ts",
+    "./testing": "./src/testing/launcher-conformance.ts"
+  }
+}

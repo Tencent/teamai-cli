@@ -3,10 +3,11 @@ import path from 'node:path';
 
 import { detectProjectConfig, loadTeamConfig } from './config.js';
 import { KNOWN_AGENTS } from './known-agents.js';
-import { isAgentDisabled, resolveBaseDir, scopedToolPaths, toolInstallRoot, type LocalConfig } from './types.js';
+import { isAgentDisabled, resolveBaseDir, scopedToolPaths, toolGateRoot, type LocalConfig } from './types.js';
 import { ensureDir, pathExists } from './utils/fs.js';
 import { checkoutForRepoAnchor, resolveAnchors } from './utils/git.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
+import { toolOf } from './tool-registry.js';
 
 /**
  * Relative agent-root paths we are willing to mkdir under projectRoot.
@@ -68,7 +69,7 @@ export async function createProjectToolRoots(options: {
   if (!projectConfig) return;
 
   const enabled = projectConfig.enabledAgents ?? [];
-  const teamConfig = await loadTeamConfig(projectConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(projectConfig.repo.localPath, projectConfig);
   const baseDir = resolveBaseDir(projectConfig);
 
   const rootOf = (id: string): string | undefined => {
@@ -78,9 +79,10 @@ export async function createProjectToolRoots(options: {
     const skillsPath = resolveSkillsPath(id, teamConfig, projectConfig);
 
     if (!skillsPath) return undefined;
-    const root = toolInstallRoot(skillsPath);
+    const root = toolGateRoot(id, skillsPath);
 
-    return isSafeRelativeRoot(root) ? root : undefined;
+    // An instance's home, nested or not, is a directory under the checkout its file declares for it.
+    return isSafeRelativeRoot(root) || root === toolOf(id)?.instance?.home?.dir ? root : undefined;
   };
 
   const ids = requested

@@ -28,7 +28,7 @@ function reconcile(
   return writers[agent](models, fullSnapshot, previous, root, commit);
 }
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),

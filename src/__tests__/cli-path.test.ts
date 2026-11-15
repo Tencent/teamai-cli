@@ -11,7 +11,9 @@ vi.mock('node:child_process', () => ({
   spawnSync: vi.fn(),
 }));
 
-vi.mock('node:fs', () => ({
+// Partial: the launcher's module graph reads fs as it loads.
+vi.mock('node:fs', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:fs')>(),
   existsSync: vi.fn(),
 }));
 
@@ -23,7 +25,7 @@ vi.mock('cross-spawn', () => ({
   default: Object.assign(vi.fn(), { sync: vi.fn() }),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   spinner: () => ({
     start: vi.fn().mockReturnThis(),
@@ -37,7 +39,7 @@ vi.mock('../utils/logger.js', () => ({
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import crossSpawn from 'cross-spawn';
-import { pickWindowsCommand, resolveCliPath } from '../utils/cli-path.js';
+import { pickWindowsCommand, resolveCliPath, resolvePathCommand } from '@teamai/shared/cli-path';
 import { ghExec, isGhInstalled } from '../providers/github/gh-cli.js';
 import { cnbExec, isCnbInstalled } from '../providers/cnb/cnb-cli.js';
 
@@ -161,6 +163,38 @@ describe('resolveCliPath', () => {
     mockedExistsSync.mockReturnValue(false);
     expect(resolveCliPath('gh', 'linux')).toBeNull();
   });
+});
+
+/**
+ * A command a config file names, such as a team tool instance's, must be the program installed on PATH. On Windows,
+ * `where <name>` searches the current directory first, and the current directory is the project checkout.
+ */
+describe('resolvePathCommand', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+  });
+
+  it('asks `where` on Windows for the PATH directories alone, so a file in the checkout does not shadow the installed one', () => {
+    mockedExecFileSync.mockReturnValue('C:\\Tools\\acme\\acme-claude.cmd\r\n');
+    expect(resolvePathCommand('acme-claude', 'win32')).toBe('C:\\Tools\\acme\\acme-claude.cmd');
+    expect(mockedExecFileSync).toHaveBeenCalledWith('where', ['$PATH:acme-claude'], expect.anything());
+  });
+
+  it('looks the name up on PATH on POSIX, as resolveCliPath does', () => {
+    mockedExecFileSync.mockReturnValue('/opt/acme/bin/acme-claude\n');
+    expect(resolvePathCommand('acme-claude', 'linux')).toBe('/opt/acme/bin/acme-claude');
+    expect(mockedExecFileSync).toHaveBeenCalledWith('which', ['acme-claude'], expect.anything());
+  });
+
+  it.each(['./acme-claude', 'bin/acme-claude', String.raw`tools\acme-claude`, 'C:acme-claude', '.:acme-claude', '$PATH:acme-claude', 'acme*', 'acme-claude?', 'acme claude'])(
+    'finds nothing for %s, a path or a pattern `where` reads as a place or a wildcard, and runs no lookup',
+    (command) => {
+      expect(resolvePathCommand(command, 'win32')).toBeNull();
+      expect(resolvePathCommand(command, 'linux')).toBeNull();
+      expect(mockedExecFileSync).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('gh-cli launches the resolved executable', () => {

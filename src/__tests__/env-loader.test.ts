@@ -11,8 +11,9 @@ import { projectDataHome } from '../utils/partition.js';
 import { readEnvShExports } from '../env-sh-exports.js';
 import { getDataHome, getEnvBackupPath, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { resolveConfigForDir, saveLocalConfigForScope } from '../config.js';
+import { signalGroup } from '@teamai/shared/process-group';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(), persist: vi.fn() },
 }));
 
@@ -705,7 +706,7 @@ describe('team env by directory (#1018)', () => {
 
       await expect(registerEnvScope(a, true)).rejects.toThrow(/registry.*lock|another teamai command/i);
       expect(runs('bash', ['-c', 'printenv TOKEN || true'], a.projectRoot ?? '').stdout.trim()).toBe('');
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       expect(vi.mocked(log.warn).mock.calls.some(([message]) => String(message).includes(a.projectRoot ?? ''))).toBe(true);
     });
 
@@ -864,7 +865,7 @@ describe('team env by directory (#1018)', () => {
 
       const run = await new Promise<{ stdout: string; timedOut: boolean }>((resolve) => {
         const child = spawn(shell, ['-c', 'printf "%s" "${MARKER-unset}"'], { cwd: a.projectRoot, env, detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
-        const killGroup = (): void => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } };
+        const killGroup = (): void => { if (child.pid) signalGroup(child.pid, 'SIGKILL'); };
         let stdout = '';
         let timedOut = false;
         const timer = setTimeout(() => { timedOut = true; killGroup(); }, 10_000);
@@ -1054,7 +1055,7 @@ describe('team env by directory (#1018)', () => {
       await zshenv(zshenvPath);
       const before = { zshrc: await state(zshrcPath), zshenv: await state(zshenvPath) };
 
-      await expect(handler.writeResolvedEnv([{ key: 'MARKER', value: 'from-a' }], teamConfig, a)).rejects.toThrow(/EACCES|EISDIR|EPERM/);
+      await expect(handler.writeResolvedEnv([{ key: 'MARKER', value: 'from-a' }], teamConfig, a)).rejects.toThrow(/EACCES|EISDIR|EPERM|is a directory, not a regular file/);
 
       expect({ zshrc: await state(zshrcPath), zshenv: await state(zshenvPath) }).toEqual(before);
     });
@@ -1297,7 +1298,7 @@ describe('team env by directory (#1018)', () => {
       { name: 'the inline-export one', userBlock: () => '# [teamai:env:start]\nexport TEAM_KEY="team"\n# [teamai:env:end]' },
     ])('says once that user env no longer loads in projects when the profile had a project block and a user block, $name', async ({ userBlock }) => {
       vi.stubEnv('SHELL', '/bin/zsh');
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       const a = await project('a');
       await fse.writeFile(path.join(homeDir, '.zshrc'), [
         userBlock(),
@@ -1325,7 +1326,7 @@ describe('team env by directory (#1018)', () => {
       { shell: 'bash', override: '.zshrc', loaderIn: '.bashrc', warns: true },
     ].filter(({ shell }) => hasShell(shell)))('puts the loader of a $shell member whose team sets shellProfilePath to ~/$override in ~/$loaderIn, moving an older block out', async ({ shell, override, loaderIn, warns, alsoIn }) => {
       vi.stubEnv('SHELL', `/bin/${shell}`);
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       const a = await project('a');
       const overridden = path.join(homeDir, override);
       await fse.outputFile(overridden, `${oldBlock(path.join(a.dataHome ?? '', 'env.sh'))}\n`);
@@ -1447,7 +1448,7 @@ describe('team env by directory (#1018)', () => {
       { key: `TEAMAI_ENV_SH_${'ab'.repeat(32)}`, value: 'team' },
     ])('ignores team env control variable $key and warns that it is reserved', async ({ key, value }) => {
       const a = await project('reserved');
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
 
       await handler.writeResolvedEnv([{ key, value }], teamConfig, a);
 
@@ -2002,7 +2003,7 @@ describe('team env by directory (#1018)', () => {
         expect(shellSees('zsh', elsewhere, 'USER_ONLY')).toBe(loads);
         expect(shellSees('zsh', a.projectRoot ?? '', 'USER_ONLY')).toBe(loads);
         expect(shellSees('zsh', a.projectRoot ?? '', 'MARKER')).toBe('from-a');
-        const { log } = await import('../utils/logger.js');
+        const { log } = await import('@teamai/shared/log');
         expect(vi.mocked(log.warn).mock.calls.some(([message]) => String(message).includes('user scope'))).toBe(warns);
       });
     });

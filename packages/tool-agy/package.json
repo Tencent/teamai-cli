@@ -1,0 +1,10 @@
+{
+  "name": "@teamai/tool-agy",
+  "private": true,
+  "type": "module",
+  "description": "Antigravity (agy): its descriptor, launch profile, read-only session platform, token format and version detector; bundled into teamai-cli.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./facts": "./src/facts.ts"
+  }
+}

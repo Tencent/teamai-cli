@@ -80,4 +80,11 @@ if (log && require('node:worker_threads').isMainThread) {
   process.on('exit', () => write({ ev: 'fs', pid: process.pid, calls: fsCalls }));
 
   require('node:module').syncBuiltinESMExports();
+
+  // Process identity is read from /proc on Linux and through ps elsewhere (@teamai/shared/process-group tells each read
+  // on this channel). A read /proc answered is logged as the ps macOS runs for it, so a Linux runner counts the same
+  // waits; a read that ran ps is already logged by its spawn.
+  require('node:diagnostics_channel').subscribe('teamai:process-read', (read) => {
+    if (read?.spawned === false && Array.isArray(read.ps)) write({ ev: 'spawn', pid: process.pid, child: null, command: ['ps', ...read.ps], detached: false });
+  });
 }

@@ -1,10 +1,11 @@
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { nextToolHomes } from '../tool-home-record.js';
 import { cleanupOf, installOf, locate, locatingOnce, ownOf, unreadWrites, writable, writesOf, type EntryPlace, type FilePlace, type FilesChannel, type Install, type Read } from '../locate.js';
-import { envToolHome, movedToolHome, toolHome, type Host } from '../tool-home.js';
-import { isToolId, TOOLS } from '../tools.js';
+import { envToolHome, movedToolHome, toolHome, toolHomeOf, type Host } from '../tool-home.js';
+import { TOOLS } from '../tools.js';
+import { isToolId, useToolInstances } from '../tool-registry.js';
 import { samePlaces } from '../resources/places.js';
 import type { ToolId } from '../tools.js';
 import { DEFAULT_TOOL_PATHS } from '../types.js';
@@ -22,7 +23,7 @@ describe('nextToolHomes', () => {
     const { homes, changes } = await nextToolHomes({ hermes: '/old/hermes' }, linuxHost({ HERMES_HOME: '/new/hermes' }), 'init');
 
     expect(homes).toEqual({ hermes: '/new/hermes' });
-    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: '/new/hermes' }]);
+    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: '/new/hermes', previous: '/old/hermes' }]);
   });
 
   it('keeps a record from a shell without the variable, and clears it when the variable is set but blank', async () => {
@@ -31,7 +32,7 @@ describe('nextToolHomes', () => {
     const cleared = await nextToolHomes({ opencode: '/x/opencode' }, linuxHost({ XDG_CONFIG_HOME: '' }), 'init');
 
     expect(cleared.homes).toEqual({});
-    expect(cleared.changes).toEqual([{ tool: 'opencode', variable: 'XDG_CONFIG_HOME', dir: null }]);
+    expect(cleared.changes).toEqual([{ tool: 'opencode', variable: 'XDG_CONFIG_HOME', dir: null, previous: '/x/opencode' }]);
   });
 
   it('never changes an existing record on a pull', async () => {
@@ -45,7 +46,7 @@ describe('nextToolHomes', () => {
     const { homes, changes } = await nextToolHomes({ hermes: '/old/hermes' }, linuxHost({ HERMES_HOME: '/later/hermes' }), 'init');
 
     expect(homes).toEqual({ hermes: '/later/hermes' });
-    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: '/later/hermes' }]);
+    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: '/later/hermes', previous: '/old/hermes' }]);
   });
 
   it('lets init record a home a tool\'s own variable names before it exists', async () => {
@@ -104,7 +105,7 @@ describe('nextToolHomes and Hermes\'s active_profile', () => {
     const { homes, changes } = await nextToolHomes({ hermes: '/srv/hermes' }, { ...sticky, env: { HERMES_HOME: '' } }, 'init');
 
     expect(homes).toEqual({});
-    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: null }]);
+    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: null, previous: '/srv/hermes' }]);
   });
 });
 
@@ -127,7 +128,7 @@ describe('nextToolHomes on Windows', () => {
     const { homes, changes } = await nextToolHomes({ hermes: 'D:\\hermes-moved' }, windowsHost({ HERMES_HOME: '', LOCALAPPDATA: appData }, ['D:\\hermes-moved', `${appData}\\hermes`]), 'init');
 
     expect(homes).toEqual({});
-    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: null }]);
+    expect(changes).toEqual([{ tool: 'hermes', variable: 'HERMES_HOME', dir: null, previous: 'D:\\hermes-moved' }]);
   });
 
   it('follows active_profile inside the Windows default a pull recorded', async () => {
@@ -411,5 +412,79 @@ describe('locatingOnce', () => {
     }
 
     expect(changed).toEqual([]);
+  });
+});
+
+describe('an instance of Codex under the Codex root the member recorded (toolRoots.codex)', () => {
+  const host = linuxHost({}, ['/home/m/.codex-work']);
+  const install: Install = { toolPaths: { ...DEFAULT_TOOL_PATHS, 'acme-codex': DEFAULT_TOOL_PATHS.codex }, agents: {}, toolRoots: { codex: '/home/m/.codex-work' }, gitExclude: false, scope: 'user' };
+  const instance = { kind: 'instance', name: 'acme-codex', extends: 'codex', command: 'acme-codex', source: 'team', file: '/repo/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1' } as const;
+  const placeOf = async (tool: string, resource: 'skills' | 'hooks') => ownOf(await locate(tool, resource, install, host))?.path;
+
+  afterEach(() => {
+    useToolInstances(new Map());
+  });
+
+  it('puts an instance that keeps the home of Codex where Codex is', async () => {
+    useToolInstances(new Map([['acme-codex', instance]]));
+
+    expect(await placeOf('acme-codex', 'skills')).toBe('/home/m/.codex-work/skills');
+    expect(await placeOf('acme-codex', 'hooks')).toBe(await placeOf('codex', 'hooks'));
+  });
+
+  it.each([
+    { set: 'moved from Codex\'s', paths: undefined },
+    { set: 'of its own', paths: { skills: '.acme-codex/skills' } },
+  ])('keeps an instance with a home of its own and paths $set in that home, reads it there, and gives it the shared skills directory a Codex build reads', async ({ paths }) => {
+    useToolInstances(new Map([['acme-codex', { ...instance, home: { dir: '.acme-codex' }, ...(paths === undefined ? {} : { paths }) }]]));
+    const own: Install = { ...install, toolPaths: { ...install.toolPaths, 'acme-codex': { ...DEFAULT_TOOL_PATHS.codex, skills: '.acme-codex/skills' } } };
+    const skills = await locate('acme-codex', 'skills', own, host);
+
+    expect([ownOf(skills)?.path, skills.shared?.path, unreadWrites(skills, host)]).toEqual(['/home/m/.acme-codex/skills', '/home/m/.agents/skills', []]);
+  });
+
+  it.each(['user', 'project'] as const)('takes an instance as installed in %s scope by its nested home, not by the directory that holds it', async (scope) => {
+    useToolInstances(new Map([['acme-codex', { ...instance, home: { dir: 'work/.acme-codex' } }]]));
+    const paths = { ...DEFAULT_TOOL_PATHS.codex, skills: 'work/.acme-codex/skills', settings: 'work/.acme-codex/hooks.json' };
+    const own: Install = scope === 'user'
+      ? { ...install, toolPaths: { ...install.toolPaths, 'acme-codex': paths } }
+      : { ...install, toolPaths: { ...install.toolPaths, 'acme-codex': paths }, scope, projectRoot: '/p', repo: 'team', workspaceChildren: false, keepsKnowledgeInside: false };
+    const base = scope === 'user' ? '/home/m' : '/p';
+    const skills = await locate('acme-codex', 'skills', own, linuxHost({}, [`${base}/work`]));
+
+    expect(skills.gates).toContainEqual({ kind: 'installed', probe: `${base}/work/.acme-codex`, met: false });
+  });
+});
+
+describe('the home an instance\'s own variable moves', () => {
+  const instance = { kind: 'instance', name: 'acme-codex', extends: 'codex', home: { dir: '.acme-codex', env: 'ACME_CODEX_HOME' }, source: 'team', file: '/repo/tools/acme-codex.yaml', location: 'tools/acme-codex.yaml', revision: 'r1' } as const;
+  const recorded = (homes: Record<string, string>, env: Record<string, string> = {}): Host => ({ ...linuxHost(env, ['/x/acme']), toolHomes: { kind: 'ok', homes } });
+
+  afterEach(() => {
+    useToolInstances(new Map());
+  });
+
+  it('is recorded as a shipped tool\'s own variable is: init records and replaces it, a pull only fills a missing record, a blank one clears it', async () => {
+    useToolInstances(new Map([['acme-codex', instance]]));
+
+    expect(await nextToolHomes({}, linuxHost({ ACME_CODEX_HOME: '/x/acme' }, ['/x/acme']), 'pull')).toEqual({ homes: { 'acme-codex': '/x/acme' }, changes: [{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir: '/x/acme' }] });
+    expect((await nextToolHomes({ 'acme-codex': '/x/acme' }, linuxHost({ ACME_CODEX_HOME: '/y/acme' }, ['/y/acme']), 'pull')).homes).toEqual({ 'acme-codex': '/x/acme' });
+    expect((await nextToolHomes({ 'acme-codex': '/x/acme' }, linuxHost({ ACME_CODEX_HOME: '/y/acme' }), 'init')).homes).toEqual({ 'acme-codex': '/y/acme' });
+    expect(await nextToolHomes({ 'acme-codex': '/x/acme' }, linuxHost({ ACME_CODEX_HOME: '' }), 'init')).toEqual({ homes: {}, changes: [{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir: null, previous: '/x/acme' }] });
+  });
+
+  it('names the default home an instance leaves on its first move, so init can release it', async () => {
+    useToolInstances(new Map([['acme-codex', instance]]));
+
+    expect((await nextToolHomes({}, linuxHost({ ACME_CODEX_HOME: '/x/acme' }), 'init')).changes).toEqual([{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir: '/x/acme', previous: '/home/m/.acme-codex' }]);
+    expect((await nextToolHomes({}, linuxHost({ ACME_CODEX_HOME: '/home/m/.acme-codex' }), 'init')).changes).toEqual([{ tool: 'acme-codex', variable: 'ACME_CODEX_HOME', dir: '/home/m/.acme-codex' }]);
+  });
+
+  it('is read from the record in a shell without the variable, and the record wins over another value, as for a shipped tool', () => {
+    useToolInstances(new Map([['acme-codex', instance]]));
+
+    expect(toolHomeOf('acme-codex', recorded({ 'acme-codex': '/x/acme' }))?.dir).toBe('/x/acme');
+    expect(toolHomeOf('acme-codex', recorded({ 'acme-codex': '/x/acme' }, { ACME_CODEX_HOME: '/y/acme' }))?.dir).toBe('/x/acme');
+    expect(toolHomeOf('acme-codex', recorded({}))?.dir).toBe('/home/m/.acme-codex');
   });
 });

@@ -772,7 +772,7 @@ sessions:
 
 ## Docs（文档）
 
-把文件放进团队仓库的 `docs/`，提交后成员 `pull` 时同步。某个目录只给一部分人时，在 `resources.docs` 里声明：
+把文件放进团队仓库的 `docs/`，提交后成员 `pull` 时同步到各自的 docs 镜像（`sharing.docs.localDir`）。对镜像里团队已有文档的编辑，现在会被 `teamai status` 与 `teamai push` 识别，并按团队路径 `docs/<rel>` 推送；与团队已有某个版本（当前或历史）相同的文件只是副本，不算编辑，会被跳过，陈旧副本不会提议覆盖团队的新版本。用户级镜像是整机共享的，团队没有的文档不会被带出来：新文档请在团队仓库里添加。团队克隆 checkout 里的编辑同样会被识别，同一路径以 checkout 为准。某个目录只给一部分人时，在 `resources.docs` 里声明：
 
 ```yaml
 # manifest/projects.yaml
@@ -799,6 +799,10 @@ self 模式下，如果当前分支落后于默认分支，推送修改过的 sk
 | `benchmarks/` | `SUITE.yaml` | 读取：[套件](benchmarks.md#编写套件) |
 | `scorers/` | `SCORER.md` | 读取：[评分器目录](scorers.md#评分器目录) |
 | `agents/` | `AGENT.md` | 读取：[目录型 agent](#目录型-agent) |
+| `drivers/` | `DRIVER.yaml` | 读取：[各部分放在哪里](workflow-advanced.md#各部分放在哪里) |
+| `runtimes/` | `RUNTIME.yaml` | 读取：[各部分放在哪里](workflow-advanced.md#各部分放在哪里) |
+| `sandboxes/` | `SANDBOX.yaml` | 读取：[各部分放在哪里](workflow-advanced.md#各部分放在哪里) |
+| `tools/` | `TOOL.yaml` | 读取：[各部分放在哪里](workflow-advanced.md#各部分放在哪里) |
 
 一个目录就是一个资源，无论其中还有什么文件：
 

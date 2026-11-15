@@ -9,7 +9,7 @@ import path from 'node:path';
 // another repository. The knowledge dashboard must not build its index or its
 // promotion candidates from that team's learnings.
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
   isSilent: () => false,
 }));

@@ -1,0 +1,3056 @@
+[
+  {
+    "tool": "claude",
+    "case": "plain",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)"
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "plain",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "resume",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--resume",
+      "sess-1"
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "resume",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--resume",
+      "sess-1",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "model",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--model",
+      "m-1"
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "model",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--model",
+      "m-1",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "modelEffort",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "effort": "high",
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--model",
+      "m-1",
+      "--effort",
+      "high"
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "modelEffort",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "effort": "high",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--model",
+      "m-1",
+      "--effort",
+      "high",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "agent",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--agent",
+      "reviewer"
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "agent",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--agent",
+      "reviewer",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "agentSubagent",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--agent",
+      "reviewer"
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "agentSubagent",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--agent",
+      "reviewer",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "maxTurns",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "maxTurns": 3,
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--max-turns",
+      "3"
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "maxTurns",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "maxTurns": 3,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "budget",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": true
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--include-partial-messages",
+      "--allowedTools=Edit(//work/attempt/out/**)"
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "budget",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": true
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "unattended",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "unattended": true,
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--permission-mode",
+      "bypassPermissions",
+      "--allowedTools=Edit(//work/attempt/out/**)"
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "unattended",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "unattended": true,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--permission-mode",
+      "bypassPermissions",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "spaces",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/my attempt/out dir",
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/my attempt/out dir/**)"
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "spaces",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/my attempt/out dir",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/my attempt/out dir/**)",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "everything",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "maxTurns": 3,
+      "model": "m-1",
+      "effort": "high",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "unattended": true,
+      "streamsUsage": true
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--include-partial-messages",
+      "--permission-mode",
+      "bypassPermissions",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--max-turns",
+      "3",
+      "--agent",
+      "reviewer",
+      "--model",
+      "m-1",
+      "--effort",
+      "high",
+      "--resume",
+      "sess-1"
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "everything",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "maxTurns": 3,
+      "model": "m-1",
+      "effort": "high",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "unattended": true,
+      "streamsUsage": true
+    },
+    "argv": [
+      "--permission-mode",
+      "bypassPermissions",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--agent",
+      "reviewer",
+      "--model",
+      "m-1",
+      "--effort",
+      "high",
+      "--resume",
+      "sess-1",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "plain",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)"
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "plain",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "resume",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--resume",
+      "sess-1"
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "resume",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--resume",
+      "sess-1",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "model",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--model",
+      "m-1"
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "model",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--model",
+      "m-1",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "modelEffort",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "effort": "high",
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--model",
+      "m-1"
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "modelEffort",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "effort": "high",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--model",
+      "m-1",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "agent",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--agent",
+      "reviewer"
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "agent",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--agent",
+      "reviewer",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "agentSubagent",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--agent",
+      "reviewer"
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "agentSubagent",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--agent",
+      "reviewer",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "maxTurns",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "maxTurns": 3,
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--max-turns",
+      "3"
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "maxTurns",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "maxTurns": 3,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "budget",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": true
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/attempt/out/**)"
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "budget",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": true
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "unattended",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "unattended": true,
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--permission-mode",
+      "bypassPermissions",
+      "--allowedTools=Edit(//work/attempt/out/**)"
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "unattended",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "unattended": true,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--permission-mode",
+      "bypassPermissions",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "spaces",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/my attempt/out dir",
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//work/my attempt/out dir/**)"
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "spaces",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/my attempt/out dir",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//work/my attempt/out dir/**)",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "everything",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "maxTurns": 3,
+      "model": "m-1",
+      "effort": "high",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "unattended": true,
+      "streamsUsage": true
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--permission-mode",
+      "bypassPermissions",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--max-turns",
+      "3",
+      "--agent",
+      "reviewer",
+      "--model",
+      "m-1",
+      "--resume",
+      "sess-1"
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "everything",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "maxTurns": 3,
+      "model": "m-1",
+      "effort": "high",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "unattended": true,
+      "streamsUsage": true
+    },
+    "argv": [
+      "--permission-mode",
+      "bypassPermissions",
+      "--allowedTools=Edit(//work/attempt/out/**)",
+      "--agent",
+      "reviewer",
+      "--model",
+      "m-1",
+      "--resume",
+      "sess-1",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "plain",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "exec",
+      "--add-dir",
+      "/work/attempt/out",
+      "--json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "plain",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--add-dir",
+      "/work/attempt/out",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "resume",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "exec",
+      "--add-dir",
+      "/work/attempt/out",
+      "resume",
+      "sess-1",
+      "--json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "resume",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "resume",
+      "sess-1",
+      "--add-dir",
+      "/work/attempt/out",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "model",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "exec",
+      "--add-dir",
+      "/work/attempt/out",
+      "--json",
+      "--model",
+      "m-1",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "model",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--add-dir",
+      "/work/attempt/out",
+      "--model",
+      "m-1",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "modelEffort",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "effort": "high",
+      "streamsUsage": false
+    },
+    "argv": [
+      "exec",
+      "--add-dir",
+      "/work/attempt/out",
+      "--json",
+      "--model",
+      "m-1",
+      "-c",
+      "model_reasoning_effort=high",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "modelEffort",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "effort": "high",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--add-dir",
+      "/work/attempt/out",
+      "--model",
+      "m-1",
+      "-c",
+      "model_reasoning_effort=high",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "agent",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": true
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "exec",
+      "--add-dir",
+      "/work/attempt/out",
+      "--json",
+      "--model",
+      "agent-model",
+      "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "agent",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": true
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--add-dir",
+      "/work/attempt/out",
+      "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "agentSubagent",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": true
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "exec",
+      "--add-dir",
+      "/work/attempt/out",
+      "--json",
+      "--model",
+      "agent-model",
+      "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "agentSubagent",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": true
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--add-dir",
+      "/work/attempt/out",
+      "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "maxTurns",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "maxTurns": 3,
+      "streamsUsage": false
+    },
+    "argv": [
+      "exec",
+      "--add-dir",
+      "/work/attempt/out",
+      "--json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "maxTurns",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "maxTurns": 3,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--add-dir",
+      "/work/attempt/out",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "budget",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": true
+    },
+    "argv": [
+      "exec",
+      "--add-dir",
+      "/work/attempt/out",
+      "--json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "budget",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": true
+    },
+    "argv": [
+      "--add-dir",
+      "/work/attempt/out",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "unattended",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "unattended": true,
+      "streamsUsage": false
+    },
+    "argv": [
+      "exec",
+      "--add-dir",
+      "/work/attempt/out",
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "unattended",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "unattended": true,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--add-dir",
+      "/work/attempt/out",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "spaces",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/my attempt/out dir",
+      "streamsUsage": false
+    },
+    "argv": [
+      "exec",
+      "--add-dir",
+      "/work/my attempt/out dir",
+      "--json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "spaces",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/my attempt/out dir",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--add-dir",
+      "/work/my attempt/out dir",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "everything",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "maxTurns": 3,
+      "model": "m-1",
+      "effort": "high",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": true
+      },
+      "unattended": true,
+      "streamsUsage": true
+    },
+    "argv": [
+      "exec",
+      "--add-dir",
+      "/work/attempt/out",
+      "resume",
+      "sess-1",
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "m-1",
+      "-c",
+      "model_reasoning_effort=high",
+      "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "everything",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "maxTurns": 3,
+      "model": "m-1",
+      "effort": "high",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": true
+      },
+      "unattended": true,
+      "streamsUsage": true
+    },
+    "argv": [
+      "resume",
+      "sess-1",
+      "--add-dir",
+      "/work/attempt/out",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "m-1",
+      "-c",
+      "model_reasoning_effort=high",
+      "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "plain",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "plain",
+    "interactive": false,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--standalone",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "plain",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "plain",
+    "interactive": true,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "resume",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "resume",
+    "interactive": false,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--standalone",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "resume",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "resume",
+    "interactive": true,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "model",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--model",
+      "m-1"
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "model",
+    "interactive": false,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--standalone",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--model",
+      "m-1"
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "model",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--model",
+      "m-1",
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "model",
+    "interactive": true,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--model",
+      "m-1",
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "modelEffort",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "effort": "high",
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--model",
+      "m-1",
+      "--variant",
+      "high"
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "modelEffort",
+    "interactive": false,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "effort": "high",
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--standalone",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--model",
+      "m-1#high"
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "modelEffort",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "effort": "high",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--model",
+      "m-1",
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "modelEffort",
+    "interactive": true,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "effort": "high",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--model",
+      "m-1",
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "agent",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--agent",
+      "reviewer"
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "agent",
+    "interactive": false,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--standalone",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--agent",
+      "reviewer"
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "agent",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--agent",
+      "reviewer",
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "agent",
+    "interactive": true,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--agent",
+      "reviewer",
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "agentSubagent",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": true
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--format",
+      "json",
+      "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "agentSubagent",
+    "interactive": false,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--standalone",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--agent",
+      "reviewer"
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "agentSubagent",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": true
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt",
+      "Review carefully.\n\nSummarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "agentSubagent",
+    "interactive": true,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--agent",
+      "reviewer",
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "maxTurns",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "maxTurns": 3,
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "maxTurns",
+    "interactive": false,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "maxTurns": 3,
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--standalone",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "maxTurns",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "maxTurns": 3,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "maxTurns",
+    "interactive": true,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "maxTurns": 3,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "budget",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": true
+    },
+    "argv": [
+      "run",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "budget",
+    "interactive": false,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": true
+    },
+    "argv": [
+      "run",
+      "--standalone",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "budget",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": true
+    },
+    "argv": [
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "budget",
+    "interactive": true,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": true
+    },
+    "argv": [
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "unattended",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "unattended": true,
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--format",
+      "json",
+      "--auto",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "unattended",
+    "interactive": false,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "unattended": true,
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--standalone",
+      "--format",
+      "json",
+      "--auto",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "unattended",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "unattended": true,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--auto",
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "unattended",
+    "interactive": true,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "unattended": true,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--auto",
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "spaces",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/my attempt/out dir",
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "spaces",
+    "interactive": false,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/my attempt/out dir",
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--standalone",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "spaces",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/my attempt/out dir",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "spaces",
+    "interactive": true,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/my attempt/out dir",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "everything",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "maxTurns": 3,
+      "model": "m-1",
+      "effort": "high",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "unattended": true,
+      "streamsUsage": true
+    },
+    "argv": [
+      "run",
+      "--format",
+      "json",
+      "--auto",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--agent",
+      "reviewer",
+      "--model",
+      "m-1",
+      "--variant",
+      "high"
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "everything",
+    "interactive": false,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "maxTurns": 3,
+      "model": "m-1",
+      "effort": "high",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "unattended": true,
+      "streamsUsage": true
+    },
+    "argv": [
+      "run",
+      "--standalone",
+      "--format",
+      "json",
+      "--auto",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--agent",
+      "reviewer",
+      "--model",
+      "m-1#high"
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "everything",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "maxTurns": 3,
+      "model": "m-1",
+      "effort": "high",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "unattended": true,
+      "streamsUsage": true
+    },
+    "argv": [
+      "--auto",
+      "--agent",
+      "reviewer",
+      "--model",
+      "m-1",
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "everything",
+    "interactive": true,
+    "opencodeMajor": 2,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "maxTurns": 3,
+      "model": "m-1",
+      "effort": "high",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "unattended": true,
+      "streamsUsage": true
+    },
+    "argv": [
+      "--auto",
+      "--agent",
+      "reviewer",
+      "--model",
+      "m-1",
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "plain",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--output-format=stream-json",
+      "--print=Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "plain",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt-interactive",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "resume",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--output-format=stream-json",
+      "--conversation",
+      "sess-1",
+      "--print=Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "resume",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--conversation",
+      "sess-1",
+      "--prompt-interactive",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "model",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--output-format=stream-json",
+      "--model",
+      "m-1",
+      "--print=Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "model",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--model",
+      "m-1",
+      "--prompt-interactive",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "modelEffort",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "effort": "high",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--output-format=stream-json",
+      "--model",
+      "m-1",
+      "--effort",
+      "high",
+      "--print=Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "modelEffort",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "model": "m-1",
+      "effort": "high",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--model",
+      "m-1",
+      "--effort",
+      "high",
+      "--prompt-interactive",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "agent",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--output-format=stream-json",
+      "--agent",
+      "reviewer",
+      "--print=Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "agent",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--agent",
+      "reviewer",
+      "--prompt-interactive",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "agentSubagent",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--output-format=stream-json",
+      "--agent",
+      "reviewer",
+      "--print=Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "agentSubagent",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "streamsUsage": false
+    },
+    "argv": [
+      "--agent",
+      "reviewer",
+      "--prompt-interactive",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "maxTurns",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "maxTurns": 3,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--output-format=stream-json",
+      "--print=Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "maxTurns",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "maxTurns": 3,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt-interactive",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "budget",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": true
+    },
+    "argv": [
+      "--output-format=stream-json",
+      "--print=Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "budget",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "streamsUsage": true
+    },
+    "argv": [
+      "--prompt-interactive",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "unattended",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "unattended": true,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--output-format=stream-json",
+      "--dangerously-skip-permissions",
+      "--print=Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "unattended",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "unattended": true,
+      "streamsUsage": false
+    },
+    "argv": [
+      "--dangerously-skip-permissions",
+      "--prompt-interactive",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "spaces",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/my attempt/out dir",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--output-format=stream-json",
+      "--print=Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "spaces",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/my attempt/out dir",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt-interactive",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/my attempt/out dir/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "everything",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "maxTurns": 3,
+      "model": "m-1",
+      "effort": "high",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "unattended": true,
+      "streamsUsage": true
+    },
+    "argv": [
+      "--output-format=stream-json",
+      "--dangerously-skip-permissions",
+      "--agent",
+      "reviewer",
+      "--model",
+      "m-1",
+      "--effort",
+      "high",
+      "--conversation",
+      "sess-1",
+      "--print=Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "everything",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "posix",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "/work/attempt/out",
+      "resume": "sess-1",
+      "maxTurns": 3,
+      "model": "m-1",
+      "effort": "high",
+      "agent": {
+        "name": "reviewer",
+        "model": "agent-model",
+        "inPrompt": false
+      },
+      "unattended": true,
+      "streamsUsage": true
+    },
+    "argv": [
+      "--dangerously-skip-permissions",
+      "--agent",
+      "reviewer",
+      "--model",
+      "m-1",
+      "--effort",
+      "high",
+      "--conversation",
+      "sess-1",
+      "--prompt-interactive",
+      "Summarize the change.\n\nWrite the workflow result as JSON to /work/attempt/out/result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "windows",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "win32",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//c/Users/Ada Lovelace/attempt/out/**)"
+    ]
+  },
+  {
+    "tool": "claude",
+    "case": "windows",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "win32",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//c/Users/Ada Lovelace/attempt/out/**)",
+      "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "windows",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "win32",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "-p",
+      "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--allowedTools=Edit(//c/Users/Ada Lovelace/attempt/out/**)"
+    ]
+  },
+  {
+    "tool": "codebuddy",
+    "case": "windows",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "win32",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--allowedTools=Edit(//c/Users/Ada Lovelace/attempt/out/**)",
+      "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "windows",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "win32",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "exec",
+      "--add-dir",
+      "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "--json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "codex",
+    "case": "windows",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "win32",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--add-dir",
+      "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "windows",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "win32",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "windows",
+    "interactive": false,
+    "opencodeMajor": 2,
+    "platform": "win32",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "run",
+      "--standalone",
+      "--format",
+      "json",
+      "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "windows",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "win32",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "opencode",
+    "case": "windows",
+    "interactive": true,
+    "opencodeMajor": 2,
+    "platform": "win32",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt",
+      "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "windows",
+    "interactive": false,
+    "opencodeMajor": 1,
+    "platform": "win32",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--output-format=stream-json",
+      "--print=Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  },
+  {
+    "tool": "agy",
+    "case": "windows",
+    "interactive": true,
+    "opencodeMajor": 1,
+    "platform": "win32",
+    "input": {
+      "prompt": "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}.",
+      "resultDir": "C:\\Users\\Ada Lovelace\\attempt\\out",
+      "streamsUsage": false
+    },
+    "argv": [
+      "--prompt-interactive",
+      "Summarize the change.\n\nWrite the workflow result as JSON to C:\\Users\\Ada Lovelace\\attempt\\out\\result.json. Use this shape: {\"output\":...}, where output is a short summary of what you did, as a JSON string. Leave failure out unless the step failed; then add \"failure\":{\"code\":\"...\",\"message\":\"...\"}."
+    ]
+  }
+]

@@ -13,7 +13,7 @@ const reportsMocks = vi.hoisted(() => ({
 vi.mock('../utils/reports-branch.js', () => ({
   updateReports: (...args: unknown[]) => reportsMocks.updateReports(...args),
 }));
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 // VOTES_LOCAL_DIR is resolved at module load against the real HOME, so isolate

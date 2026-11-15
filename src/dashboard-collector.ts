@@ -4,51 +4,29 @@ import path from 'node:path';
 import { toolHome } from './tool-home.js';
 import readline from 'node:readline';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { deriveDispatchSessionId } from './utils/session-id.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { ensureDir } from './utils/fs.js';
 import { repoKeys, repoLabel } from './utils/repo-attribution.js';
 import { isProcessAlive, resolveMonitorPid } from './pid-monitor.js';
-import { normalizeToolName } from './utils/tool-names.js';
-import { redactWithEnv } from './utils/redact.js';
+import { isCodexTool, normalizeToolName } from './utils/tool-names.js';
+import { redactWithEnv } from '@teamai/shared/redact';
+import { openRegularFile, readRegularFile } from '@teamai/shared/regular-file';
 import { acquireLock, releaseLock } from './update.js';
-import {
-  DASHBOARD_COMPACTION_THRESHOLD,
-  DASHBOARD_IDLE_TIMEOUT_MS,
-  DASHBOARD_STALE_TIMEOUT_MS,
-  DASHBOARD_STOPPED_DISPLAY_MS,
-  CORRECTION_WINDOW_MS,
-  CORRECTION_KEYWORDS,
-  INTERVENTION_SCAN_MAX_BYTES,
-  TRANSCRIPT_INTERRUPT_PREFIX,
-  TRANSCRIPT_SYSTEM_PREFIXES,
-  stripInjectedPrompt,
-  TRANSCRIPT_REJECT_MARKERS,
-  TRANSCRIPT_HOST_BLOCK_MARKERS,
-  COPILOT_TOOL_ID,
-  getDataHome,
-  emptyTokenUsage,
-  addTokenUsage,
-  totalTokens,
-  type DashboardEvent,
-  type DashboardEventType,
-  type DashboardSession,
-  type TokenUsage,
-  type SessionMetrics,
-  type RequestCostMetrics,
-  type LocalConfig,
-  type JsonValue,
-} from './types.js';
-import { getUserHome } from './utils/home.js';
+import { DASHBOARD_COMPACTION_THRESHOLD, DASHBOARD_IDLE_TIMEOUT_MS, DASHBOARD_STALE_TIMEOUT_MS, DASHBOARD_STOPPED_DISPLAY_MS, CORRECTION_WINDOW_MS, CORRECTION_KEYWORDS, TRANSCRIPT_INTERRUPT_PREFIX, TRANSCRIPT_SYSTEM_PREFIXES, stripInjectedPrompt, TRANSCRIPT_REJECT_MARKERS, TRANSCRIPT_HOST_BLOCK_MARKERS, COPILOT_TOOL_ID, getDataHome, type DashboardEvent, type DashboardEventType, type DashboardSession, type SessionMetrics, type RequestCostMetrics, type LocalConfig } from './types.js';
+import type { JsonValue } from '@teamai/shared/json';
+import { INTERVENTION_SCAN_MAX_BYTES, emptyTokenUsage, addTokenUsage, totalTokens, type TokenUsage } from '@teamai/tool-core/tokens';
+import { getUserHome } from '@teamai/shared/home';
 import type { HeadState } from './utils/git.js';
 import type { SessionRun } from './launch-context.js';
 import { SessionOutcomeEventSchema, uniqueOutcomes, type SessionOutcomeEvent, type WorkOutcome } from './outcomes.js';
 import { readCopilotShutdown } from './token-usage/formats/copilot-shutdown.js';
-import { isTokenFormatId, readTokenUsage, type TokenRequest } from './token-usage/index.js';
+import { type TokenRequest } from '@teamai/tool-core/tokens';
 import { priceTokens } from './token-usage/pricing.js';
-import { isToolId, TOOLS, type ToolDescriptor } from './tools.js';
+import { descriptorOf, toolOf } from './tool-registry.js';
 import { HookStdinSchema, type HookStdin } from './hook-dispatch.js';
+import type { ShippedDescriptor } from './tools.js';
 
 // ─── Event collection data flow ─────────────────────────
 //
@@ -108,7 +86,7 @@ export async function readLastAssistantOutput(transcriptPath: string): Promise<s
     const readSize = Math.min(fileSize, TRANSCRIPT_TAIL_BYTES);
     const offset = Math.max(0, fileSize - readSize);
 
-    const fh = await fs.promises.open(transcriptPath, 'r');
+    const fh = await openRegularFile(transcriptPath);
 
     try {
       const buffer = Buffer.alloc(readSize);
@@ -210,14 +188,14 @@ type PricedRequestRecord = Extract<LocalRequestRecord, { costMicros: number }>;
 const isPriced = (record: LocalRequestRecord): record is PricedRequestRecord => record.costMicros !== null;
 
 /**
- * Where the dashboard reads `tool`'s token usage: its TOOLS entry's `tokens`.
- * A tool TOOLS does not list is read as a Claude transcript, as every Stop
- * transcript was before tools named their format.
+ * Where the dashboard reads `tool`'s token usage: its TOOLS entry's `tokens`, or for an instance the entry of the tool
+ * it extends. A tool TOOLS does not list is read as a Claude transcript, as every Stop transcript was before tools named
+ * their format.
  */
-function tokenSourceOf(tool: string): ToolDescriptor['tokens'] {
-  const id = tool.toLowerCase();
+function tokenSourceOf(tool: string): ShippedDescriptor['tokens'] {
+  const base = toolOf(tool.toLowerCase())?.base;
 
-  return isToolId(id) ? TOOLS[id].tokens : 'claude-jsonl';
+  return base === undefined ? 'claude-jsonl' : descriptorOf(base).tokens;
 }
 
 /** A request's catalog cost with its cache reads billed as input, less its catalog cost. */
@@ -410,7 +388,7 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
     }
 
     const rl = readline.createInterface({
-      input: fs.createReadStream(transcriptPath, { encoding: 'utf-8' }),
+      input: (await openRegularFile(transcriptPath)).createReadStream({ encoding: 'utf-8' }),
       crlfDelay: Infinity,
     });
 
@@ -480,10 +458,6 @@ async function scanJsonlTranscriptOnce(transcriptPath: string): Promise<Transcri
   return { interrupt, toolReject, toolError, prompts };
 }
 
-function isCodexTool(tool: string | undefined): boolean {
-  return tool !== undefined && tool.toLowerCase().includes('codex');
-}
-
 const COPILOT_USAGE_TAIL_BYTES = 256 * 1024;
 const COPILOT_RUN_SCAN_BYTES = 8 * 1024 * 1024;
 const COPILOT_USAGE_MAX_ATTEMPTS = 8;
@@ -542,7 +516,7 @@ async function readLatestCopilotUsageFromTail(
     if (stat.size === 0) return { shutdownObserved: false };
     const readSize = Math.min(stat.size, COPILOT_USAGE_TAIL_BYTES);
     const offset = stat.size - readSize;
-    const fh = await fs.promises.open(transcriptPath, 'r');
+    const fh = await openRegularFile(transcriptPath);
 
     try {
       const buffer = Buffer.alloc(readSize);
@@ -638,7 +612,7 @@ async function findCopilotRunMarkerAfter(
 
     const readSize = stat.size - startOffset;
     const offset = startOffset;
-    const fh = await fs.promises.open(transcriptPath, 'r');
+    const fh = await openRegularFile(transcriptPath);
 
     try {
       const buffer = Buffer.alloc(readSize);
@@ -700,7 +674,7 @@ async function readCopilotUsageForRun(
     // totals are safer than rereading an unbounded log on every retry.
     if (stat.size - marker.offset > COPILOT_RUN_SCAN_BYTES) return latest;
 
-    const stream = fs.createReadStream(transcriptPath, {
+    const stream = (await openRegularFile(transcriptPath)).createReadStream({
       start: marker.offset, encoding: 'utf-8',
     });
 
@@ -793,7 +767,7 @@ async function readCodebuddyIndexPrompts(transcriptPath: string): Promise<number
     const stat = await fs.promises.stat(transcriptPath);
 
     if (stat.size === 0 || stat.size > INTERVENTION_SCAN_MAX_BYTES) return null;
-    const index = CodebuddyIndex.safeParse(JSON.parse(await fs.promises.readFile(transcriptPath, 'utf-8')));
+    const index = CodebuddyIndex.safeParse(JSON.parse(await readRegularFile(transcriptPath, 'utf-8')));
 
     return index.success ? index.data.messages.filter((m) => m.role === 'user').length : null;
   } catch (e) {
@@ -891,7 +865,7 @@ async function scanCodebuddyBlobs(
 
       if (stat.size === 0 || stat.size > INTERVENTION_SCAN_MAX_BYTES) continue;
 
-      const raw = await fs.promises.readFile(blobPath, 'utf-8');
+      const raw = await readRegularFile(blobPath, 'utf-8');
 
       const blob = CodebuddyBlobSchema.safeParse(JSON.parse(raw));
 
@@ -1236,8 +1210,11 @@ export async function parseHookEvent(
   // Token usage, in the format the tool's TOOLS entry names.
   const tokenSource = tokenSourceOf(tool);
 
-  if (eventType === 'stop' && options?.readUsage !== false && isTokenFormatId(tokenSource)) {
-    const reading = await readTokenUsage(tokenSource, { transcriptPath: stopTranscript, sessionId });
+  // The token readers load every tool family, so they load here, at a Stop, not in each hook that loads this module.
+  const tokenReaders = eventType === 'stop' && options?.readUsage !== false ? await import('./token-usage/index.js') : undefined;
+
+  if (tokenReaders?.isTokenFormatId(tokenSource)) {
+    const reading = await tokenReaders.readTokenUsage(tokenSource, { transcriptPath: stopTranscript, sessionId });
 
     if (totalTokens(reading.tokens) > 0) {
       event.tokens = reading.tokens;
@@ -1266,7 +1243,7 @@ export async function parseHookEvent(
         if (boundary > 0) {
           const tailSize = Math.min(boundary, COPILOT_USAGE_TAIL_BYTES);
           const tail = Buffer.alloc(tailSize);
-          const fh = await fs.promises.open(transcriptPath, 'r');
+          const fh = await openRegularFile(transcriptPath);
 
           try {
             await fh.read(tail, 0, tailSize, boundary - tailSize);
@@ -1421,7 +1398,7 @@ export async function readLocalRequestRecords(): Promise<Map<string, LocalReques
   const records = new Map<string, LocalRequestRecord>();
 
   try {
-    const content = await fs.promises.readFile(getRequestsPath(), 'utf-8');
+    const content = await readRegularFile(getRequestsPath(), 'utf-8');
 
     for (const line of content.split('\n')) {
       const record = parseRequestLine(line);
@@ -1486,7 +1463,7 @@ export async function reconcileRequestLog(
     let existing = '';
 
     try {
-      existing = await fs.promises.readFile(requestsPath, 'utf-8');
+      existing = await readRegularFile(requestsPath, 'utf-8');
     } catch {
       // First write.
     }
@@ -1612,7 +1589,7 @@ async function foldPendingEvents(eventsPath: string): Promise<void> {
     const pendingPath = path.join(dir, name);
 
     try {
-      const content = await fs.promises.readFile(pendingPath, 'utf-8');
+      const content = await readRegularFile(pendingPath, 'utf-8');
 
       if (!content.endsWith('\n')) continue;
       const timestamp = Date.parse(pendingTimestampOf(content));
@@ -1629,7 +1606,7 @@ async function foldPendingEvents(eventsPath: string): Promise<void> {
     try {
       const id = pendingIdOf(content);
       folded ??= new Set(
-        (await fs.promises.readFile(eventsPath, 'utf-8').catch(() => '')).split('\n').map(pendingIdOf).filter((i) => i !== undefined),
+        (await readRegularFile(eventsPath, 'utf-8').catch(() => '')).split('\n').map(pendingIdOf).filter((i) => i !== undefined),
       );
 
       if (id === undefined || !folded.has(id)) {
@@ -1751,7 +1728,7 @@ async function readEventsRaw(filePath: string): Promise<DashboardEvent[]> {
 async function readLogRaw(filePath: string): Promise<{ events: DashboardEvent[]; outcomes: Array<{ timestamp: string; line: string }> }> {
   const events: DashboardEvent[] = [];
   const outcomes: Array<{ timestamp: string; line: string }> = [];
-  const content = await fs.promises.readFile(filePath, 'utf-8').catch(() => '');
+  const content = await readRegularFile(filePath, 'utf-8').catch(() => '');
 
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
@@ -1780,7 +1757,7 @@ export const SESSION_OUTCOME_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** The session outcome events of the log at `eventsPath` (the default log when absent), in file order. */
 export async function readSessionOutcomes(eventsPath?: string): Promise<SessionOutcomeEvent[]> {
-  const content = await fs.promises.readFile(eventsPath ?? getEventsPath(), 'utf-8').catch(() => '');
+  const content = await readRegularFile(eventsPath ?? getEventsPath(), 'utf-8').catch(() => '');
   const outcomes: SessionOutcomeEvent[] = [];
 
   for (const line of content.split('\n')) {
@@ -2187,7 +2164,7 @@ export function aggregateSessionMetrics(
       lastTranscript.set(event.sessionId, event.transcriptPath);
     }
 
-    if (event.tokenScope === 'transcript' || (isCodexTool(event.tool) && event.transcriptPath !== undefined)) {
+    if (event.tokenScope === 'transcript' || (event.tool !== undefined && isCodexTool(event.tool) && event.transcriptPath !== undefined)) {
       rolloutSessions.add(event.sessionId);
     }
 
@@ -2402,7 +2379,7 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
     // no side files to fold it must not create the lock at all — the state it
     // would lock may be a sandbox another test (or a rolling state dir) is
     // deleting concurrently.
-    const pre = await fs.promises.readFile(filePath, 'utf-8').catch(() => null);
+    const pre = await readRegularFile(filePath, 'utf-8').catch(() => null);
 
     if (pre === null) return;
     const preLines = pre.split('\n').filter(l => l.trim());
@@ -2418,7 +2395,7 @@ export async function compactEvents(eventsPath?: string): Promise<void> {
       // Replace the file itself, not a symlink to it.
       const target = await fs.promises.realpath(filePath).catch(() => filePath);
       await removeOrphanTemps(target);
-      const content = await fs.promises.readFile(target, 'utf-8');
+      const content = await readRegularFile(target, 'utf-8');
       const lines = content.split('\n').filter(l => l.trim());
 
       if (lines.length < DASHBOARD_COMPACTION_THRESHOLD) return;

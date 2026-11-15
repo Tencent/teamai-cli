@@ -383,35 +383,134 @@ async function replay(config: LocalConfig, key: string, seed: number, between: b
   return trace;
 }
 
+const SEEDS = Array.from({ length: 12 }, (_, index) => index + 1);
+
 /**
- * The sha1 of each scenario's traces, seeds 1 to 12, without and then with the extra next. Comparing the two replays
- * catches what an extra next changes; the digest also catches a change to both, such as which lease a restart hands
- * back. After a change that is meant to move leases, take the new digest from the failure.
+ * The sha1 of each scenario's traces per seed (1 to 12), without and then with the extra next. Comparing the two
+ * replays catches what an extra next changes; the digest also catches a change to both, such as which lease a restart
+ * hands back. After a change that is meant to move leases, take the new digests from the failures.
  */
-const TRACE_DIGESTS: Record<string, string> = {
-  nested: '6c8a7055d0d42a39b9b9bdaa3f937a5592b34557',
-  fan: '9ee602fc92589f5c81414e9ddbc83c244de1674e',
-  fanafter: '8acbcfefef947f166b4c351caf0d6947c51a9bf0',
-  rounds: '28dc9492e7737cc2dae1db83cb52383b166f5b7a',
-  loopwhile: 'a5fd60ece582f8b008520b9df8f041a8f7e24372',
-  itemloop: '5f56de22db406c55853d060cf9c113488ad546d8',
-  deep: 'e2b250ed17838427323ea9e9a847a2ef7cf06c0f',
+const TRACE_DIGESTS: Record<string, string[]> = {
+  nested: [
+    '34406ca79186c93a9c28b4515db6a979cf1f3fb9',
+    '514a7c724e8308870ee4d6ae026a5e0467108a8d',
+    'da0c0a77844179cf507ba2a81d0521427bdcc7db',
+    '622ec5964ab1ab579fcff1dbb32aa401d60d1788',
+    '00588e86251572b9fb974aaf6b07cd72db64af29',
+    '19a17c92c68d65cafb2406868c52dec52a5154dd',
+    '4bae4d1594e35a7263593a063545ab9c6c7dc3c0',
+    'dc3dd3738cba61d86d18ebf21a50a81ffa5056f1',
+    '9eddefe361868c08240d3096bb60695d0d6143db',
+    '2f308e6099d81b2121db1dbe342904e65265a5ec',
+    '274dbaafdd29829f1aa5f49b58ed5e7090d60ac2',
+    'ca9a942502d923781c67ae7d75c821a82831ebf0',
+  ],
+  fan: [
+    '0fadb030f3aa5ddb257611331e51bfef19b04a9f',
+    '449ffa5ed3c29190c4288a1288d976e4dde23566',
+    'f43def34ea25e9fe264d4448d0f32dc610942c63',
+    '0f3c9a9287ca29dffccbef81495f1a5b047807fc',
+    '09026ed7dd42f2d17d945b754f37fb849e239650',
+    '065e2510e3242cb606b7b2457d768582fc4a4657',
+    '545ad4808c00d896fc1354b1791da10abd553902',
+    '04f0a3edcd0354e96555d0523fa3015f0de9a6b6',
+    'de97b0c940577a147638cad548bcbec55021b8bd',
+    '89aabe410d7daa1f27bb87341a219ede93bce179',
+    'd1b256e75cd3f25f2ba15037d9ed26e2dd62b29a',
+    'c9815579690408bc01857b05e2f7a986e2ee8058',
+  ],
+  fanafter: [
+    'af75d043df1519990e9094250e8895af0b58551d',
+    'c748e8d4e00558036a9ffadc68e82742407d9055',
+    'c396e259b6e4bb11243bef309ecfd1902b8b2c21',
+    '4c92ef5cac594e4862c29b511c3640dab93e8d56',
+    '928b2bbfbe559f3816b97fa230cf554caff47865',
+    'dc82857aaf5697f3fcfdbe1d30edad214227ba69',
+    '61854b2bfb390ffb19f03bfe489e4913cf734912',
+    '9527c1f9439ebe6a1583c0a26313162fa09b43da',
+    '84bf8fa8bc48de1dc3c7bc433e59924870a1be69',
+    'c808b6b71a85c08415bc5078b9721ce7a913bf12',
+    'd34a937722bc408844bc1a8f906ce25a00f9c80b',
+    '8f75ffab0b73c87376be75192f88bd09d187d1ef',
+  ],
+  rounds: [
+    'c135fdba73370d6254cbc3b705471759d54fa7bc',
+    '0b840a3368e63e839ebd69bb06812bcbc3568240',
+    'c8b38f3144d6d5ea38b0c59f494d08c4003bbb41',
+    '4524666627e192b9aa6e72d104974e9fed724139',
+    'ce51c5882c8eff27df37499c3f7ae7421ea51e28',
+    '1a935bad63babad32c661c466217a0bd23a27c70',
+    '2d52166d681953ccb97053b8a15c0682d170a7d0',
+    'cd3f63725859f81a5bbbb450ce88430eb7462381',
+    '015f01a52f39536098d5c8baa62e0d1eb1979dba',
+    '761a99d8c86d0beeab9a9d65cb211dd8f8362a2c',
+    '96791b3a9780e7872c0a0ad3739655e9003fb419',
+    'f64b2f50d4c2b4bf250ca740c27518a20aa4a596',
+  ],
+  loopwhile: [
+    '3951782a4de4fba59b4666145a0d63fe8b8ee498',
+    'd436b06b275c4f3043e795051559907dfdd95f38',
+    '02c8b665e7914fad6aa7a87ded2f076af0177c75',
+    '20ec8b326a04862684d21fb7c6721ddacba756de',
+    '357608349ea041b1c76188f01cb246d5be5cf0e9',
+    '25812a189c76051b3185ac99b9f7b132a3210d1f',
+    'ed333d9e1b0c7b477843b5d225261e4de0a67f38',
+    'c0eacadf6dddbc71e9910d0887c48ec2d4d04b26',
+    '2f40983addc82ec3d5e9e7531803d0e52da710e7',
+    'd5a01ffb77f3e43669eacd70d195dfe7d2cfe022',
+    '469ca90633c2d4d2f5cbba49680df1603133efe2',
+    '1916845788d9357d7d80ce901c3f9b1f25890106',
+  ],
+  itemloop: [
+    '63719e4fff45396ab3a51d45ac9d590ba418fd93',
+    '88c20c704e432b2af6143a007e40bad1f53ded55',
+    '2e6e02d84b865219aa77d51b20116f1e444b03ea',
+    'd524019f86685127766e5902520b954e478846c8',
+    '7f74abdf9429bdb4c36ccf82e70d9446f46a3a05',
+    'b6303a430a2dd8559051392319d6efc1b749bc81',
+    '41e7de52a35443b03680c957c96cdc830847283d',
+    '90e8b2caa7518dfa71f2c8c8755da390d5e9f204',
+    'c1e7e3111a308eae9a7df4caaa3f2d88f0182d74',
+    '5621f0c08a81f46470512aa7bb367999180d1162',
+    '344b64be6f91790c14fb8e88e6b7e374c716c298',
+    '1f27c92a8caafc0f80ed12eff22e3d4b404f15cd',
+  ],
+  deep: [
+    'fffca6cac651a4ab908712f6d097bfd56e1a5346',
+    'c257c04fa2beeed86ff67f89b94588ba02d9d79a',
+    'a1ddac4cd07c4ada7b08f9090bbd1e8e18a4df52',
+    '0152f968d1e394fd0518110eefe05fa82f321fe7',
+    '033df85424e84c139f5ec622e8abd98e9c42633a',
+    '047a39ec0c0e336d14d5bd3df10d133ab3f3c2e3',
+    '0e2df8c71acb83acf4efbcd6977b16559d3782a9',
+    '8881ed66946e0fe20d345eb45a9194ac01252cbc',
+    'e96681f935883d58624334fc7a663236deeee0c6',
+    '1d89347bd9662ec6742bdfb71d71c33a0922dc30',
+    '787a244cf88318d0538b3972dd38cc189d6e0621',
+    'd8693db2b6dd605d8741e30dfe610f61167a25c9',
+  ],
 };
 
-describe('workflow report reconciliation', () => {
-  it.each(Object.keys(scenarios))('keeps %s identical with an extra next between reports, and as it was', async (key) => {
-    const config = testConfig();
-    for (const [file, body] of Object.entries(scenarios[key]!.files)) {
-      fs.writeFileSync(path.join(config.repo.localPath, 'workflows', `${file}.yaml`), body);
-    }
-    expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
-    const digest = createHash('sha1');
-    for (let seed = 1; seed <= 12; seed += 1) {
-      const plain = await replay(config, key, seed, false);
-      const extra = await replay(config, key, seed, true);
-      expect(plain, `${key}, seed ${seed}`).toEqual(extra);
-      digest.update(`${JSON.stringify({ key, seed, between: false, trace: plain })}\n${JSON.stringify({ key, seed, between: true, trace: extra })}\n`);
-    }
-    expect(digest.digest('hex')).toBe(TRACE_DIGESTS[key]);
+/** A team whose workflows are scenario `key`'s, synced as teamai pull syncs them. */
+async function scenarioConfig(key: string): Promise<LocalConfig> {
+  const config = testConfig();
+  for (const [file, body] of Object.entries(scenarios[key]!.files)) {
+    fs.writeFileSync(path.join(config.repo.localPath, 'workflows', `${file}.yaml`), body);
+  }
+  expect((await syncScorersThenWorkflows(config)).invalid).toEqual([]);
+  return config;
+}
+
+// One test per scenario and seed, so each replays two runs within its timeout, however loaded the machine is.
+describe.each(Object.keys(scenarios))('workflow report reconciliation of %s', (key) => {
+  it.each(SEEDS)('keeps seed %i identical with an extra next between reports, and as it was', async (seed) => {
+    const config = await scenarioConfig(key);
+    const plain = await replay(config, key, seed, false);
+    const extra = await replay(config, key, seed, true);
+    expect(plain, `${key}, seed ${seed}`).toEqual(extra);
+    const digest = createHash('sha1')
+      .update(`${JSON.stringify({ key, seed, between: false, trace: plain })}\n${JSON.stringify({ key, seed, between: true, trace: extra })}\n`)
+      .digest('hex');
+    expect(digest).toBe(TRACE_DIGESTS[key]?.[seed - 1]);
   });
 });

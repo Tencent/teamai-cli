@@ -1,3 +1,5 @@
+import { baseToolOf } from '../tool-registry.js';
+
 /**
  * Asks the model to relay a message the host will not show by itself.
  *
@@ -20,7 +22,7 @@ export const RELAY_TO_USER_PREFIX =
  */
 export function hostShowsStopPayload(tool: string): boolean {
   // Cursor feeds followup_message to the model and shows nothing.
-  return (tool?.toLowerCase() ?? '') !== 'cursor';
+  return baseToolOf(tool?.toLowerCase() ?? '') !== 'cursor';
 }
 
 /**
@@ -54,7 +56,7 @@ export function relayWhenHidden(message: string, tool: string): string {
 export function formatStopHookOutput(message: string, tool: string): string {
   const normalized = tool?.toLowerCase() ?? '';
 
-  if (normalized === 'cursor') {
+  if (baseToolOf(normalized) === 'cursor') {
     return JSON.stringify({ followup_message: message });
   }
 

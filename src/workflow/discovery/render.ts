@@ -1,7 +1,7 @@
 /** The skill `teamai pull` generates for a workflow an agent may start: it routes to the guide and names the workflow. */
 import { generatedStartPatterns } from '../drivers/skill/literals.js';
 import { markerLines, signGenerated } from './generated-marker.js';
-import { isToolId, TOOLS } from '../../tools.js';
+import { baseDescriptorOf } from '../../tool-registry.js';
 import type { WorkflowSource } from '../types.js';
 
 export interface AdvertisedWorkflow {
@@ -34,7 +34,7 @@ export function renderWorkflowSkill(workflow: AdvertisedWorkflow, tool: string):
   const whose = workflow.source === 'default' ? 'teamai\'s default workflow, which the team can replace' : 'A team workflow';
   const suffix = `${alias ? ` Alias: ${alias}.` : ''} ${whose}: prefer it over doing the task ad hoc.`;
   const description = `${oneLine(workflow.description, DESCRIPTION_LIMIT - suffix.length)}.${suffix}`;
-  const preapproves = isToolId(tool) && TOOLS[tool].skillAllowedTools;
+  const preapproves = baseDescriptorOf(tool)?.skillAllowedTools === true;
 
   return signGenerated([
     '---',

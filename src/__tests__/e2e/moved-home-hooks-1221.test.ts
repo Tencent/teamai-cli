@@ -174,6 +174,38 @@ describe('hooks follow a moved CodeBuddy and OpenCode home (#1221, real CLI)', (
     expect(hasTeamHook(defaultSettings)).toBe(false);
   });
 
+  // A Codex instance on a variable of its own delivered to A; its record then moved to Codex's home, where it is refused.
+  // Only Codex's format names its team hook: read as Claude's, as an unknown tool's file is, the hook would stay.
+  it('uninstall clears the hooks a refused instance left in its earlier home, and a pull gives it none where it is refused', () => {
+    const teamRepo = path.join(home, '.teamai', 'team-repo');
+    fs.writeFileSync(path.join(teamRepo, 'teamai.yaml'), 'team: moved-hooks-e2e\nrepo: https://example.com/team.git\nprovider: git\nsharing:\n  hooks:\n    autoApply: true\n    requireTeamScripts: false\n');
+    fs.mkdirSync(path.join(teamRepo, 'hooks'));
+    fs.writeFileSync(path.join(teamRepo, 'hooks', 'hooks.yaml'), 'hooks:\n  - id: company-check\n    description: Company check\n    event: Stop\n    command: echo company-check\n');
+    fs.mkdirSync(path.join(teamRepo, 'tools'));
+    fs.writeFileSync(path.join(teamRepo, 'tools', 'acme-codex.yaml'), 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\nhome: { dir: .acme-codex, env: ACME_CODEX_HOME }\n');
+    fs.writeFileSync(path.join(home, '.teamai', 'config.yaml'), fs.readFileSync(path.join(home, '.teamai', 'config.yaml'), 'utf8').replace('enabledAgents: [codebuddy, opencode]', 'enabledAgents: [codex, acme-codex]'));
+    const earlier = path.join(sandbox, 'acme-a');
+    const codexHome = path.join(home, '.codex');
+    fs.mkdirSync(earlier);
+    fs.mkdirSync(codexHome);
+    const dispatchesFor = (file: string, tool: string) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split(`--tool ${tool}`).length - 1 : 0;
+    fs.writeFileSync(path.join(home, '.teamai', 'tool-homes.json'), JSON.stringify({ 'acme-codex': earlier }));
+    run('hooks', 'inject');
+    expect(dispatchesFor(path.join(earlier, 'hooks.json'), 'acme-codex')).toBeGreaterThan(0);
+    expect(hasTeamHook(path.join(earlier, 'hooks.json'))).toBe(true);
+
+    fs.writeFileSync(path.join(home, '.teamai', 'tool-homes.json'), JSON.stringify({ 'acme-codex': codexHome }));
+    fs.writeFileSync(path.join(home, '.teamai', 'tool-homes-history.json'), JSON.stringify({ 'acme-codex': [earlier] }));
+    const pulled = spawn('pull');
+    expect(pulled.stdout + pulled.stderr).toContain('Tool instance acme-codex (tools/acme-codex.yaml) is not used');
+    expect(dispatchesFor(path.join(codexHome, 'hooks.json'), 'acme-codex')).toBe(0);
+    expect(dispatchesFor(path.join(codexHome, 'hooks.json'), 'codex')).toBeGreaterThan(0);
+
+    run('uninstall', '--force');
+
+    expect([dispatchesFor(path.join(earlier, 'hooks.json'), 'acme-codex'), hasTeamHook(path.join(earlier, 'hooks.json'))]).toEqual([0, false]);
+  });
+
   it('a pull after the team changes a hook leaves no unowned copy of the old one in the default home', () => {
     const { movedSettings, defaultSettings } = museTeamHook();
     const hooksFile = path.join(home, '.teamai', 'team-repo', 'hooks', 'hooks.yaml');

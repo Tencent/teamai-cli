@@ -35,7 +35,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   autoDetectInit: mockAutoDetectInit,
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
@@ -110,7 +110,7 @@ describe('webhook', () => {
 
     it('logs a delivery that still fails on its last attempt', async () => {
       const { sendWebhook } = await import('../webhook.js');
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       mockAutoDetectInit.mockResolvedValueOnce(singleEndpointConfig(0));
       mockFetch.mockResolvedValue({ ok: false, status: 503 });
 
@@ -176,7 +176,7 @@ describe('webhook', () => {
   describe('testWebhook', () => {
     it('previews matching endpoints without sending a request or migrating config', async () => {
       const { testWebhook } = await import('../webhook.js');
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
 
       await testWebhook('https://open.feishu.cn/open-apis/bot/v2/hook/test', { dryRun: true });
 
@@ -187,7 +187,7 @@ describe('webhook', () => {
 
     it.each(['unmatched URL', 'no configured endpoints'])('previews zero endpoints for %s', async (scenario) => {
       const { testWebhook } = await import('../webhook.js');
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       if (scenario === 'no configured endpoints') {
         const config = singleEndpointConfig(0);
         config.teamConfig.sharing.webhooks.endpoints = [];
@@ -212,7 +212,7 @@ describe('webhook', () => {
 
     it('reports success only when the endpoint accepts the event', async () => {
       const { testWebhook } = await import('../webhook.js');
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       mockAutoDetectInit.mockResolvedValueOnce(singleEndpointConfig(0));
 
       await testWebhook();
@@ -223,7 +223,7 @@ describe('webhook', () => {
 
     it('reports failure when the endpoint keeps answering 5xx', async () => {
       const { testWebhook } = await import('../webhook.js');
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       mockAutoDetectInit.mockResolvedValueOnce(singleEndpointConfig(0));
       mockFetch.mockResolvedValue({ ok: false, status: 500 });
 
@@ -236,7 +236,7 @@ describe('webhook', () => {
 
     it('reports failure on a non-retryable 4xx', async () => {
       const { testWebhook } = await import('../webhook.js');
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       mockAutoDetectInit.mockResolvedValueOnce(singleEndpointConfig(3));
       mockFetch.mockResolvedValue({ ok: false, status: 404 });
 
@@ -251,7 +251,7 @@ describe('webhook', () => {
       vi.useFakeTimers();
       try {
         const { testWebhook } = await import('../webhook.js');
-        const { log } = await import('../utils/logger.js');
+        const { log } = await import('@teamai/shared/log');
         mockAutoDetectInit.mockResolvedValueOnce(singleEndpointConfig(1));
         const abort = Object.assign(new Error('aborted'), { name: 'AbortError' });
         mockFetch.mockRejectedValue(abort);

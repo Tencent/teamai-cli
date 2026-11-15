@@ -1,14 +1,13 @@
 /** The model the child of a prompt step must run, as `chooseStepModel` resolves it for the session's tool. */
-import { isAgentToolId } from '../../../tools.js';
+import { agentFormatOf } from '../../../tool-registry.js';
 import type { LocalConfig, TeamaiConfig } from '../../../types.js';
-import type { ToolId } from '../../../tools.js';
 import { StepModelSchema, chooseStepModel, loadDeployedAgent, type StepModel, type StepModelRequest } from '../../step-model.js';
 import type { WorkflowFailure } from '../../types.js';
 import type { ModelPick } from './skill-state.js';
 
 /**
  * The step's `model`, else the model the team agent's definition deployed for `tool` sets, else `defaults.model`,
- * aliases resolved for `tool`; a step's exact model as written. A step whose agent definition cannot be read skips `defaults.model`: the host runs
+ * aliases resolved for `tool`; a step's exact model as written. A step whose agent definition cannot be read skips `defaults.model`: the session host runs
  * that agent with whatever model its file sets.
  */
 export async function pickChildModel(input: {
@@ -16,8 +15,8 @@ export async function pickChildModel(input: {
   /** The team's `toolPaths`, which say where `teamai pull` deployed the agent for `tool`. */
   toolPaths: TeamaiConfig['toolPaths'] | undefined;
   step: string;
-  /** The session's tool, undefined when its host names none. */
-  tool: ToolId | undefined;
+  /** The session's tool, undefined when its session host names none. */
+  tool: string | undefined;
   model?: string | StepModel;
   defaultModel?: string;
   agent?: string;
@@ -28,7 +27,7 @@ export async function pickChildModel(input: {
   // An exact model needs no tool to resolve it for.
   if (exact.success) return { ok: true, model: { by: 'step', ...exact.data } };
   // Agent files and model aliases exist only for a tool teamai renders agents for.
-  const agentTool = tool !== undefined && isAgentToolId(tool) ? tool : undefined;
+  const agentTool = tool !== undefined && agentFormatOf(tool) !== undefined ? tool : undefined;
   const definition = agent !== undefined && agentTool !== undefined ? await loadDeployedAgent({ tool: agentTool, name: agent, config, toolPaths }) : null;
   const defaultModel = agent === undefined || definition !== null ? input.defaultModel : undefined;
   const asked = model ?? (definition?.spec.model === undefined ? defaultModel : undefined);

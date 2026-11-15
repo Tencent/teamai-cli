@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -25,7 +25,7 @@ import {
   truncate,
 } from '../agent-skills.js';
 import { detectInstalledAgents, getEffectiveAgents } from '../known-agents.js';
-import { BUILTIN_SKILL_NAMES } from '../builtin-skills.js';
+import { BUILTIN_SKILL_NAMES } from '../cli-skill-names.js';
 import { markerLines, signGenerated } from '../workflow/discovery/generated-marker.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
@@ -220,7 +220,7 @@ describe('classifySkill', () => {
   });
 
   it.each(['malformed', 'unreadable'])('warns when source provenance cannot be determined: %s', async (failure) => {
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     vi.mocked(log.warn).mockClear();
     await fse.outputJson(getSourceManifestPath('partner', fx.localConfig), {
       lastPull: '2026-01-01T00:00:00Z', installedSkills: ['external-skill'],

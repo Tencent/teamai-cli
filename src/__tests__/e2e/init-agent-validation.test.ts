@@ -78,7 +78,8 @@ describe('init --agent validates ids against built-in and team agents', () => {
     return { home, env };
   };
 
-  const newTeamRepo = (name: string, toolPaths?: Record<string, unknown>): Fixture => {
+  /** A team repo holding `files`, and a teamai.yaml unless `toolPaths` is null, as in a repo no member has initialized yet. */
+  const newTeamRepo = (name: string, toolPaths?: Record<string, unknown> | null, files: Record<string, string> = {}): Fixture => {
     const { home, env } = newHome(name);
     const url = 'https://git.example.invalid/team/' + name + '.git';
     const seed = path.join(sandbox, name + '-' + homeCount + '-seed');
@@ -91,7 +92,11 @@ describe('init --agent validates ids against built-in and team agents', () => {
       reviewers: [],
       ...(toolPaths ? { toolPaths } : {}),
     };
-    fs.writeFileSync(path.join(seed, 'teamai.yaml'), YAML.stringify(teamConfig));
+    if (toolPaths !== null) fs.writeFileSync(path.join(seed, 'teamai.yaml'), YAML.stringify(teamConfig));
+    for (const [file, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(seed, file)), { recursive: true });
+      fs.writeFileSync(path.join(seed, file), text);
+    }
     gitOk(['init', '-q', '-b', 'main'], seed, env);
     gitOk(['add', '-A'], seed, env);
     gitOk(['commit', '-q', '-m', 'seed'], seed, env);
@@ -123,7 +128,7 @@ describe('init --agent validates ids against built-in and team agents', () => {
 
     expect(result.code, result.output).not.toBe(0);
     expect(result.output).toContain('claudee');
-    expect(result.output).toContain('neither a built-in agent nor a key in the team');
+    expect(result.output).toContain('"claudee" is neither a tool teamai ships nor one the team repo adds in tools/ or in teamai.yaml\'s toolPaths.');
     expect(result.output).toContain('Valid ids:');
     expect(result.output).toContain('claude');
     expect(fs.existsSync(configPath(fixture.home))).toBe(false);
@@ -158,6 +163,38 @@ describe('init --agent validates ids against built-in and team agents', () => {
     expect(result.code, result.output).toBe(0);
     expect((YAML.parse(fs.readFileSync(configPath(fixture.home), 'utf8')) as { enabledAgents?: string[] }).enabledAgents).toEqual(['my-ide']);
     expect(fs.existsSync(path.join(fixture.home, '.my-ide', 'skills'))).toBe(true);
+  });
+
+  it('accepts a tool instance on the first init of a team repo that has no teamai.yaml yet', () => {
+    const fixture = newTeamRepo('instance-agent', null, {
+      'tools/acme-claude.yaml': 'schemaVersion: v1alpha1\nname: acme-claude\nextends: claude\nhome: { dir: .acme-claude }\n',
+    });
+
+    const result = teamai(['init', fixture.url, '--provider', 'git', '--agent', 'claude,acme-claude', '--scope', 'user'], fixture.home, fixture.env);
+
+    expect(result.code, result.output).toBe(0);
+    expect((YAML.parse(fs.readFileSync(configPath(fixture.home), 'utf8')) as { enabledAgents?: string[] }).enabledAgents).toEqual(['claude', 'acme-claude']);
+  });
+
+  it('adds a tool on a repeated init once the rewrite is confirmed, and names --force when no one can confirm it', () => {
+    const fixture = newTeamRepo('repeated-agent');
+    const initFor = (agent: string, ...extra: string[]): Run => teamai([
+      'init', fixture.url, '--provider', 'git', '--agent', agent, '--scope', 'user', ...extra,
+    ], fixture.home, fixture.env);
+    const enabledAgents = (): string[] | undefined => (YAML.parse(fs.readFileSync(configPath(fixture.home), 'utf8')) as { enabledAgents?: string[] }).enabledAgents;
+    expect(initFor('claude').code).toBe(0);
+
+    const unconfirmed = initFor('codex');
+
+    expect(unconfirmed.code, unconfirmed.output).toBe(0);
+    expect(unconfirmed.output).toContain('No one is at a terminal to confirm rewriting the existing config, so init changed nothing. Run the same command with --force '
+      + 'to rewrite it: it keeps the settings init does not set.');
+    expect(enabledAgents()).toEqual(['claude']);
+
+    const forced = initFor('codex', '--force');
+
+    expect(forced.code, forced.output).toBe(0);
+    expect(enabledAgents()).toEqual(['claude', 'codex']);
   });
 
   it('accepts every built-in tool id and every KNOWN_AGENTS id', () => {

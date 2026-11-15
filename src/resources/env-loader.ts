@@ -21,7 +21,7 @@ import { acquireLock, releaseLock } from '../update.js';
 import { getDataHome, getTeamaiHome, getTeamaiHomeDir, type LocalConfig } from '../types.js';
 import { pathExists, readFileIfExists, readFileSafe, writeFileAtomic } from '../utils/fs.js';
 import { gitCommonDir, nearestGitEntry } from '../utils/git.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { projectsRootDir } from '../utils/partition.js';
 import { isWindowsFormPath, shellQuoteValue } from '../utils/shell-profile.js';
 
@@ -292,7 +292,7 @@ export class EnvScopesUnreadableError extends Error {
 async function userScopeLine(): Promise<string | null> {
   if (!await hasUserScopeInstall()) return null;
   const user = await loadLocalConfig({ dryRun: true, suppressMigrationNotice: true });
-  const team = user ? await loadTeamConfig(user.repo.localPath) : null;
+  const team = user ? await loadTeamConfig(user.repo.localPath, user) : null;
 
   if (!user || !team) {
     log.warn('Could not read the user scope\'s config or its team\'s teamai.yaml, so its env stays out of shells. Fix that config, then run `teamai pull` outside any project.');

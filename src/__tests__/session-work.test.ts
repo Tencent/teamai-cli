@@ -12,11 +12,14 @@ vi.mock('node:os', async (importOriginal) => {
 import type { RunMode } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { syncScorerDefinitions } from '../scorers/cache.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import { FinishedSessions } from '../session-flow/finished-sessions.js';
-import type { Session } from '../session-flow/ir.js';
-import { judgeSession } from '../session-flow/session-work.js';
-import { redact } from '../utils/redact.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
+import { judgeSession, writeSessionEvidence } from '../session-flow/session-work.js';
+import type { ArchivedEvidence } from '../session-flow/session-evidence.js';
+import { parseScorer } from '../scorers/definition.js';
+import type { Rubrics } from '../scorers/evidence.js';
+import { redact } from '@teamai/shared/redact';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 
 const scorer = (frontmatter: string) => `---
@@ -182,5 +185,101 @@ describe('the transcript a judge reads', () => {
 
     expect(judged.body).not.toContain('w0rd');
     expect(judged.body).toContain('<REDACTED:DB_PASSWORD>');
+  });
+});
+
+describe('the evidence a step left beside a pushed session', () => {
+  const parsed = parseScorer('quality.md', SESSION_SCORER);
+  if (!parsed.ok) throw new Error('the scorer does not parse');
+  const rubrics: Rubrics = [parsed.definition];
+
+  it('is written for the judge as masked text files, with every file listed in evidence.json and the text fenced in the prompt', async () => {
+    const session: Session = {
+      sessionId: SESSION, title: 'check', cwd: '/tmp/proj', platform: 'claude-code', createdAt: NOW, updatedAt: NOW,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Check the page.' }], timestamp: NOW }],
+    };
+    const evidence: ArchivedEvidence = { version: 1, files: [
+      { kind: 'text', path: 'logs/check.log', type: 'text/plain', size: 30, text: 'checked with s3cr3t-value', cut: false },
+      { kind: 'listed', path: 'screen.png', type: 'image/png', size: 4, sha256: 'b'.repeat(64) },
+    ] };
+    const judged = judgeSession({ platform: 'claude-code', found: { session }, captures: [], mask: (text) => text.split('s3cr3t-value').join('<REDACTED:KEY>'), evidence });
+    const dir = path.join(root, 'evidence-dir');
+
+    await writeSessionEvidence(dir, judged, rubrics);
+
+    expect(fs.readFileSync(path.join(dir, 'evidence', 'logs', 'check.log'), 'utf8')).toBe('checked with <REDACTED:KEY>');
+    expect(fs.existsSync(path.join(dir, 'evidence', 'screen.png'))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(dir, 'evidence.json'), 'utf8')).evidence).toEqual([
+      { kind: 'text', path: 'evidence/logs/check.log', type: 'text/plain', size: 30, cut: false },
+      { kind: 'listed', path: 'screen.png', type: 'image/png', size: 4, sha256: 'b'.repeat(64) },
+    ]);
+    const prompt = fs.readFileSync(path.join(dir, 'prompt.md'), 'utf8');
+    expect(prompt).toContain('## evidence/logs/check.log\n\nchecked with <REDACTED:KEY>');
+    expect(prompt).not.toContain('s3cr3t-value');
+  });
+  it('tells the judge how many files of the step the archive left out', () => {
+    const session: Session = {
+      sessionId: SESSION, title: 'check', cwd: '/tmp/proj', platform: 'claude-code', createdAt: NOW, updatedAt: NOW,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'Check the page.' }], timestamp: NOW }],
+    };
+    const evidence: ArchivedEvidence = { version: 1, files: [{ kind: 'listed', path: 'shot-000.png', type: 'image/png', size: 1, sha256: 'c'.repeat(64) }], leftOut: 3 };
+
+    expect(judgeSession({ platform: 'claude-code', found: { session }, captures: [], mask: (text) => text, evidence }).manifest.evidenceLeftOut).toBe(3);
+  });
+
+  it('keeps the end of a long transcript in the prompt beside a long log, which it cuts to its share, and writes the log whole', async () => {
+    const long = (word: string): string => `${word} `.repeat(60_000);
+    const session: Session = {
+      sessionId: SESSION, title: 'check', cwd: '/tmp/proj', platform: 'claude-code', createdAt: NOW, updatedAt: NOW,
+      messages: [{ role: 'user', content: [{ type: 'text', text: `${long('work')}TRANSCRIPT-END` }], timestamp: NOW }],
+    };
+    const log = `${long('line')}LOG-END`;
+    const evidence: ArchivedEvidence = { version: 1, files: [{ kind: 'text', path: 'run.log', type: 'text/plain', size: log.length, text: log, cut: false }] };
+    const dir = path.join(root, 'long-evidence');
+
+    await writeSessionEvidence(dir, judgeSession({ platform: 'claude-code', found: { session }, captures: [], mask: (text) => text, evidence }), rubrics);
+
+    const prompt = fs.readFileSync(path.join(dir, 'prompt.md'), 'utf8');
+    expect(prompt).toContain('TRANSCRIPT-END');
+    expect(prompt).toContain('LOG-END');
+    expect(fs.readFileSync(path.join(dir, 'evidence', 'run.log'), 'utf8')).toBe(log);
+  });
+
+  // Windows opens a device for a reserved name, with any extension, and strips a trailing dot or space from a name
+  // ("Naming Files, Paths, and Namespaces", Microsoft Learn), so a teammate's out/nul.txt would be written nowhere there.
+  it('gives a reserved Windows device name, and a name Windows would strip, a name of its own under evidence/', () => {
+    const session: Session = {
+      sessionId: SESSION, title: 'check', cwd: '/tmp/proj', platform: 'claude-code', createdAt: NOW, updatedAt: NOW,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'check it' }], timestamp: NOW }],
+    };
+    const paths = ['out/nul.txt', 'CON', 'aux.tar.gz', 'COM1.log', 'lpt9', 'prn/report.md', 'notes.', 'notes', 'draft ', 'console.log', 'com10.txt'];
+    const evidence: ArchivedEvidence = { version: 1, files: paths.map((at) => ({ kind: 'text' as const, path: at, type: 'text/plain', size: 1, text: at, cut: false })) };
+
+    expect(judgeSession({ platform: 'claude-code', found: { session }, captures: [], mask: (text) => text, evidence }).stepEvidence.map((file) => file.path)).toEqual([
+      'evidence/out/_nul.txt', 'evidence/_CON', 'evidence/_aux.tar.gz', 'evidence/_COM1.log', 'evidence/_lpt9', 'evidence/_prn/report.md',
+      'evidence/notes_', 'evidence/notes', 'evidence/draft_', 'evidence/console.log', 'evidence/com10.txt',
+    ]);
+  });
+
+  it('writes each evidence file under a name every platform can hold, also two whose masked names are the same', async () => {
+    const session: Session = {
+      sessionId: SESSION, title: 'check', cwd: '/tmp/proj', platform: 'claude-code', createdAt: NOW, updatedAt: NOW,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'check it' }], timestamp: NOW }],
+    };
+    const masked = 'tok-<REDACTED:GITHUB_TOKEN>.log';
+    const evidence: ArchivedEvidence = { version: 1, files: [
+      { kind: 'text', path: masked, type: 'text/plain', size: 5, text: 'first', cut: false },
+      { kind: 'text', path: masked, type: 'text/plain', size: 6, text: 'second', cut: false },
+    ] };
+    const dir = path.join(root, 'masked-names');
+
+    await writeSessionEvidence(dir, judgeSession({ platform: 'claude-code', found: { session }, captures: [], mask: (text) => text, evidence }), rubrics);
+
+    const written = fs.readdirSync(path.join(dir, 'evidence'));
+    expect(written).toHaveLength(2);
+    expect(written.filter((name) => /[<>:"|?*]/.test(name))).toEqual([]);
+    expect(written.map((name) => fs.readFileSync(path.join(dir, 'evidence', name), 'utf8')).sort()).toEqual(['first', 'second']);
+    const prompt = fs.readFileSync(path.join(dir, 'prompt.md'), 'utf8');
+    for (const name of written) expect(prompt).toContain(`evidence/${name}`);
   });
 });

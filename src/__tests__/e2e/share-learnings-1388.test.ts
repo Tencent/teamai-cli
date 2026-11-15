@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { readSessionOutcomes } from '../../dashboard-collector.js';
-import { encodeCwdClaude } from '../../session-flow/fs.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import type { LocalConfig } from '../../types.js';
 import { readRun } from '../../workflow/store.js';
 import { waitForDetachedChildren } from '../helpers/detached-processes.js';

@@ -6,7 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { once } from 'node:events';
 import YAML from 'yaml';
-import { encodeCwdClaude } from '../../session-flow/fs.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 
 const cli = path.resolve('dist/index.js');
 let child: ChildProcess | undefined;

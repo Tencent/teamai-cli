@@ -17,7 +17,7 @@ import { syncScorerDefinitions } from '../scorers/cache.js';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { LabelStore } from '../scorers/label-store.js';
 import { SessionCaptures } from '../session-flow/captures.js';
-import { encodeCwdClaude } from '../session-flow/fs.js';
+import { encodeCwdClaude } from '@teamai/tool-core/sessions/fs';
 import type { LocalConfig } from '../types.js';
 import { AGENT_SESSION_ENV } from '../utils/session-id.js';
 import { leaseNext, parseReport, reportAttempt, startRun } from '../workflow/engine.js';

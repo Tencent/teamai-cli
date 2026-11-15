@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { tokenize, wordSegments, buildIndex, loadIndex, search, parseLearningDoc } from '../utils/search-index.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { computeIdfBaseline, isRelevantScore } from '../recall.js';
 import type { SearchIndex, SearchIndexEntry } from '../types.js';
 

@@ -13,6 +13,10 @@ Start with [Getting Started](guide/getting-started.md): set up a team, join one,
 - [Core Harness](guide/sharing.md) — skills, rules, env, agents, hooks, MCP, models, and packages
 - [Workflows](guide/workflow.md) — command steps in `workflows/*.yaml`: pull, start, next, and report
 - [Advanced workflows](guide/workflow-advanced.md) — parallel steps, loops, `for_each`, ends that cancel open steps, and the expression reference
+- [Sandbox runtime](guide/runtime-sandbox.md) — run each workflow step in a docker or podman container from your team's image
+- [T3 runtime](guide/runtime-t3.md) — run each prompt step as a T3 Code thread you can watch
+- [Paseo runtime](guide/runtime-paseo.md) — run each prompt step as an agent of a Paseo daemon
+- [Write a step runtime](guide/runtime-protocol.md) — run steps on a runtime of your own: the toy template, the scenario suite, and the protocol
 - [Scorers](guide/scorers.md) — rubrics in `scorers/*.md` that judge workflow steps
 - [Benchmarks](guide/benchmarks.md) — suites in `benchmarks/` that compare tools and models on your own tasks, and their CI jobs
 - [Self-improvement](guide/self-improvement.md) — `teamai self-improvement run`: turn a scorer's repeated failures into a PR that changes the harness and adds regression tasks, proven on every tool

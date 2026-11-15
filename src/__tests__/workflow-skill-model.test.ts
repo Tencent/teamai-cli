@@ -43,7 +43,7 @@ steps:
 
 const STEPS = ['api', 'ui', 'lint', 'test', 'integrate', 'serve'] as const;
 
-// For a host that starts no child (h4): a prompt step in the checkout, a command beside it, a prompt step in a worktree
+// For a session host that starts no child (h4): a prompt step in the checkout, a command beside it, a prompt step in a worktree
 // of its own, and a prompt step after the first two.
 const INLINE = `schemaVersion: v1alpha1
 name: inline
@@ -470,14 +470,14 @@ class Ack implements fc.AsyncCommand<Model, Real> {
   toString = (): string => `ack #${this.pick}`;
 }
 
-/** The host makes a worktree of the checkout at the start a place asks for, as a host that makes places does (h3). */
+/** The host makes a worktree of the checkout at the start a place asks for, as a session host that makes places does (h3). */
 function madePlace(real: Real, place: PlaceAction): string {
   const dir = path.join(fs.mkdtempSync(path.join(real.made.root, 'place-')), 'tree');
   execFileSync('git', ['worktree', 'add', '-q', '--detach', dir, place.start], { cwd: real.made.work, stdio: 'ignore' });
   return dir;
 }
 
-/** The session adopts a place its host made for an attempt that asked for one. */
+/** The session adopts a place its session host made for an attempt that asked for one. */
 class Adopt implements fc.AsyncCommand<Model, Real> {
   constructor(readonly pick: number) {}
   check = (model: Readonly<Model>): boolean => !model.done && model.placing.size > 0;
@@ -635,7 +635,7 @@ afterEach(() => {
 });
 
 /**
- * One session over the BUILD run: it starts the run, answers the host question with `host` first if given, plays `steps`,
+ * One session over the BUILD run: it starts the run, answers the session host question with `host` first if given, plays `steps`,
  * and a fair session then reaches done with no command left running.
  */
 async function sessionRun(host: 'h1' | 'h2' | 'h3' | undefined, steps: Iterable<fc.AsyncCommand<Model, Real>>): Promise<void> {
@@ -673,7 +673,7 @@ async function sessionRun(host: 'h1' | 'h2' | 'h3' | undefined, steps: Iterable<
 
 describe('skill driver model', () => {
   it('keeps its invariants over any order of session calls and runner progress, and a fair session reaches done', async () => {
-    // Half the sessions answer the host question first, so the commands also land while dispatches are out.
+    // Half the sessions answer the session host question first, so the commands also land while dispatches are out.
     const answered = fc.option(fc.constantFrom<'h1' | 'h2' | 'h3'>('h1', 'h2', 'h3'), { nil: undefined });
     await fc.assert(fc.asyncProperty(answered, fc.commands(COMMANDS, { maxCommands: 14 }), sessionRun), { numRuns: RUNS });
   }, TIMEOUT_MS);
@@ -684,8 +684,8 @@ describe('skill driver model', () => {
     await sessionRun('h3', [new Cancel(0, false), new Next()]);
   }, TIMEOUT_MS);
 
-  // The property above answers h3 first in about a quarter of its runs, so a few runs can miss a host that makes places.
-  it('keeps them, and a fair session reaches done, on a host that makes its own places (h3)', async () => {
+  // The property above answers h3 first in about a quarter of its runs, so a few runs can miss a session host that makes places.
+  it('keeps them, and a fair session reaches done, on a session host that makes its own places (h3)', async () => {
     await fc.assert(fc.asyncProperty(fc.constant('h3' as const), fc.commands(COMMANDS, { maxCommands: 14 }), sessionRun), { numRuns: RUNS });
   }, TIMEOUT_MS);
 
@@ -696,7 +696,7 @@ describe('skill driver model', () => {
     await inlineRun([new Report(0, 'output', false), new Poll(), new Cancel(2, false), new RunnerCrash(0), new TwoCallers()]);
   }, TIMEOUT_MS);
 
-  it('on a host that starts no child, declares only read-only workspaces, works one attempt at a time, and leaves the worktree step to the person', async () => {
+  it('on a session host that starts no child, declares only read-only workspaces, works one attempt at a time, and leaves the worktree step to the person', async () => {
     const commands = [
       fc.constant(new Next()),
       fc.constant(new Poll()),
@@ -716,7 +716,7 @@ describe('skill driver model', () => {
 });
 
 /**
- * One session over the INLINE run on h4: it starts the run, answers the host question with h4, plays `steps`, and a
+ * One session over the INLINE run on h4: it starts the run, answers the session host question with h4, plays `steps`, and a
  * fair session then works every step it can and is left with the handoff of the worktree step.
  */
 async function inlineRun(steps: Iterable<fc.AsyncCommand<Model, Real>>): Promise<void> {

@@ -17,7 +17,7 @@ vi.mock('../utils/git.js', async (importOriginal) => ({
   pullRepo: vi.fn().mockResolvedValue('Already up to date.'),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(),
     success: vi.fn(),
@@ -50,7 +50,7 @@ import { NotInitializedError, detectProjectConfig, requireInit } from '../config
 import { resolveAnchors } from '../utils/git.js';
 import { projectDataHome } from '../utils/partition.js';
 import { resolveSecretDeclarations } from '../resources/secrets.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { pullRepo } from '../utils/git.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';

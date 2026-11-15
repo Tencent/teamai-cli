@@ -3,14 +3,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { persist: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 
 import { deployBuiltinRules } from '../builtin-rules.js';
 import { contentHash, openLedger } from '../resources/delivered-copies.js';
 import { resolveInstructionBlocks } from '../pull.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { LocalConfigSchema, TeamaiConfigSchema } from '../types.js';
 
 const GOLDEN = path.join(import.meta.dirname, 'fixtures', 'recall-golden');

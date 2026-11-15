@@ -1441,6 +1441,22 @@ describe('the docs mirror stays out of git (#915)', () => {
     expect(m.status().filter((line) => line.includes('docs'))).toEqual(['?? team-docs/mine.md']);
   });
 
+  it('lists a kept docs mirror edit with the other push candidates (#1851)', () => {
+    const m = docsMachine('docs-status', { before: undefined });
+    const guide = path.join(m.dir, '.teamai', 'docs', 'guide.md');
+    const heading = 'Kept docs mirror edits (not scanned by plain push):';
+    expect(m.ok(['status']).output).not.toContain(heading);
+
+    fs.appendFileSync(guide, 'My note.\n');
+    const edited = read(guide);
+    const status = m.ok(['status']).output;
+
+    expect(status).not.toContain(heading);
+    expect(status).toContain('Local resources not yet pushed:');
+    expect(status).toContain('[docs] 1 new');
+    expect(read(guide)).toBe(edited);
+  });
+
   it('leaves a .teamai/.ignore the repository tracks as committed, through pull and uninstall', () => {
     const committed = '!/notes/\n';
     const m = docsMachine('docs-tracked-ignore', {

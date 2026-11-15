@@ -1,12 +1,12 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { z } from 'zod';
-import { readJson, readJsonObject, writeJson, writeJsonKeepingComments, readFileSafe, writeFile, expandHome, ensureDir, pathExists } from './utils/fs.js';
-import { log } from './utils/logger.js';
-import { mapStrings, type JsonSyntax } from './utils/json.js';
+import { readJson, readJsonObject, writeJson, writeJsonKeepingComments, readFileSafe, writeFile, ensureDir, pathExists } from './utils/fs.js';
+import { log } from '@teamai/shared/log';
+import { mapStrings, type JsonSyntax, isJsonObject, JsonValueSchema, type JsonValue } from '@teamai/shared/json';
 import {
   COPILOT_TOOL_ID,
   TEAMAI_HOOK_DESCRIPTION_PREFIX,
@@ -21,8 +21,7 @@ import {
   hookToolPathsForConfig,
   toolGateRoot,
 } from './types.js';
-import { isJsonObject, JsonValueSchema } from './types.js';
-import type { HookDef, JsonValue, TeamaiConfig, LocalConfig, ManagedMcpManifest, Scope } from './types.js';
+import type { HookDef, TeamaiConfig, LocalConfig, ManagedMcpManifest, Scope } from './types.js';
 import type { ToolId } from './tools.js';
 import {
   CODEX_TOOL_ID,
@@ -36,6 +35,7 @@ import {
   managedMcpManifestKey,
   managedMcpManifestPath,
   managedMcpWorkspaceId,
+  recordedToolRootDir,
   resolveGitExclude,
   resolveToolRootDir,
 } from './types.js';
@@ -46,20 +46,24 @@ import { DeliveredFolders } from './resources/delivered-folders.js';
 import { deliverHookFolders, historicalFolderHookDef, pruneHookFolders, parseTeamHooks, readBuiltinOverride, resolveTeamHooks, teamHookToDef } from './resources/hooks.js';
 import { entryLayout } from './namespaced-entries.js';
 import { historicalContents } from './utils/team-history.js';
-import { getUserHome } from './utils/home.js';
-import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip, claudeHookUsesPowerShell, copilotRunsEntries } from './claude-hook-host.js';
+import { getUserHome, expandHome } from '@teamai/shared/home';
+import { LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP, claudeHookOtherHostSkip, claudeHookUsesPowerShell, copilotRunsEntries, readsClaudeSettings } from './claude-hook-host.js';
 import { gitCommonDir, listWorktrees, resolveAnchors } from './utils/git.js';
 import { staleWorkspaces } from './utils/partition.js';
+import { warnOnce } from './utils/warn-once.js';
 import {
   codexBuildSkewMessage, codexBuildsIdentity, keepCodexHookTrust, readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks,
-  type CodexHookTrustReport, type CodexTrust,
+  type CodexAt, type CodexHookTrustReport, type CodexTrust,
 } from './codex-trust.js';
 import { codexDispatcherCheckouts, codexDispatcherProjects, dispatchedCodexHooks, isCodexTeamHookDispatcher, reconcileCodexDispatchers, runsFromCodexDispatcher, setCodexDispatcherHooks } from './codex-team-hooks.js';
 import type { CodexTeamHook } from './codex-team-hooks.js';
-import { channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, isToolId, selfLocalSettingsOf, TOOL_IDS, TOOLS, type HookFormat } from './tools.js';
+import { TOOL_IDS } from './tools.js';
+import { type HookFormat } from '@teamai/tool-core/definition';
+import { baseToolOf, channelsOf, hookFormatOf, hookSettingsFormatOf, hookSyntaxOf, selfLocalSettingsOf, toolInstancesFor, descriptorOf, toolOf, type DescriptorOf } from './tool-registry.js';
+import { acceptedCommandOf, acceptToolCommand } from './tool-instances.js';
 import { BRIDGED_TEAM_HOOK_EVENTS, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
-import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, workspaceHooksOf } from './locate.js';
-import { toolHome } from './tool-home.js';
+import { earlierHookAdapterDir, hookSettingsFile, installOf, locate, openclawWorkspaceDir, ownOf, toolPathUnder, workspaceHooksOf } from './locate.js';
+import { realHost, toolHome, toolHomeOf } from './tool-home.js';
 import { isWithin } from './utils/agent-path.js';
 
 export { claudeHookOtherHostSkip };
@@ -241,10 +245,32 @@ const CODEX_TRUST_GATE_TOOLS = new Set(['codex']);
 
 /**
  * True for a tool that gates hooks behind an explicit user trust step (only the
- * public `codex`). Exported so `hooks inject` / `doctor` can surface it.
+ * public `codex`, and an instance of it). Exported so `hooks inject` / `doctor` can surface it.
  */
 export function isCodexTrustGatedTool(tool: string): boolean {
-  return CODEX_TRUST_GATE_TOOLS.has(tool);
+  return CODEX_TRUST_GATE_TOOLS.has(baseToolOf(tool));
+}
+
+/**
+ * The Codex that trusts what teamai writes for `tool`: for an instance, its own home and, when it sets one, its own
+ * command once accepted, which hashes the hooks as that build does; else Codex's own builds in `codexHome`. A team
+ * instance's command no one accepted runs no build, so nothing trusts its hooks yet.
+ */
+function codexTrustAt(tool: string, codexHome: string, { justAccepted = false } = {}): CodexAt | { kind: 'unavailable'; reason: string } {
+  const instance = toolOf(tool)?.instance;
+
+  if (instance === undefined) return { codexHome };
+  const home = instance.home === undefined ? codexHome : toolHomeOf(tool)?.dir ?? codexHome;
+
+  if (instance.command === undefined) return { codexHome: home };
+  // A yes this run gave holds even when the trust file stayed locked and did not record it.
+  const accepted = justAccepted ? instance.command : acceptedCommandOf(instance);
+
+  if (accepted === undefined) {
+    return { kind: 'unavailable', reason: `${tool}: its command is not accepted on this machine yet, so no Codex build of it runs; run teamai pull in a terminal to review and accept it` };
+  }
+
+  return { codexHome: home, commands: [accepted], tool };
 }
 
 /**
@@ -291,6 +317,11 @@ export function reportCodexTrust(trust: CodexTrust | undefined, mode: 'all' | 'p
     case 'project-untrusted':
       log.warn(`Codex marks ${trust.project} as untrusted, so it does not load teamai's project hooks or MCP configuration. `
         + 'teamai leaves that choice to you: trust the project in Codex to load its configuration.');
+
+      return;
+    case 'unaccepted':
+      warnOnce(`Did not trust the teamai hooks of ${trust.tool} in Codex: only its own command trusts them, and no one has accepted that command on this machine. `
+        + 'Run `teamai pull` in a terminal to review and accept it; until then Codex may skip those hooks.');
 
       return;
     case 'disabled':
@@ -344,9 +375,15 @@ function teamDefsForTool(teamDefs: HookDef[], tool: string): HookDef[] {
   return teamDefs.filter((d) => !d.tools || d.tools.includes(tool));
 }
 
-/** Whether `settingsPath` is `tool`'s hook file in the member's own tool home, or a project file a repository may commit. */
-function hookFileDestination(tool: string, settingsPath: string): 'user' | 'project' {
-  return isToolId(tool) && isWithin(path.resolve(expandHome(settingsPath)), toolHome(tool)) ? 'user' : 'project';
+/**
+ * Whether `settingsPath` is `tool`'s hook file in the member's own tool home, the root `toolRoots` records included, or
+ * a project file a repository may commit.
+ */
+function hookFileDestination(tool: string, settingsPath: string, toolRoots: LocalConfig['toolRoots']): 'user' | 'project' {
+  const file = path.resolve(expandHome(settingsPath));
+  const homes = [toolHomeOf(tool)?.dir, recordedToolRootDir(tool, toolRoots) ?? undefined];
+
+  return homes.some((home) => home !== undefined && isWithin(file, home)) ? 'user' : 'project';
 }
 
 /**
@@ -387,6 +424,8 @@ export interface ReconcileHooksOptions {
   builtinForm?: BuiltinHookForm;
   /** Where `reconcileHooks` reads that form from; `version` when unset. */
   builtinFormFrom?: BuiltinHookFormSource;
+  /** The member's recorded roots, so a hook file under one is read as theirs (`hookFileDestination`). */
+  toolRoots?: LocalConfig['toolRoots'];
   /** Project root used to gate non-self project-scope team hooks. */
   teamHookProjectRoot?: string;
   /** The roots of a workspace's children, which the gate leaves out (#913). */
@@ -630,10 +669,10 @@ async function judgeUnrecordedTeamEntries(
   const loadRenders = async () => {
     if (renders) return renders;
     const history = await opts.teamHookHistory!();
-    const historicalDefs = scopedTeamDefs(history, opts.teamHookProjectRoot, tool, false, opts.teamHookChildRoots);
+    const historicalDefs = scopedTeamDefs(history, opts.teamHookProjectRoot, { tool, file }, false, opts.teamHookChildRoots);
 
     // A render under the previous host guard still proves ownership.
-    if (format === 'claude' && tool === 'claude') historicalDefs.push(...scopedTeamDefs(history, opts.teamHookProjectRoot, tool, true, opts.teamHookChildRoots));
+    if (format === 'claude' && tool === 'claude') historicalDefs.push(...scopedTeamDefs(history, opts.teamHookProjectRoot, { tool, file }, true, opts.teamHookChildRoots));
 
     return renders = [...teamDefsForTool(scopedDefs, tool), ...teamDefsForTool(historicalDefs, tool)]
       .flatMap((def) => {
@@ -1200,10 +1239,12 @@ function isProjectGatedCommand(command: string): boolean {
  * `tool` here keys the cursor/copilot wrapper, which is orthogonal to the
  * project gate: the gate lost its per-tool form once every render became POSIX
  * (CodeBuddy's Windows hooks run through Git Bash), but this wrapper still
- * needs to know which tool it is rendering for.
+ * needs to know which tool it is rendering for, and `file` which file it
+ * renders into: an instance's hooks are in a Claude settings file in a project
+ * and in a home of its own in user scope.
  */
-function skipWhenAnotherHostLoadsClaudeSettings(def: HookDef, tool: string, legacyGuard = false): string {
-  if (tool !== 'claude') return def.command;
+function skipWhenAnotherHostLoadsClaudeSettings(def: HookDef, { tool, file }: HookFileTarget, legacyGuard = false): string {
+  if (!readsClaudeSettings(tool, { file })) return def.command;
 
   const guard = legacyGuard ? LEGACY_CLAUDE_HOOK_OTHER_HOST_SKIP
     : claudeHookOtherHostSkip(CLAUDE_TO_COPILOT_EVENTS[def.event], toCopilotEntry(def).matcher, def.command);
@@ -1243,9 +1284,9 @@ function gatedProjectRoot(command: string): string | null {
  * HOME, which every worktree reads from its first session. Every other tool
  * keeps its team hooks in HOME behind a `$PWD` gate.
  */
-type MainCheckoutTeamHookTool = { [T in ToolId]: (typeof TOOLS)[T]['hooks']['teamHooks'] extends 'main-checkout' ? T : never }[ToolId];
+type MainCheckoutTeamHookTool = { [T in ToolId]: DescriptorOf<T>['hooks']['teamHooks'] extends 'main-checkout' ? T : never }[ToolId];
 
-const MAIN_CHECKOUT_TEAM_HOOK_TOOLS = TOOL_IDS.filter((tool): tool is MainCheckoutTeamHookTool => TOOLS[tool].hooks.teamHooks === 'main-checkout');
+const MAIN_CHECKOUT_TEAM_HOOK_TOOLS = TOOL_IDS.filter((tool): tool is MainCheckoutTeamHookTool => descriptorOf(tool).hooks.teamHooks === 'main-checkout');
 
 /** Where a non-self project scope keeps Claude/Codex team hooks. */
 export interface MainCheckoutHooks {
@@ -1513,11 +1554,12 @@ export async function codexTeamHookCheckout(localConfig: LocalConfig): Promise<s
   return canonicalProjectRoot(anchors?.workspaceRoot ?? localConfig.projectRoot);
 }
 
-/** `~/.codex/hooks.json` as this scope resolves Codex's user hook file, or null. */
+/** Codex's user hook file, `~/.codex/hooks.json` in the Codex home the member recorded, or null. */
 function codexHomeHooksFile(teamConfig: TeamaiConfig, localConfig: LocalConfig): string | null {
   const settings = scopedToolPaths(teamConfig, { ...localConfig, scope: 'user' })[CODEX_TOOL_ID]?.settings;
+  const home = canonicalProjectRoot(getUserHome());
 
-  return settings ? path.join(canonicalProjectRoot(getUserHome()), settings) : null;
+  return settings ? toolPathUnder(CODEX_TOOL_ID, home, settings, realHost({ home })) : null;
 }
 
 /**
@@ -1948,20 +1990,26 @@ function projectFolderCommand(def: HookDef, tool: string, powershell: boolean): 
   });
 }
 
+/** The tool a team hook is rendered for, and the settings file it is rendered into. */
+interface HookFileTarget {
+  readonly tool: string;
+  readonly file: string;
+}
+
 function scopedTeamDefs(
   teamDefs: HookDef[],
   projectRoot: string | undefined,
-  tool: string,
+  { tool, file }: HookFileTarget,
   legacyGuard = false,
   childRoots: readonly string[] = [],
   codebuddyDualRunner = false,
 ): HookDef[] {
   const prepared = teamDefs.map((def) => {
-    const powershell = tool === 'claude' && def.source === 'team' && process.platform === 'win32' && !legacyGuard
+    const powershell = baseToolOf(tool) === 'claude' && def.source === 'team' && process.platform === 'win32' && !legacyGuard
       && claudeHookUsesPowerShell();
 
     const rendered: HookDef = { ...def, command: projectFolderCommand(def, tool, powershell) };
-    const next: HookDef = { ...rendered, command: skipWhenAnotherHostLoadsClaudeSettings(rendered, tool, legacyGuard) };
+    const next: HookDef = { ...rendered, command: skipWhenAnotherHostLoadsClaudeSettings(rendered, { tool, file }, legacyGuard) };
 
     if (powershell) next.shell = 'powershell';
 
@@ -1990,7 +2038,7 @@ function scopedTeamDefs(
 
 function manifestRecordsForTool(
   teamDefs: HookDef[],
-  tool: string,
+  { tool, file }: HookFileTarget,
   removeAll: boolean,
   projectRoot?: string,
   childRoots: readonly string[] = [],
@@ -1999,7 +2047,7 @@ function manifestRecordsForTool(
   if (removeAll) return [];
 
   // The command as the file holds it, the children's gate included (#913).
-  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, tool, false, childRoots, codebuddyDualRunner), tool).map((d) => (
+  return teamDefsForTool(scopedTeamDefs(teamDefs, projectRoot, { tool, file }, false, childRoots, codebuddyDualRunner), tool).map((d) => (
     d.matcher && d.matcher !== '*'
       ? { id: d.key, event: d.event, matcher: d.matcher, command: d.command }
       : { id: d.key, event: d.event, command: d.command }
@@ -2765,15 +2813,43 @@ export async function editCodexHookFile(
     return true;
   }
 
-  const dir = path.dirname(file);
-  const cwd = canonicalProjectRoot(dir) === canonicalProjectRoot(codexTrust.codexHome) ? getUserHome() : path.dirname(dir);
-  const trust = await keepCodexHookTrust({ codexHome: codexTrust.codexHome, cwd, file }, retained, write);
+  const at = codexTrustAt(tool, codexTrust.codexHome);
 
-  if (trust.kind === 'failed') {
-    log.warn(`Codex may skip the hooks that moved in ${file} until you approve them in /hooks: ${trust.reason}`);
+  if ('kind' in at) {
+    await write();
+    log.warn(`Codex may skip the hooks that moved in ${file} until you approve them in /hooks: ${at.reason}`);
+
+    return true;
   }
 
+  const dir = path.dirname(file);
+  const inHome = canonicalProjectRoot(dir) === canonicalProjectRoot(at.codexHome);
+  const cwd = inHome ? getUserHome() : path.dirname(dir);
+
+  // A project's file is read by Codex at the home of each tool that trusts the project, so each keeps its approvals. A
+  // home that does not exist holds none, and Codex started there would make it.
+  const homes = inHome ? [at] : [...new Map([at, ...codexTrustTools().flatMap((other) => {
+    const reads = codexTrustAt(other, codexTrust.codexHome);
+
+    return 'kind' in reads || !existsSync(reads.codexHome) ? [] : [reads];
+  })].map((one) => [canonicalProjectRoot(one.codexHome), one])).values()];
+
+  const kept = homes.reduceRight<() => Promise<void>>((inner, home) => async () => {
+    const trust = await keepCodexHookTrust({ ...home, cwd, file }, retained, inner);
+
+    if (trust.kind === 'failed') {
+      log.warn(`Codex may skip the hooks that moved in ${file} until you approve them in /hooks: ${trust.reason}`);
+    }
+  }, write);
+
+  await kept();
+
   return true;
+}
+
+/** Codex and each instance of it this process knows: the tools whose homes a Codex trust pass covers. */
+function codexTrustTools(): string[] {
+  return [CODEX_TOOL_ID, ...toolInstancesFor('use').flatMap(({ kind, name }) => kind === 'instance' && baseToolOf(name) === CODEX_TOOL_ID ? [name] : [])];
 }
 
 async function reconcileCodexFormat(
@@ -3428,7 +3504,7 @@ export async function reconcileHooks(
   teamDefs: HookDef[] = [],
   given: ReconcileHooksOptions = {},
 ): Promise<void> {
-  const opts = { ...given, builtinForm: given.removeAll ? WAITED_LOGIN_FORM : await builtinHookFormOf({ tool, settingsPath, from: given.builtinFormFrom ?? 'version' }) };
+  const opts = { ...given, builtinForm: given.removeAll ? WAITED_LOGIN_FORM : await builtinHookFormOf({ tool, settingsPath, from: given.builtinFormFrom ?? 'version', toolRoots: given.toolRoots }) };
 
   if (opts.mainCheckout) {
     const target = opts.mainCheckout;
@@ -3461,7 +3537,7 @@ export async function reconcileHooks(
 
   const allPriorRecords = manifest?.[tool] ?? [];
   const renderCodebuddyWindows = tool === 'codebuddy' && process.platform === 'win32' && opts.codebuddyDualRunner === true;
-  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, tool, false, opts.teamHookChildRoots, renderCodebuddyWindows);
+  const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, { tool, file: settingsPath }, false, opts.teamHookChildRoots, renderCodebuddyWindows);
 
   const projectRecords = opts.teamHookProjectRoot
     ? allPriorRecords.filter((r) => isGatedForProject(r.command, opts.teamHookProjectRoot!))
@@ -3522,7 +3598,7 @@ export async function reconcileHooks(
     };
 
     const records = [
-      ...codex?.records ?? manifestRecordsForTool(teamDefs, tool, !!opts.removeAll, opts.teamHookProjectRoot, opts.teamHookChildRoots, renderCodebuddyWindows),
+      ...codex?.records ?? manifestRecordsForTool(teamDefs, { tool, file: settingsPath }, !!opts.removeAll, opts.teamHookProjectRoot, opts.teamHookChildRoots, renderCodebuddyWindows),
       ...heldRecords.filter((r) => keptHeld.has(r)).map((r) => followCodexMove({ ...r, command: keptHeld.get(r)! })),
     ];
 
@@ -3579,8 +3655,10 @@ export type BuiltinHookFormSource = 'installed' | 'version';
  * The form of `tool`'s built-ins in the hook file at `settingsPath`, read `from` the version or the file. A file
  * whose built-ins show one form is read as that form, whole: an entry of another form in it is then not current.
  */
-export async function builtinHookFormOf({ tool, settingsPath, from }: { tool: string; settingsPath: string; from: BuiltinHookFormSource }): Promise<BuiltinHookForm> {
-  const destination = hookFileDestination(tool, settingsPath);
+export async function builtinHookFormOf({ tool, settingsPath, from, toolRoots }: {
+  tool: string; settingsPath: string; from: BuiltinHookFormSource; toolRoots?: LocalConfig['toolRoots'];
+}): Promise<BuiltinHookForm> {
+  const destination = hookFileDestination(tool, settingsPath, toolRoots);
 
   if (from === 'installed' && destination === 'user') {
     const held = await heldBuiltins(tool, settingsPath);
@@ -3696,12 +3774,12 @@ async function heldBuiltins(tool: string, settingsPath: string): Promise<((def: 
  */
 export async function getHookStatus(
   settingsPath: string,
-  { tool = 'claude', from, builtinOverride }: { tool?: string; from: BuiltinHookFormSource; builtinOverride?: BuiltinHookOverride },
+  { tool = 'claude', from, builtinOverride, toolRoots }: { tool?: string; from: BuiltinHookFormSource; builtinOverride?: BuiltinHookOverride; toolRoots?: LocalConfig['toolRoots'] },
 ): Promise<HookStatus> {
   const held = await heldBuiltins(tool, settingsPath);
 
   if (!held) return 'missing';
-  const defs = applyBuiltinOverride(builtinHookDefs(tool, await builtinHookFormOf({ tool, settingsPath, from })), builtinOverride);
+  const defs = applyBuiltinOverride(builtinHookDefs(tool, await builtinHookFormOf({ tool, settingsPath, from, toolRoots })), builtinOverride);
 
   return defs.every(held) ? 'installed' : 'missing';
 }
@@ -3830,6 +3908,7 @@ async function clearEarlierHomeHooks(target: {
   baseDir: string; settings: string; current: string; tool: string; manifestPath: string;
   teamHookProjectRoot?: string; teamHookHistory?: TeamHookHistory;
 }): Promise<void> {
+  // oxlint-disable-next-line teamai/configured-tool-paths -- the copy earlier releases wrote under the default home (#1221); the guard below runs only when baseDir is the user home and the file is not `current`
   const earlier = path.join(target.baseDir, target.settings);
 
   if (earlier === target.current || path.resolve(target.baseDir) !== path.resolve(getUserHome()) || !await pathExists(earlier)) return;
@@ -4063,12 +4142,13 @@ async function builtinsInstalled(
   manifestPath: string,
   builtinOverride: BuiltinHookOverride | undefined,
   from: BuiltinHookFormSource,
+  toolRoots: LocalConfig['toolRoots'],
 ): Promise<boolean> {
   switch (builtinsOnly) {
     case undefined:
       return false;
     case 'with-overrides':
-      return await getHookStatus(settingsPath, { tool, from, builtinOverride }) === 'installed';
+      return await getHookStatus(settingsPath, { tool, from, builtinOverride, toolRoots }) === 'installed';
     case 'defaults-where-none':
       return hasTeamaiHooks(settingsPath, tool, manifestPath);
     default: {
@@ -4122,7 +4202,7 @@ export async function reconcileHooksToAllTools(
   const defs = opts.builtinsOnly ? [] : teamDefs;
 
   const skipInstalled = async (settingsPath: string, tool: string): Promise<boolean> =>
-    builtinsInstalled(opts.builtinsOnly, settingsPath, tool, manifestPath, opts.builtinOverride, opts.builtinFormFrom ?? 'version');
+    builtinsInstalled(opts.builtinsOnly, settingsPath, tool, manifestPath, opts.builtinOverride, opts.builtinFormFrom ?? 'version', opts.toolRoots);
 
   // Removal is JSON editing and needs no shell, so the gate only applies to
   // injection passes — otherwise tools without a shell could never clean up
@@ -4383,6 +4463,7 @@ export async function reconcileHooksToAllTools(
     // relocated. Do not recreate the missing HOME root just to remove them.
     if (!installed && !(opts.removeAll && mainFile)) continue;
     // A legacy-project sweep deliberately edits the old project file.
+    // oxlint-disable-next-line teamai/configured-tool-paths -- settingsOnly comes only from the legacy sweep, whose baseDir is resolveLegacyProjectHookScope's projectRoot, never the user home
     const settingsPath = opts.settingsOnly ? path.join(baseDir, paths.settings) : hookSettingsFile(tool, baseDir, paths.settings);
     // A project install of a tool that keeps its user hooks (ZCode) shares the HOME file: it owns only its gated team hooks.
     const homeHooks = channelsOf(tool).hooks.self === 'user' && opts.scope === 'project';
@@ -4418,6 +4499,7 @@ export async function reconcileHooksToAllTools(
               manifestPath: teamManifestPath,
               builtinOverride: opts.builtinOverride,
               builtinFormFrom: opts.builtinFormFrom,
+              toolRoots: opts.toolRoots,
               teamHookProjectRoot: root,
               teamHookHistory: opts.teamHookHistory,
               codexTrust: opts.codexTrust,
@@ -4443,6 +4525,7 @@ export async function reconcileHooksToAllTools(
             removeAll: opts.removeAll,
             builtinOverride: opts.builtinOverride,
             builtinFormFrom: opts.builtinFormFrom,
+            toolRoots: opts.toolRoots,
             teamHookProjectRoot: homeHooks ? opts.installedBaseDir ?? baseDir : opts.teamHookProjectRoot,
             heldTeamHookIds,
             teamHookHistory: opts.teamHookHistory,
@@ -4675,10 +4758,15 @@ async function removeCheckoutTeamHooks(
   }
 }
 
-/** What a Codex trust pass for one scope works on. */
+/** What a Codex trust pass for one tool in one scope works on: Codex, or an instance of it. */
 interface CodexTrustTargets {
-  /** The Codex home teamai writes to (the member's `toolRoots.codex`, else `~/.codex`). */
+  tool: string;
+  /** The Codex home teamai writes to (the member's `toolRoots.codex`, else `~/.codex`, or an instance's own). */
   codexHome: string;
+  /** An instance's accepted command (`codexTrustAt`). */
+  commands?: readonly string[];
+  /** Why no build trusts this instance's hooks yet: its command is not accepted. */
+  unaccepted?: string;
   /** The checkout whose hook layers are listed (HOME in user scope). */
   cwd: string;
   /** Exact generated Codex entries, including Codex's file/event/position key. */
@@ -4692,12 +4780,12 @@ interface CodexTrustTargets {
 }
 
 /** Select recorded team entries, not every occurrence of a managed command. */
-async function teamaiCodexHooks(file: string, manifestPath: string): Promise<CodexTrustTargets['hooks']> {
+async function teamaiCodexHooks(file: string, manifestPath: string, tool: string): Promise<CodexTrustTargets['hooks']> {
   const events = hookEventsOf(await readJson<JsonValue>(file), 'codex');
 
   if (!events) return [];
-  const records = (await readManifest(manifestPath))[CODEX_TOOL_ID] ?? [];
-  const builtins = recognisedBuiltinHookDefs(CODEX_TOOL_ID);
+  const records = (await readManifest(manifestPath))[tool] ?? [];
+  const builtins = recognisedBuiltinHookDefs(tool);
 
   return [...events].flatMap(([event, groups]) => groups.flatMap((entry, index) => {
     // The file is the member's: an entry that is not an object, or a command that is not a string, is no hook of teamai's.
@@ -4762,17 +4850,26 @@ export async function trustCodexAgentHook(settingsPath: string, event: string, c
 async function codexTrustTargets(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-  selectedAgents?: string[],
+  selectedAgents: string[] | undefined,
+  tool: string,
+  codexTools: readonly string[],
 ): Promise<CodexTrustTargets | null> {
   const { baseDir, manifestPath, scope: hookScope } = resolveHookScope(localConfig);
-  const paths = scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope })[CODEX_TOOL_ID];
+  const paths = scopedToolPaths(teamConfig, { ...localConfig, scope: hookScope })[tool];
 
   if (!paths?.settings) return null;
   const agents = hookFilterAgents(teamConfig, localConfig, selectedAgents);
 
-  if (agents && !agents.includes(CODEX_TOOL_ID)) return null;
+  if (agents && !agents.includes(tool)) return null;
 
-  const primary = path.join(canonicalProjectRoot(baseDir), paths.settings);
+  // The file the hook pass wrote: in user scope in the tool's home, which an instance's own variable may move elsewhere.
+  const written = hookSettingsFile(tool, baseDir, paths.settings);
+  const underBase = path.relative(baseDir, written);
+
+  const primary = underBase.startsWith('..') || path.isAbsolute(underBase)
+    ? path.join(canonicalProjectRoot(path.dirname(written)), path.basename(written))
+    : path.join(canonicalProjectRoot(baseDir), underBase);
+
   const sources = [{ file: primary, manifestPath }];
   let anchor: string | undefined;
   let mainFile: string | null = null;
@@ -4780,26 +4877,30 @@ async function codexTrustTargets(
   if (localConfig.scope === 'project' && localConfig.projectRoot) {
     anchor = (await mainCheckoutOf(localConfig.projectRoot)).root;
     const mainCheckout = await resolveMainCheckoutHooks(localConfig, teamConfig.toolPaths);
-    mainFile = mainCheckoutHookFile(mainCheckout, CODEX_TOOL_ID);
+    mainFile = mainCheckoutHookFile(mainCheckout, tool);
 
     if (mainCheckout && mainFile) {
       sources.push({ file: mainFile, manifestPath: mainCheckout.manifestPath });
+    // oxlint-disable-next-line teamai/configured-tool-paths -- anchor is the main checkout of a project-scope config (the scope check above), never the user home
     } else if (isSelfMode(localConfig) && path.join(anchor, paths.settings) !== primary) {
       // A linked worktree of a repo in self mode: Codex reads the main checkout's file.
+      // oxlint-disable-next-line teamai/configured-tool-paths -- anchor is the main checkout of a project-scope config (the scope check above), never the user home
       sources[0] = { file: path.join(anchor, paths.settings), manifestPath };
     }
 
-    // Self mode: the team-hook dispatchers live in HOME, beside the project's file.
-    const home = codexHomeHooksFile(teamConfig, localConfig);
+    // Self mode: Codex's team-hook dispatchers live in HOME, beside the project's file.
+    const home = tool === CODEX_TOOL_ID ? codexHomeHooksFile(teamConfig, localConfig) : null;
 
     if (isSelfMode(localConfig) && home && !sources.some((s) => s.file === home)) sources.push({ file: home, manifestPath });
   }
 
-  const hooks = (await Promise.all(sources.map((s) => teamaiCodexHooks(s.file, s.manifestPath)))).flat();
+  // A project's hooks file an instance shares with Codex holds the hooks of one of them, and the Codex of each runs them all.
+  const found = (await Promise.all(sources.flatMap((s) => codexTools.map((writer) => teamaiCodexHooks(s.file, s.manifestPath, writer))))).flat();
+  const hooks = [...new Map(found.map((hook) => [hook.key, hook])).values()];
 
   const mcpRecords = localConfig.scope === 'project'
     ? (await readJson<ManagedMcpManifest>(expandHome(managedMcpManifestPath(getDataHome(localConfig), localConfig.projectRoot))))
-      ?.[managedMcpManifestKey(CODEX_TOOL_ID, true)] ?? []
+      ?.[managedMcpManifestKey(tool, true)] ?? []
     : [];
 
   if (hooks.length === 0 && mcpRecords.length === 0) return null;
@@ -4808,15 +4909,60 @@ async function codexTrustTargets(
     || hooks.some((h) => h.file === mainFile)
     || mcpRecords.length > 0;
 
-  const codexHome = resolveToolRootDir(CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, localConfig.toolRoots);
+  const at = codexTrustAt(tool, resolveToolRootDir(CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, localConfig.toolRoots));
+  const build = 'kind' in at ? { codexHome: resolveToolRootDir(CODEX_TOOL_ID, DEFAULT_CODEX_ROOT, localConfig.toolRoots), unaccepted: at.reason } : at;
 
   const cwd = anchor ?? baseDir;
-  const inputs = [...sources.map((s) => s.file), path.join(codexHome, 'config.toml')];
+  const inputs = [...sources.map((s) => s.file), path.join(build.codexHome, 'config.toml')];
 
   // The key order is part of the trust fingerprint.
   return anchor && projectLayer
-    ? { codexHome, cwd, hooks, project: anchor, inputs, mcpRecords }
-    : { codexHome, cwd, hooks, inputs, mcpRecords };
+    ? { tool, ...build, cwd, hooks, project: anchor, inputs, mcpRecords }
+    : { tool, ...build, cwd, hooks, inputs, mcpRecords };
+}
+
+/** What a trust pass of this scope covers, for Codex and each instance of it this process knows; empty when teamai wrote nothing for them. */
+async function codexTrustTargetsOfScope(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  selectedAgents?: string[],
+): Promise<CodexTrustTargets[]> {
+  const tools = codexTrustTools();
+  const targets = await Promise.all(tools.map((tool) => codexTrustTargets(teamConfig, localConfig, selectedAgents, tool, tools)));
+
+  return targets.filter((target) => target !== null);
+}
+
+/**
+ * One outcome for the passes of several tools: the first that failed, else the first Codex could not run for, else a
+ * project the member keeps untrusted, else every hook trusted. A reason names the instance it is about.
+ */
+function combinedCodexTrust(passes: ReadonlyArray<{ tool: string; trust: CodexTrust }>): CodexTrust | undefined {
+  if (passes.length <= 1) return passes[0]?.trust;
+
+  const named = ({ tool, trust }: { tool: string; trust: CodexTrust }): CodexTrust =>
+    (trust.kind === 'failed' || trust.kind === 'unavailable') && tool !== CODEX_TOOL_ID && !trust.reason.startsWith(`${tool}: `)
+      ? { ...trust, reason: `${tool}: ${trust.reason}` } : trust;
+
+  for (const kind of ['failed', 'unavailable', 'unaccepted', 'project-untrusted'] as const) {
+    const pass = passes.find(({ trust }) => trust.kind === kind);
+
+    if (pass) return named(pass);
+  }
+
+  const trusted = passes.flatMap(({ trust }) => (trust.kind === 'trusted' ? [trust] : []));
+  const combined: CodexTrust = { kind: 'trusted', hooks: trusted.reduce((sum, trust) => sum + trust.hooks, 0) };
+  const project = trusted.find((trust) => trust.project !== undefined)?.project;
+  const skew = trusted.find((trust) => trust.skew !== undefined)?.skew;
+  const uncompared = trusted.flatMap((trust) => trust.uncompared ?? []);
+
+  if (project !== undefined) combined.project = project;
+
+  if (skew !== undefined) combined.skew = skew;
+
+  if (uncompared.length > 0) combined.uncompared = uncompared;
+
+  return combined;
 }
 
 /**
@@ -4824,11 +4970,13 @@ async function codexTrustTargets(
  * the hook files and of Codex's `config.toml`, and which Codex builds exist —
  * an upgrade can change how Codex hashes a hook without touching any file here.
  */
-async function codexTrustFingerprint(targets: CodexTrustTargets): Promise<string> {
-  const hash = createHash('sha256').update(JSON.stringify({ ...targets, inputs: undefined }));
+async function codexTrustFingerprint(targets: readonly CodexTrustTargets[]): Promise<string> {
+  const hash = createHash('sha256').update(JSON.stringify(targets.map((target) => ({ ...target, inputs: undefined }))));
 
-  for (const file of targets.inputs) hash.update(`\0${file}\0${await readFileSafe(file) ?? ''}`);
-  hash.update(`\0${codexBuildsIdentity()}`);
+  for (const target of targets) {
+    for (const file of target.inputs) hash.update(`\0${file}\0${await readFileSafe(file) ?? ''}`);
+    hash.update(`\0${await codexBuildsIdentity(target.commands)}`);
+  }
 
   return hash.digest('hex');
 }
@@ -4850,11 +4998,11 @@ async function codexTrustFingerprint(targets: CodexTrustTargets): Promise<string
 export async function trustCodexForScope(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-  opts: { filterAgents?: string[]; force?: boolean } = {},
+  opts: { filterAgents?: string[]; force?: boolean; ask?: (question: string) => Promise<string | undefined> } = {},
 ): Promise<CodexTrust | undefined> {
-  const targets = await codexTrustTargets(teamConfig, localConfig, opts.filterAgents);
+  const targets = await codexTrustTargetsOfScope(teamConfig, localConfig, opts.filterAgents);
 
-  if (!targets) return undefined;
+  if (targets.length === 0) return undefined;
 
   if (localConfig.codexTrustEnabled === false) return { kind: 'disabled' };
   const { loadStateForScope, saveStateForScope } = await import('./config.js');
@@ -4862,23 +5010,35 @@ export async function trustCodexForScope(
 
   if (!opts.force && last.codexTrustFingerprint === await codexTrustFingerprint(targets)) {
     const trusted: CodexTrust = { kind: 'trusted', hooks: 0 };
+    const project = targets.find((target) => target.project !== undefined)?.project;
 
-    if (targets.project) trusted.project = targets.project;
+    if (project !== undefined) trusted.project = project;
 
     if (last.codexBuildSkew) trusted.skew = last.codexBuildSkew;
 
     return trusted;
   }
 
-  const trust = await trustCodexHooks({ ...targets, onProjectTrusted: async (project) => {
-    const state = await loadStateForScope(localConfig);
-    state.codexProjectTrust = [...state.codexProjectTrust ?? []];
+  const passes: Array<{ tool: string; trust: CodexTrust }> = [];
 
-    if (!state.codexProjectTrust.some((entry) => entry.home === targets.codexHome && entry.project === project)) {
-      state.codexProjectTrust.push({ home: targets.codexHome, project });
-      await saveStateForScope(state, localConfig);
-    }
-  } });
+  for (const listed of targets) {
+    // A person at a terminal answers the question a workflow step asks; once they accept, the instance's command trusts.
+    const target = listed.unaccepted !== undefined && opts.ask ? await acceptedCodexTarget(listed, opts.ask) : listed;
+
+    const trust: CodexTrust = target.unaccepted !== undefined ? { kind: 'unaccepted', tool: target.tool } : await trustCodexHooks({ ...target, onProjectTrusted: async (project) => {
+      const state = await loadStateForScope(localConfig);
+      state.codexProjectTrust = [...state.codexProjectTrust ?? []];
+
+      if (!state.codexProjectTrust.some((entry) => entry.home === target.codexHome && entry.project === project)) {
+        state.codexProjectTrust.push({ home: target.codexHome, project });
+        await saveStateForScope(state, localConfig);
+      }
+    } });
+
+    passes.push({ tool: target.tool, trust });
+  }
+
+  const trust = combinedCodexTrust(passes) ?? { kind: 'trusted', hooks: 0 };
 
   const cacheable = trust.kind === 'trusted' && (!trust.uncompared || isDeepStrictEqual(trust.uncompared, last.codexBuildUncompared));
   const fingerprint = cacheable ? await codexTrustFingerprint(targets) : undefined;
@@ -4897,6 +5057,20 @@ export async function trustCodexForScope(
   return trust;
 }
 
+/** `listed` once `ask` accepts its instance's command, trusting in the instance's home through that command; else `listed`. */
+async function acceptedCodexTarget(listed: CodexTrustTargets, ask: (question: string) => Promise<string | undefined>): Promise<CodexTrustTargets> {
+  const instance = toolOf(listed.tool)?.instance;
+
+  if (instance === undefined || !(await acceptToolCommand(instance, { ask })).ok) return listed;
+  const at = codexTrustAt(listed.tool, listed.codexHome, { justAccepted: true });
+
+  if ('kind' in at) return listed;
+  const { unaccepted: _, ...target } = listed;
+  const config = path.join(listed.codexHome, 'config.toml');
+
+  return { ...target, ...at, inputs: listed.inputs.map((file) => file === config ? path.join(at.codexHome, 'config.toml') : file) };
+}
+
 /**
  * Read-only, for `doctor`: which teamai hooks Codex will not run in this scope.
  * Null when teamai wrote no Codex hook here.
@@ -4905,11 +5079,24 @@ export async function readCodexHookTrustForScope(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
 ): Promise<CodexHookTrustReport | null> {
-  const targets = await codexTrustTargets(teamConfig, localConfig);
+  const targets = (await codexTrustTargetsOfScope(teamConfig, localConfig)).filter((target) => target.hooks.length > 0);
+  const reports: CodexHookTrustReport[] = [];
 
-  if (!targets || targets.hooks.length === 0) return null;
+  for (const target of targets) {
+    reports.push(target.unaccepted !== undefined
+      ? { kind: 'unavailable', reason: target.unaccepted }
+      : await readCodexHookTrust({ ...target, cwd: localConfig.projectRoot ?? target.cwd }));
+  }
 
-  return readCodexHookTrust({ ...targets, cwd: localConfig.projectRoot ?? targets.cwd });
+  const unlisted = reports.find((report) => report.kind !== 'listed');
+
+  if (reports.length <= 1 || unlisted) return unlisted ?? reports[0] ?? null;
+  const report: CodexHookTrustReport = { kind: 'listed', notTrusted: reports.flatMap((one) => (one.kind === 'listed' ? one.notTrusted : [])) };
+  const skew = reports.find((one) => one.skew !== undefined)?.skew;
+
+  if (skew !== undefined) report.skew = skew;
+
+  return report;
 }
 
 /**
@@ -4951,6 +5138,7 @@ export async function sweepLegacyProjectHooks(
   for (const [tool, paths] of Object.entries(toolPaths)) {
     const mainFile = mainCheckoutHookFile(mainCheckout, tool);
 
+    // oxlint-disable-next-line teamai/configured-tool-paths -- legacy.baseDir is resolveLegacyProjectHookScope's projectRoot, never the user home
     if (mainFile && paths.settings && path.join(canonicalProjectRoot(legacy.baseDir), paths.settings) === mainFile) {
       if (!reconciledMainTools.has(tool) && await pathExists(mainFile)) {
         await reconcileHooks(mainFile, tool, [], { removeAll: true, teamOnly: true, manifestPath: legacy.manifestPath, codexTrust });
@@ -5184,6 +5372,7 @@ export async function reconcileTeamHooksForConfig(
 
   if (isSelfMode(localConfig) && !builtinsOnly && oldZcodeSettings
     && (!filterAgents || filterAgents.includes('zcode'))) {
+    // oxlint-disable-next-line teamai/configured-tool-paths -- the unread self-scope copy earlier releases wrote, compared with the one hookSettingsFile gives
     const legacyFile = path.join(baseDir, oldZcodeSettings);
     const homeSettings = hookToolPaths.zcode?.settings;
 
@@ -5255,7 +5444,7 @@ export async function reconcileTeamHooksForConfig(
     const copilotBuiltin = hookScope === 'user' ? undefined : builtin;
 
     const copilotInstalled = await builtinsInstalled(
-      builtinsOnly, copilotHooksPath, COPILOT_TOOL_ID, copilotManifestPath ?? manifestPath, copilotBuiltin, opts.builtinFormFrom ?? 'version');
+      builtinsOnly, copilotHooksPath, COPILOT_TOOL_ID, copilotManifestPath ?? manifestPath, copilotBuiltin, opts.builtinFormFrom ?? 'version', localConfig.toolRoots);
 
     if (copilotInstalled && hookScope === 'user') await markCopilotGlobalBuiltins(copilotHooksPath);
 
@@ -5416,29 +5605,43 @@ async function projectHookFiles(
 }
 
 /**
- * The project's `.codex/hooks.json`, when it exists and holds anything, and
- * whether it holds only teamai's team hooks (#915): no top-level key but
- * `hooks`, and every handler one that teamai's hook manifest for that file
- * records (the main checkout's `managed-main-checkout-hooks.json`, or this
- * checkout's `managed-hooks.json` in self mode), at least one. Run after the
- * reconcile, which records the unrecorded entries that equal a team render
- * (#993). A symlink is the member's and is not judged. Read-only.
+ * The project's `.codex/hooks.json`, and each Codex instance's hooks file in its
+ * folder, when it exists and holds anything, and whether it holds only teamai's
+ * team hooks (#915): no top-level key but `hooks`, and every handler one that
+ * teamai's hook manifest for that file records (the main checkout's
+ * `managed-main-checkout-hooks.json`, or this checkout's `managed-hooks.json` in
+ * self mode), at least one. Run after the reconcile, which records the
+ * unrecorded entries that equal a team render (#993). A symlink is the member's
+ * and is not judged. Read-only.
  */
 export async function judgeTeamaiOnlyCodexHooks(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
+): Promise<Array<{ file: string; teamaiOnly: boolean }>> {
+  const tools = [CODEX_TOOL_ID, ...toolInstancesFor('use').flatMap(({ kind, name }) => kind === 'instance' && baseToolOf(name) === CODEX_TOOL_ID ? [name] : [])];
+  const verdicts = await Promise.all(tools.map((tool) => judgeTeamaiOnlyCodexHooksOf(teamConfig, localConfig, tool)));
+
+  return verdicts.filter((verdict) => verdict !== null);
+}
+
+/** `judgeTeamaiOnlyCodexHooks` for one Codex-format tool's file. */
+async function judgeTeamaiOnlyCodexHooksOf(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  tool: string,
 ): Promise<{ file: string; teamaiOnly: boolean } | null> {
   if (localConfig.scope !== 'project' || !localConfig.projectRoot) return null;
   let file: string | null;
   let manifestPath: string;
 
   if (isSelfMode(localConfig)) {
-    const settings = scopedToolPaths(teamConfig, localConfig)[CODEX_TOOL_ID]?.settings;
+    const settings = scopedToolPaths(teamConfig, localConfig)[tool]?.settings;
+    // oxlint-disable-next-line teamai/configured-tool-paths -- in self mode resolveHookScope's baseDir is the project root, never the user home
     file = settings ? path.join(resolveHookScope(localConfig).baseDir, settings) : null;
     manifestPath = getManagedHooksPath(localConfig);
   } else {
     const main = await resolveMainCheckoutHooks(localConfig, teamConfig.toolPaths);
-    file = mainCheckoutHookFile(main, CODEX_TOOL_ID);
+    file = mainCheckoutHookFile(main, tool);
     manifestPath = main?.manifestPath ?? '';
   }
 
@@ -5460,7 +5663,7 @@ export async function judgeTeamaiOnlyCodexHooks(
   const { hooks, ...others } = json;
 
   if (Object.keys(others).length > 0 || !isJsonObject(hooks)) return { file, teamaiOnly: false };
-  const records = (await readManifest(manifestPath))[CODEX_TOOL_ID] ?? [];
+  const records = (await readManifest(manifestPath))[tool] ?? [];
   let owned = 0;
 
   for (const [event, entries] of Object.entries(hooks)) {

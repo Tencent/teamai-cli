@@ -2,8 +2,9 @@
 import path from 'node:path';
 import { readdir } from 'node:fs/promises';
 import fs from 'fs-extra';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { caseFoldKey } from './manifest-schema.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /**
  * 聚合 teamwiki/evidence/code/ 下所有仓库的 per-repo graph。
@@ -40,7 +41,7 @@ export async function buildAggregatedGraph(teamwikiRoot: string) {
         try {
             // SAFETY: only teamai's own code extraction writes a per-repo graph-index.json; a file without
             // nodes or edges arrays throws on the loops below and the catch skips that repo.
-            const overlay = JSON.parse(await fs.readFile(graphPath, 'utf8')) as GraphIndex;
+            const overlay = JSON.parse(await readRegularFile(graphPath, 'utf8')) as GraphIndex;
 
             // Stamp ownership onto the data itself before it ever enters the
             // global graph (#912 review): every node and edge this ONE
@@ -282,7 +283,7 @@ export async function scopeGlobalGraph(
         const graphPath = path.join(evidenceBase, dir.name, '.indices', 'graph-index.json');
 
         try {
-            const raw = JSON.parse(await fs.readFile(graphPath, 'utf8'));
+            const raw = JSON.parse(await readRegularFile(graphPath, 'utf8'));
             // `parseGraphIndex` is the exact schema `loadGraphIndex` validates
             // the global graph with — reusing it here, instead of a loose
             // shape check, is what catches a schema-invalid node (missing

@@ -21,8 +21,8 @@ vi.mock('node:os', async (importOriginal) => {
 
 // One id in two workspaces only happens with copies an older TeamAI wrote; writing through the
 // adapters under a fixed id plants them.
-vi.mock('../session-flow/ids.js', async (importOriginal) => {
-  const actual = (await importOriginal()) as typeof import('../session-flow/ids.js');
+vi.mock('@teamai/tool-core/sessions/ids', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('@teamai/tool-core/sessions/ids');
   return {
     ...actual,
     deriveTargetSessionId: (target: Parameters<typeof actual.deriveTargetSessionId>[0]) =>
@@ -32,7 +32,7 @@ vi.mock('../session-flow/ids.js', async (importOriginal) => {
 
 import { AgentSession } from '../session-flow/agent-session.js';
 import { getAdapter } from '../session-flow/adapters/index.js';
-import type { Session } from '../session-flow/ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 import { SessionSearchEngine } from '../session-flow/search.js';
 import { SyncManager, defaultSyncMeta } from '../session-flow/sync.js';
 import {
@@ -41,7 +41,7 @@ import {
   plantOpencodeSession,
   setFakeOpencodeExportError,
   setFakeOpencodeVersion,
-} from './helpers/fake-opencode.js';
+} from '@teamai/tool-opencode/testing';
 import { WRITABLE } from './helpers/writable-platforms.js';
 
 const SECRET = 'sk-ABCDEFGH1234567890abcdefghij';
@@ -245,6 +245,20 @@ describe('AgentSession.find on OpenCode', () => {
     return id;
   }
 
+  // A runtime that launches OpenCode itself, such as a Paseo daemon, reports the data home its session is in.
+  it('reads a session from the data home its store is in, not the member\'s own', async () => {
+    const cwd = workspace('ws');
+    const elsewhere = path.join(mocks.home, 'daemon-data');
+    const session = opencodeExportFixture();
+    session.info.id = 'ses_ec4a5b73fffeElsewhereData1';
+    session.info.location.directory = cwd;
+    plantOpencodeSession(elsewhere, session);
+
+    const found = await AgentSession.find({ platform: 'opencode', sessionId: session.info.id, cwd, storeDir: path.join(elsewhere, 'opencode') }, { scrub: false });
+
+    expect(found).toMatchObject({ status: 'done', session: { sessionId: session.info.id, platform: 'opencode' } });
+  });
+
   it('reads a session with its tool calls, their results, and an attached image', async () => {
     const cwd = workspace('ws');
     const sessionId = plantOpencode(cwd);
@@ -407,6 +421,16 @@ describe('AgentSession.find on OpenCode', () => {
 
     expect(listed).toMatchObject([{ platform: 'opencode', title: 'tool probe', messageCount: 4 }]);
     expect(hits).toMatchObject([{ platform: 'opencode', title: 'tool probe' }]);
+  });
+
+  // A build that prints no version number, such as one from source, is taken as OpenCode V2, as pull and doctor take it.
+  it('finds a session through an OpenCode that prints no version number', async () => {
+    const sessionId = plantOpencode(workspace('ws'));
+    setFakeOpencodeVersion(dataHome, 'opencode local');
+
+    const found = await AgentSession.find({ platform: 'opencode', sessionId });
+
+    expect(found).toMatchObject({ status: 'done', session: { title: 'tool probe' } });
   });
 
   // OpenCode 1 has no `opencode session export`.

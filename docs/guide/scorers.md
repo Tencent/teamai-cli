@@ -275,7 +275,7 @@ Names only: a value that is not a skill name, such as a path, is dropped. A repo
 
 ```console
 $ teamai score --run r5863… --scorer review-quality                                        # the one step that lists it, latest succeeded pass
-ℹ Run rd4894… started. If it stops before it ends, continue it with: teamai workflow resume rd4894…
+ℹ Run rd4894… started. If it stops before it ends, continue it here with: teamai workflow resume rd4894…, or hand it to another machine with: teamai workflow publish rd4894…
 ℹ review-quality: good (score 1, passed). Reasoning: ~/.teamai/scores/reasoning/d3ce….md
 $ teamai score --run r3f9… --step review --pass 2 --scorer review-quality --driver none   # any driver's workflow next takes it
 ```
@@ -298,6 +298,8 @@ A pass whose commits or recorded session are gone from this machine fails before
 $ teamai score --run r3f9… --scorer delivered
 {"error":{"code":"evidence_missing","message":"Pass 1 of step change in run r3f9… cannot be scored: no longer on this machine: claude-code session 6f1c2a0e-… of change#1. Restore what is missing, or score another pass. No label was written."}}
 ```
+
+A pass's session is read in the home its tool ran with: `CLAUDE_CONFIG_DIR` or `CODEX_HOME` as the step had it, also outside your home directory, else the tool's root that `teamai init` recorded.
 
 ## Score what a run delivered
 
@@ -392,7 +394,7 @@ The teamai-score run of an automatic pass fails it with `check_could_not_run` an
 $ teamai score --session 7c1e… --scorer review-quality          # in your own terminal
 ℹ Scoring claude-code session 7c1e… in /work/app
 ℹ First prompt: Add retries to the client
-ℹ Run r2b7… started. If it stops before it ends, continue it with: teamai workflow resume r2b7…
+ℹ Run r2b7… started. If it stops before it ends, continue it here with: teamai workflow resume r2b7…, or hand it to another machine with: teamai workflow publish r2b7…
 ℹ review-quality: bad (score 0, did not pass). Reasoning: ~/.teamai/scores/reasoning/9f2c….md
 ℹ To share what went wrong, ask your agent to read ~/.teamai/scores/reasoning/9f2c….md and share it with the team (teamai contribute --session-id 7c1e…).
 $ teamai score --session 7c1e… --source codex --scorer review-quality --push
@@ -416,7 +418,7 @@ The agent just said the retry loop is fixed, and it is not. In your own terminal
 $ teamai score --session 7c1e… --scorer review-quality --label missed-bug --push
 ℹ Labelling claude-code session 7c1e… in /work/app
 ℹ First prompt: Fix the retry loop in sync.ts
-ℹ Run rfc5… started. If it stops before it ends, continue it with: teamai workflow resume rfc5…
+ℹ Run rfc5… started. If it stops before it ends, continue it here with: teamai workflow resume rfc5…, or hand it to another machine with: teamai workflow publish rfc5…
 ℹ review-quality: missed-bug (score 0, did not pass), by hand. No judge ran.
 ```
 
@@ -448,7 +450,7 @@ $ teamai score --session 7c1e… --scorer review-quality --label good       # in
 $ teamai score --run r24df… --step review --pass 1 --scorer review-quality --label missed-bug
 {"error":{"code":"invalid_arguments","message":"--label labels a session. To label pass 1 of step review of run r24df… by hand, run in your own terminal: teamai workflow start teamai-score --driver local --inputs '{\"subject\":\"run:r24df…:review:1\",\"scorers\":[\"review-quality\"],\"label\":\"missed-bug\",\"batch\":false,\"demand\":\"named\"}'"}}
 $ teamai workflow start teamai-score --driver local --inputs '{"subject":"run:r24df…:review:1","scorers":["review-quality"],"label":"missed-bug","batch":false,"demand":"named"}'
-ℹ Run re440… started. If it stops before it ends, continue it with: teamai workflow resume re440…
+ℹ Run re440… started. If it stops before it ends, continue it here with: teamai workflow resume re440…, or hand it to another machine with: teamai workflow publish re440…
 {"data":{"done":{"run":"re440…","outcome":"succeeded","outputs":{"labels":[{…,"outputs":{"labels":[{"scorer":"review-quality","label":"missed-bug","code":""}],"written":["9c41…"]}}]}},"cancelled":[]}}
 ```
 
@@ -493,7 +495,7 @@ When two members pushed a session with that name, the command fails and lists th
 $ teamai score --team-session claude-code_fix-the-retry-loop-in-sync-ts_20261021 --author bob --scorer review-quality --label good
 ```
 
-`--team-session` reads the sessions pushed for the project of the current directory on `teamai-reports`. On a git team it reads where teamai kept sessions on the default branch before only when `teamai-reports` has no session of that name, and `--author` picks among the members who pushed the name where it was found. It cannot be combined with `--session`, `--source` or `--json`. The session is redacted before the judge reads it, also when it was pushed without `--scrub`. The directory it names is the one the session ran in, relative to its repository. Its label takes `agent` from the archive ([what a scrubbed session keeps](dashboard.md#what-a-scrubbed-session-keeps)), so the Scorers page groups it by tool, model and team revision with the sessions scored where they ran. A session archived without one, such as one pushed by teamai 0.28 or earlier, counts as `Not recorded` there.
+`--team-session` reads the sessions pushed for the project of the current directory on `teamai-reports`. On a git team it reads where teamai kept sessions on the default branch before only when `teamai-reports` has no session of that name, and `--author` picks among the members who pushed the name where it was found. It cannot be combined with `--session`, `--source` or `--json`. The session is redacted before the judge reads it, also when it was pushed without `--scrub`. A step session archived with the files its step left gives them to the judge: the text files under `evidence/` in the evidence directory, and every file in `evidence` of `evidence.json`, a listed one by name, type, size and sha256 only. Evidence that cannot be read fails the judgment as `evidence_unreadable`. The directory it names is the one the session ran in, relative to its repository. Its label takes `agent` from the archive ([what a scrubbed session keeps](dashboard.md#what-a-scrubbed-session-keeps)), so the Scorers page groups it by tool, model and team revision with the sessions scored where they ran. A session archived without one, such as one pushed by teamai 0.28 or earlier, counts as `Not recorded` there.
 
 ### When the scorer changes
 
@@ -771,7 +773,7 @@ Every unattended driver ends with `teamai score --drain`. The local driver runs 
 1. In unattended mode, every session this data home captured as unattended counts as finished, the calling session included. Attended sessions keep the idle rule, six hours unless the team changed it.
 2. It starts a [`teamai-finished-sessions`](#teamai-finished-sessions) run here, as a session start does, and drives it on the driver `workflows.driver` names, else on the local driver. A run for a driver this machine does not run waits for it, and the drain says how to drive it here. The run archives the finished sessions with `publish: auto` for their mode and judges the sampled ones the policies allow, within `daily_limit`. It starts `teamai-score` again for each pass and session whose judging lapsed, for each `start: workflow` pass its run left unscored, and for the open passes and sessions the upgrade carried over from judge attempts, except a pass whose run last changed more than 14 days ago. A run already working on this data home is left to it, and the drain says so: run the drain again once it ends.
 3. It publishes every pending label, and what a [`deliver: publish`](workflow.md#publish-to-a-data-branch) step left pending on a data branch, as `score --push` does, and the workflow run records a run could not publish, as `teamai pull` does.
-4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the step sessions of the runs driven here that are not archived yet. A step session it cannot archive from here, because teamai reads no sessions from its tool or this machine cannot read it, is listed once as skipped with the reason, and never tried again. The other step sessions of that run are still archived. The trial sessions of a [benchmark](benchmarks.md) run stay on the machine that ran it.
+4. With `publish: auto` for the current mode, it archives on `teamai-reports`, scrubbed, the step sessions of the runs driven here that are not archived yet. A step session it cannot archive from here, because teamai reads no sessions from its tool or this machine cannot read it, is listed once as skipped with the reason, and never tried again. The other step sessions of that run are still archived. The files a step left in its attempt's `out/` directory, beside `result.json`, are archived with its session; a prompt step's tool may write there without asking, so tell it in the prompt to save there what it saw. A text file (`.txt`, `.log`, `.json`, `.jsonl`, `.md`, `.html`, `.xml`, `.csv`, `.yaml`, `.yml`) is masked as the session is and kept up to 1 MiB, and up to 10 MiB for all the text of a step; past that it is cut, with a line that says so. Any other file, such as a screenshot or a video, is only listed by name, type, size and sha256: its content never leaves this machine, because it cannot be masked for secrets. So is a text file that is not UTF-8 or is over 64 MiB. Only the first 100 files, by path, are kept; the rest are counted. When a loop ran a session again, its latest pass's files go with it, and a pass that left none drops what an earlier one left. The trial sessions of a [benchmark](benchmarks.md) run stay on the machine that ran it.
 5. It reports usage to `stats/<member>.yaml`, as `teamai pull` does, so the counts of an ephemeral runner reach the team.
 6. It prints what is left: a judge step of its run that no driver here can take, such as one whose scorer pins a model no judge tool here runs, which waits for another driver's `workflow next`, and each pass or session whose CI has not finished, which the next drain labels.
 

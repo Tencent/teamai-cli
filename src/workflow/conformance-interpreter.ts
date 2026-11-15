@@ -4,7 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { resolveRunMode } from '../launch-context.js';
-import { isJsonObject, type JsonValue } from '../types.js';
+import { isJsonObject, type JsonValue } from '@teamai/shared/json';
+import { parseYaml } from '@teamai/shared/yaml';
 import { agentEvidence } from './attempt-marker.js';
 import { commandOutputs, type NextPrepare, type WorkflowClient } from './protocol.js';
 import type { WorkflowRunRecord } from './records.js';
@@ -13,6 +14,7 @@ import { callerProvenance } from './run-controls.js';
 import { AttemptIdSchema } from './store.js';
 import type { DriverIdentity, RunState, WorkflowEnvelope } from './types.js';
 import { git } from './worktree.js';
+import { readRegularFile, writeRegularFile } from '@teamai/shared/regular-file';
 
 export const PARALLEL_ROOTS = `schemaVersion: v1alpha1
 name: build
@@ -109,7 +111,8 @@ export type ConformanceScenario = WorkflowScenario | BenchmarkScenario;
 /**
  * The kinds of driver a scenario speaks as. Each sends the driver identity of its `kind`, so a lease one holds is
  * another kind's to the rest, and each declares what it can do in `driver.can`. A local driver's `hitl` comes from the
- * operation, since it has a person only when it runs in a terminal.
+ * operation, since it has a person only when it runs in a terminal. A step runtime's profile is what that runtime
+ * offers the local driver, which step-runtime-scenarios.test.ts checks against the runtime itself.
  */
 export const DRIVER_PROFILES = {
   /** The in-process driver `workflow start --driver local` and `workflow resume` run. */
@@ -122,18 +125,52 @@ export const DRIVER_PROFILES = {
   skill: {
     kind: 'skill',
     can: {
-      hitl: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false,
+      hitl: true, exec: true, workspace: ['read-only', 'new', 'continue', 'team'], network: false, isolation: 'none', env: 'commands', tokens: false, max_turns: false, setup: true, tools: [], end_turn: false, unattended: false, role: false,
       confined: [{ level: 'verified', access: 'read', tools: ['claude'] }],
     },
   },
   /** The skill driver's identity declaring only a person and workspaces, so a run owes it no env, setup or tokens. */
   'skill-bare': { kind: 'skill', can: { hitl: true, workspace: ['read-only', 'new', 'continue'] } },
+  /**
+   * The local driver offering a step on a T3 Code runtime: each prompt a thread reporting the tokens its tool's session
+   * records, no command, setup, env, turn cap or unattended step, and its tools judged best-effort.
+   */
+  t3: {
+    kind: 'local',
+    can: {
+      exec: false, setup: false, env: false, tokens: true, unattended: false, max_turns: false, workspace: ['read-only', 'new', 'continue', 'clone', 'team'], tools: ['claude'],
+      confined: [{ level: 'best-effort', access: 'read', tools: ['claude'] }], remote: true,
+    },
+  },
+  /** The local driver offering a step on a Paseo runtime on this machine, running Claude: as T3, and a role delivered into the agent's home. */
+  paseo: {
+    kind: 'local',
+    can: {
+      exec: false, setup: false, env: false, tokens: true, unattended: false, max_turns: false, workspace: ['read-only', 'new', 'continue', 'clone', 'team'], role: true, tools: ['claude'],
+      confined: [{ level: 'best-effort', access: 'read', tools: ['claude'] }], remote: true,
+    },
+  },
+  /** The local driver offering a step on a sandbox runtime on a container engine: every step, in a sandbox. */
+  sandbox: {
+    kind: 'local',
+    can: {
+      workspace: ['read-only', 'new', 'continue', 'clone', 'team'], isolation: 'sandbox', env: true, tokens: true, max_turns: true, setup: true, tools: ['claude'], end_turn: true, unattended: true, role: true,
+      confined: [{ level: 'verified', access: 'read', tools: ['claude'] }, { level: 'verified', access: 'full', tools: ['codex'] }], remote: true,
+    },
+  },
 } as const satisfies Record<string, { kind: string; can: DriverCan }>;
 
 export type DriverProfile = keyof typeof DRIVER_PROFILES;
 
 /** The drivers under test every protocol, place, git and limits scenario runs as. */
 export const DRIVERS_UNDER_TEST = ['local', 'skill', 'skill-bare'] as const satisfies readonly DriverProfile[];
+
+/**
+ * What every protocol, place and limits scenario runs as: the drivers under test, and the local driver offering a step
+ * on each step runtime teamai ships. The git scenarios leave the runtimes out: the local driver prepares their places,
+ * which `local` holds to them.
+ */
+export const PROFILES_UNDER_TEST = [...DRIVERS_UNDER_TEST, 't3', 'paseo', 'sandbox'] as const satisfies readonly DriverProfile[];
 
 /** The identity a scenario's `as` profile sends. */
 export function profileDriver(profile: DriverProfile): DriverIdentity {
@@ -148,8 +185,9 @@ export function profileDriver(profile: DriverProfile): DriverIdentity {
  * profile's `can` it names, and `hitl` sets it for a profile that does not decide it.
  * `state` is matched against the persisted run after the operation. `advance` moves the clock the engine reads.
  * `prepare` asks `next` to prepare the lease's place; `promptHas` lists text its prompt contains. With `prepare`,
- * `attempt` names the saved lease whose attempt `next` prepares, which it must answer with, and `adopt` the `host`
- * place it prepares it in, where the lease must run. `host` makes a place as a host would, at `name` beside the
+ * `attempt` names the saved lease whose attempt `next` prepares, which it must answer with, and `adopt` the
+ * `session-host` place it prepares it in, where the lease must run. `session-host` makes a place as a session host would,
+ * at `name` beside the
  * checkout: a worktree on the workspace branch of `lease` (`on: 'branch'`), detached at its start (`'start'`), or on
  * another branch made there (`'other'`), or a repository of its own (`'foreign'`), with `files` written in it. `edit`
  * writes files in a prepared lease's place, and `files` checks them there, or in the checkout without a lease: `null`
@@ -161,7 +199,7 @@ export type ConformanceOperation =
     base?: { ref?: string; commit: string }; prepare?: true; attempt?: string; adopt?: string; promptHas?: string[];
     cancelled?: string[]; deadlines?: string[]; absent?: string[]; expect: ScenarioJson; state?: ScenarioJson;
   }
-  | { kind: 'host'; name: string; lease: string; on: 'branch' | 'start' | 'other' | 'foreign'; files?: Record<string, string> }
+  | { kind: 'session-host'; name: string; lease: string; on: 'branch' | 'start' | 'other' | 'foreign'; files?: Record<string, string> }
   | { kind: 'edit'; lease: string; files: Record<string, string> }
   /** Writes files under the run's `$TEAMAI_RUN_DIR`, as a step that hands another its files there would. Needs a runner with `runDir`. */
   | { kind: 'runFiles'; files: Record<string, string> }
@@ -291,11 +329,34 @@ async function readOrNull(file: string): Promise<string | null> {
 
   if (!stat) return null;
 
-  return stat.isDirectory() ? '' : fs.readFile(file, 'utf8');
+  return stat.isDirectory() ? '' : readRegularFile(file, 'utf8');
 }
 
 /** Whether an operation's `as` stands for the driver under test. */
 const standsForDriverUnderTest = (as: DriverProfile | undefined): as is 'local' | undefined => as === undefined || as === 'local';
+
+/** Whether a workflow, or any it runs, has a key `command` or `setup`: a command step, or a step that runs setup. */
+function runsCommands(yaml: string): boolean {
+  const holds = (value: JsonValue): boolean => (Array.isArray(value) ? value.some(holds) : isJsonObject(value) && Object.entries(value).some(([key, entry]) => key === 'command' || key === 'setup' || holds(entry)));
+
+  return holds(parseYaml(yaml));
+}
+
+/**
+ * What `profile` lacks to run `scenario`, or undefined when it runs it. A profile that runs no command (`exec: false`,
+ * a runtime that launches agents its own way) runs no scenario with a command or setup step: in a driver definition,
+ * the host command slot takes those, and the `local` profile holds it to them. A suite lists a scenario a profile
+ * skips with this, so what a runtime is not held to shows in every run.
+ */
+export function profileLacks(profile: DriverProfile, scenario: { yaml: string; workflows?: Record<string, string> } | BenchmarkScenario): string | undefined {
+  const can: DriverCan = DRIVER_PROFILES[profile].can;
+
+  if (can.exec !== false || !('yaml' in scenario)) return undefined;
+
+  return [scenario.yaml, ...Object.values(scenario.workflows ?? {})].some(runsCommands)
+    ? 'exec for its command or setup step, which the host command slot runs and the local profile tests'
+    : undefined;
+}
 
 /**
  * Whether the answers `scenario` gets can differ by the profile it runs under: a profile refuses it, or one of its
@@ -311,7 +372,7 @@ export function speaksAsDriverUnderTest(scenario: ConformanceScenario): boolean 
         return standsForDriverUnderTest(operation.as);
       case 'respond':
         return operation.as !== undefined && standsForDriverUnderTest(operation.as) && !('json' in operation);
-      case 'host':
+      case 'session-host':
       case 'edit':
       case 'runFiles':
       case 'files':
@@ -359,12 +420,12 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
 
   const refusal = scenario.refusedBy?.[profile];
   let refused = false;
-  const hosts = new Map<string, string>();
+  const sessionHostPlaces = new Map<string, string>();
 
-  const hostOf = (name: string): string => {
-    const dir = hosts.get(name);
+  const sessionHostPlaceOf = (name: string): string => {
+    const dir = sessionHostPlaces.get(name);
 
-    if (dir === undefined) throw new Error(`No host operation made place ${name}`);
+    if (dir === undefined) throw new Error(`No session-host operation made place ${name}`);
 
     return dir;
   };
@@ -379,7 +440,7 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
 
         if (operation.prepare && operation.attempt !== undefined) {
           const attempt = AttemptIdSchema.parse(attemptOf(operation.attempt));
-          prepare = operation.adopt !== undefined ? { attempt, adopt: hostOf(operation.adopt) } : { attempt };
+          prepare = operation.adopt !== undefined ? { attempt, adopt: sessionHostPlaceOf(operation.adopt) } : { attempt };
         }
 
         const declared: DriverCan = operation.hitl !== undefined ? { hitl: operation.hitl } : {};
@@ -426,18 +487,18 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
 
           if (operation.attempt !== undefined) expect(lease.attempt, `next prepared the attempt of ${operation.attempt}`).toEqual(attemptOf(operation.attempt));
 
-          if (operation.adopt !== undefined) expect(lease.cwd, `the lease runs in host place ${operation.adopt}`).toEqual(hostOf(operation.adopt));
+          if (operation.adopt !== undefined) expect(lease.cwd, `the lease runs in session host place ${operation.adopt}`).toEqual(sessionHostPlaceOf(operation.adopt));
           leases.set(operation.saveAs, lease);
         }
 
         break;
       }
 
-      case 'host': {
+      case 'session-host': {
         const checkout = placeOf(undefined);
         const workspace = leases.get(operation.lease)?.workspace;
 
-        if (!workspace) throw new Error(`Host place ${operation.name} needs lease ${operation.lease} with a workspace`);
+        if (!workspace) throw new Error(`Session host place ${operation.name} needs lease ${operation.lease} with a workspace`);
         const dir = path.join(path.dirname(checkout), 'hosts', operation.name);
         await fs.mkdir(path.dirname(dir), { recursive: true });
         const { branch, start: { commit } } = workspace;
@@ -452,13 +513,13 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
           if (made.code !== 0) throw new Error(`git ${args.join(' ')} failed: ${made.stderr}`);
         }
 
-        for (const [file, text] of Object.entries(operation.files ?? {})) await fs.writeFile(path.join(dir, file), text);
-        hosts.set(operation.name, dir);
+        for (const [file, text] of Object.entries(operation.files ?? {})) await writeRegularFile(path.join(dir, file), text);
+        sessionHostPlaces.set(operation.name, dir);
         break;
       }
 
       case 'edit':
-        for (const [file, text] of Object.entries(operation.files)) await fs.writeFile(path.join(placeOf(operation.lease), file), text);
+        for (const [file, text] of Object.entries(operation.files)) await writeRegularFile(path.join(placeOf(operation.lease), file), text);
         break;
       case 'runFiles': {
         if (!runner.runDir) throw new Error('A scenario that writes run files needs a runner with a runDir');
@@ -466,7 +527,7 @@ export async function runConformanceScenario(scenario: ConformanceScenario, runn
 
         for (const [file, text] of Object.entries(operation.files)) {
           await fs.mkdir(path.dirname(path.join(dir, file)), { recursive: true });
-          await fs.writeFile(path.join(dir, file), text);
+          await writeRegularFile(path.join(dir, file), text);
         }
 
         break;

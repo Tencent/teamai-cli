@@ -1,0 +1,10 @@
+{
+  "name": "@teamai/tool-trae",
+  "private": true,
+  "type": "module",
+  "description": "Trae and Trae CN: their descriptors; bundled into teamai-cli.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./facts": "./src/facts.ts"
+  }
+}

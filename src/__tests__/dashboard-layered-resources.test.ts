@@ -4,8 +4,8 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../utils/logger.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../utils/logger.js')>(),
+vi.mock('@teamai/shared/log', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@teamai/shared/log')>(),
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), persist: vi.fn(), dim: vi.fn() },
 }));
 

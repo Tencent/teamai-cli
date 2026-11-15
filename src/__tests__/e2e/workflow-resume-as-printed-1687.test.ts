@@ -96,7 +96,7 @@ it('continues a run with the commands it prints, on the --tools, --auto-approve 
 
   const started = run(['workflow', 'start', 'ship', '--driver', 'local', '--tools', 'default=claude', '--auto-approve', '--sandbox']);
   expect(started).toMatchObject({ status: 1, envelope: { data: { done: { outcome: 'failed' } } } });
-  const resume = printed(started.stderr, /continue it with: (teamai workflow resume \S+)$/m);
+  const resume = printed(started.stderr, /continue it here with: (teamai workflow resume [^\s,]+), or hand it to another machine/);
   const retry = printed(started.stderr, /Retry it with (teamai workflow retry \S+ verify), then/);
   expect(started.stderr).toContain(`Retry it with teamai workflow retry ${resume[2]} verify, then continue the run with teamai ${resume.join(' ')}`);
 

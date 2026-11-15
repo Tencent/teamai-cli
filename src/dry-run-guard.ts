@@ -180,7 +180,6 @@ export const NO_DRY_RUN_PREVIEW = {
   'workflow cancel': 'cancels steps or the run',
   'workflow resume': 'runs the local driver and writes the run',
   'workflow publish': 'writes the run to teamai-reports',
-  'benchmark check': 'puts back the protected paths, writes the files check.add names and runs the check in its clone',
   'benchmark run': 'creates a benchmark run and runs its trials on the local driver',
   'benchmark try': 'runs a task\'s check in a scratch clone of its starting commit',
   'benchmark plan': 'fills the commit cache with the commits the suite\'s trials read',

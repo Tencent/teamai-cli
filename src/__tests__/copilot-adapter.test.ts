@@ -19,7 +19,7 @@ import { parseFrontmatter } from '../utils/frontmatter.js';
 import { TeamaiConfigSchema } from '../types.js';
 import type { HookDef, LocalConfig, ResourceItem, TeamaiConfig } from '../types.js';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn(), persist: vi.fn(),
   },

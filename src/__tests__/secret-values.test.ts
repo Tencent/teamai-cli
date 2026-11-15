@@ -3,7 +3,7 @@ import fse from 'fs-extra';
 import os from 'node:os';
 import path from 'node:path';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn(), persist: vi.fn(),
   },
@@ -254,6 +254,18 @@ describe('team secret values', () => {
       } finally {
         await fse.chmod(file, 0o600);
       }
+    });
+
+    // Windows opens no directory as a file, and says EISDIR itself.
+    it.skipIf(process.platform === 'win32')('says what stands at the path when it is not a file', async () => {
+      const file = getTeamSecretsPath(localConfig);
+      await fse.ensureDir(file);
+
+      expect(await readSecretStore(file)).toEqual({
+        ok: false,
+        reason: `Cannot read your secret values at ${file} (a directory, not a regular file). Check that the file is yours and readable (\`ls -l ${file}\`), `
+          + 'or delete it and set the values again with `teamai env set`.',
+      });
     });
 
     it('rejects an entry that is not exactly one of a value or a variable reference', async () => {

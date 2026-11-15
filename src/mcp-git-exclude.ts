@@ -13,7 +13,7 @@ import {
 import { referencedVars, supportsEnvExpansion } from './resources/mcp-format.js';
 import { pathExists, readFileSafe } from './utils/fs.js';
 import { listWorktrees } from './utils/git.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 // ─── Project MCP configs and git ─────────────────────────────
 //

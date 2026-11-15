@@ -5,7 +5,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn(), persist: vi.fn(),
   },

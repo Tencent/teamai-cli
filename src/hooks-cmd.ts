@@ -6,9 +6,9 @@ import { codexTrustPolicy, migrateLegacyManagedHooks, reconcileHooks, reconcileH
 import { applyBuiltinOverride, installedBuiltinHookDefs } from './builtin-hooks.js';
 import { resolveTeamHookEntries } from './resources/hooks.js';
 import { describeEntryFailure, describeOrigin, reportUndeliveredEntryNotices } from './namespaced-entries.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { GlobalOptions, HookDef } from './types.js';
-import type { HookAdapterId } from './tools.js';
+import type { HookAdapterId } from '@teamai/tool-core/definition';
 import {
     COPILOT_TOOL_ID,
     getManagedHooksPath,
@@ -17,7 +17,7 @@ import {
     resolveHookScope,
     scopedToolPaths,
 } from './types.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { pathExists } from './utils/fs.js';
 import { hasPiHooks, removePiHooks, PI_HOOK_FILE } from './pi-hooks.js';
 import { hasKiroHooks, kiroHookFile, removeKiroHooks } from './kiro-hooks.js';
@@ -286,7 +286,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
 
         rows.push({
             tool,
-            status: await getHookStatus(hookPath, { tool, from: 'version', builtinOverride }),
+            status: await getHookStatus(hookPath, { tool, from: 'version', builtinOverride, toolRoots: localConfig.toolRoots }),
             settingsPath: formatDisplayPath(hookPath),
             // The override is applied to the settings-driven defs only: the
             // standalone adapters generate a fixed handler and ignore it, so

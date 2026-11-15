@@ -1,0 +1,7 @@
+{
+  "role": "assistant",
+  "message": "{\"role\": \"assistant\", \"content\": [{\"type\": \"text\", \"text\": \"It uses Vitest: package.json runs `vitest run`.\"}]}",
+  "id": "m2",
+  "extra": "{\"modelName\": \"claude-sonnet-4.5\"}",
+  "createdAt": "2026-10-30T09:15:05.912Z"
+}

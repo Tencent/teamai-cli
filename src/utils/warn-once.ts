@@ -1,4 +1,4 @@
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 
 /**
  * Warnings already shown in this run. A pull resolves the manifests and each
@@ -14,6 +14,13 @@ export function warnOnce(message: string): boolean {
   log.warn(message);
 
   return true;
+}
+
+/** Like warnOnce, at error level: for a problem that leaves something out, such as an instance file teamai refuses. */
+export function errorOnce(message: string): void {
+  if (shown.has(message)) return;
+  shown.add(message);
+  log.error(message);
 }
 
 /** Debug lines already written in this run: see debugOnce. */

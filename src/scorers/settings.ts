@@ -20,7 +20,7 @@
  * this teamai does not know is dropped with a problem instead, so a newer CLI's additions never stop this one.
  */
 import path from 'node:path';
-import { parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
 import { getKnowledgeDir, type LocalConfig } from '../types.js';
 import { readEntryFileText } from '../namespaced-entries.js';

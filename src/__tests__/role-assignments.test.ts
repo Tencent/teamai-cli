@@ -8,7 +8,7 @@ import { loadLocalConfig, refreshRoleAssignment, saveLocalConfig } from '../conf
 import { activeRoleIds } from '../roles.js';
 import { loadRoleAssignments, loadRoleAssignmentsIfPresent, resolveAssignedRoles } from '../role-assignments.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { LocalConfig } from '../types.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 

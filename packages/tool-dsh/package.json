@@ -1,0 +1,10 @@
+{
+  "name": "@teamai/tool-dsh",
+  "private": true,
+  "type": "module",
+  "description": "DeepSeek Harness (dsh): its descriptor and version detector; bundled into teamai-cli.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./facts": "./src/facts.ts"
+  }
+}

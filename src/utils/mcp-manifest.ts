@@ -6,7 +6,8 @@ import {
   type ManagedMcpManifest,
   type ManagedMcpRecord,
 } from '../types.js';
-import { readJson, writeJsonAtomic, expandHome } from './fs.js';
+import { readJson, writeJsonAtomic } from './fs.js';
+import { expandHome } from '@teamai/shared/home';
 
 /**
  * Load a project worktree's own managed-MCP manifest, migrating this worktree's

@@ -17,9 +17,10 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { mayBeRunning } from '@teamai/shared/process-group';
 import { z } from 'zod';
 import { runLedger } from './verify/ledger.js';
-import { createWorld, REPO_ROOT, runInWorld, saveWorld, TEAM_URL, worldFiles, type World } from './verify/world.js';
+import { createWorld, REPO_ROOT, runInWorld, TEAM_URL, updateWorld, worldFiles, type World } from './verify/world.js';
 
 const PRELOAD = path.join(REPO_ROOT, 'scripts', 'agent-wait-preload.cjs');
 
@@ -104,7 +105,8 @@ const NodeRecordSchema = z.discriminatedUnion('ev', [
   z.object({ ev: z.literal('fs'), pid: z.number().int(), calls: z.number().int() }),
 ]);
 
-const readLines = (file: string): string[] => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean) : []);
+/** The finished lines of a log another process may still append to: a last line with no newline is not written whole yet. */
+export const readLines = (file: string): string[] => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').slice(0, -1).filter(Boolean) : []);
 
 const nodeRecords = (file: string) => readLines(file).map((line) => NodeRecordSchema.parse(JSON.parse(line)));
 
@@ -211,16 +213,6 @@ function subcommand(argv: readonly string[]): string {
 
 const REMOTE_GIT = new Set(['fetch', 'pull', 'push', 'ls-remote', 'clone']);
 
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-
-    return true;
-  } catch (error) {
-    return error instanceof Error && 'code' in error && error.code === 'EPERM';
-  }
-}
-
 const sizeOf = (file: string): number => (fs.existsSync(file) ? fs.statSync(file).size : 0);
 
 /** Waits until every process the logs name has ended and the logs stopped growing for three polls. Ends nothing. */
@@ -235,7 +227,7 @@ function waitForBackground(files: readonly string[], logs: { node: string; trace
       ...gitProcesses(logs.trace2).map((git) => git.pid),
     ]);
 
-    const anyAlive = [...pids].some((pid) => Number.isInteger(pid) && isAlive(pid));
+    const anyAlive = [...pids].some((pid) => Number.isInteger(pid) && mayBeRunning(pid));
     const size = files.reduce((sum, file) => sum + sizeOf(file), 0);
     stable = !anyAlive && size === lastSize ? stable + 1 : 0;
     lastSize = size;
@@ -513,8 +505,8 @@ const EXPECTED_REMOTE = new Map([
 ]);
 
 /** Measures one Claude Code session, workspace scope, team repo mode git, from the main checkout and linked worktrees. */
-export function measureAgentWait(options: { keep: boolean }) {
-  const world = createWorld();
+export async function measureAgentWait(options: { keep: boolean }) {
+  const world = await createWorld();
   const failures: string[] = [];
   const scratch = path.join(world.dir, 'scratch');
   const seed = path.join(scratch, 'seed');
@@ -690,11 +682,11 @@ export function measureAgentWait(options: { keep: boolean }) {
 
     if (options.keep) console.error(`Kept world ${world.runId}: npm run -s verify -- ledger ${world.runId}, then cleanup.`);
     else {
-      const clean = runLedger(world);
-      console.error(clean ? 'Ledger: CLEAN' : `Ledger found leaks: see ${world.dir}`);
+      const { verdict, leaks } = await runLedger(world);
+      console.error(leaks === 0 ? `Ledger: ${verdict}` : `Ledger found leaks: see ${world.dir}`);
 
       // The caller reads this list after the return above: a leak fails the measure as a broken invariant does.
-      if (!clean) failures.push(`the ledger found leaks after the measured rows: see ${world.dir}`);
+      if (leaks > 0) failures.push(`the ledger found leaks after the measured rows: see ${world.dir}`);
       cleanupWorld(world);
     }
   }
@@ -707,7 +699,7 @@ function cleanupWorld(world: World): void {
     fs.rmSync(path.join(world.dir, name), { recursive: true, force: true });
   }
 
-  saveWorld({ ...world, cleanedAt: new Date().toISOString() });
+  updateWorld(world, (fresh) => ({ ...fresh, cleanedAt: new Date().toISOString() }));
 }
 
 function checkInvariants(measured: ReadonlyMap<string, Measured>, world: World, worktrees: readonly string[]): string[] {
@@ -858,13 +850,13 @@ export function compareAgentWait(head: AgentWaitBudget, base: AgentWaitBudget) {
 
 const readBudget = (file: string): AgentWaitBudget => AgentWaitBudgetSchema.parse(JSON.parse(fs.readFileSync(file, 'utf8')));
 
-export function main(args: readonly string[]): number {
+export async function main(args: readonly string[]): Promise<number> {
   const [flag, baseFile, headFile] = args;
 
   if (flag === '--compare') {
     if (!baseFile) throw new Error('--compare needs the JSON file a run on main wrote.');
     // A head measured here answers for its own invariants; one read from a file answered when it was measured.
-    const head = headFile ? { budget: readBudget(headFile), failures: [] } : measureOrFail(false);
+    const head = headFile ? { budget: readBudget(headFile), failures: [] } : await measureOrFail(false);
     const { markdown, grew } = compareAgentWait(head.budget, readBudget(baseFile));
     process.stdout.write(`${markdown}\n`);
 
@@ -873,7 +865,7 @@ export function main(args: readonly string[]): number {
     return reportFailures(head.failures);
   }
 
-  const { budget, failures } = measureOrFail(args.includes('--keep'));
+  const { budget, failures } = await measureOrFail(args.includes('--keep'));
   process.stdout.write(`${JSON.stringify(budget, null, 2)}\n`);
 
   return reportFailures(failures);
@@ -886,12 +878,12 @@ function reportFailures(failures: readonly string[]): number {
 }
 
 /** Measures with stdout kept for the result: the world's commands and the ledger print to stderr. */
-function measureOrFail(keep: boolean): ReturnType<typeof measureAgentWait> {
+async function measureOrFail(keep: boolean): ReturnType<typeof measureAgentWait> {
   const write = process.stdout.write.bind(process.stdout);
   process.stdout.write = process.stderr.write.bind(process.stderr);
 
   try {
-    return measureAgentWait({ keep });
+    return await measureAgentWait({ keep });
   } finally {
     process.stdout.write = write;
   }

@@ -3,7 +3,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { SessionSearchEngine, type LoadedSession } from '../session-flow/search.js';
-import type { Message } from '../session-flow/ir.js';
+import type { Message } from '@teamai/tool-core/sessions/ir';
 
 function loaded(sessionName: string, title: string, messages: Message[]): LoadedSession {
   return {

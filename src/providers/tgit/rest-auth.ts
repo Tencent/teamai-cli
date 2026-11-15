@@ -1,5 +1,5 @@
-import { gfGetOAuthToken } from './gf-cli.js';
-import { log } from '../../utils/logger.js';
+import { gfGetOAuthToken } from './oauth-token.js';
+import { log } from '@teamai/shared/log';
 
 /** Authentication scheme accepted by the git.woa.com REST API. */
 export type TGitAuthScheme = 'private-token' | 'bearer';

@@ -3,12 +3,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import fse from 'fs-extra';
 import YAML from 'yaml';
-import { parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
 
-import { getDataHome, getTeamaiHome, isSelfMode, type JsonValue, type LocalConfig, isJsonObject } from '../types.js';
+import { getDataHome, getTeamaiHome, isSelfMode, type LocalConfig } from '../types.js';
+import { type JsonValue, isJsonObject } from '@teamai/shared/json';
 import { pathExists, readFileSafe, writeFile } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
+import { copyRegularTree, moveRegularTree } from '@teamai/shared/regular-file';
 import {
   PackageLockSchema,
   PackageManifestSchema,
@@ -57,7 +59,7 @@ export async function packageLockDir(localConfig: LocalConfig, options: { readOn
       if (await pathExists(packageLockPath(dir))) return dir;
 
       try {
-        await fse.copy(legacy, packageLockPath(dir), { overwrite: false, errorOnExist: true });
+        await copyRegularTree(legacy, packageLockPath(dir), { existing: 'fail' });
 
         return dir;
       } catch (error) {
@@ -68,7 +70,7 @@ export async function packageLockDir(localConfig: LocalConfig, options: { readOn
     }
 
     try {
-      await fse.move(legacy, packageLockPath(dir), { overwrite: false });
+      await moveRegularTree(legacy, packageLockPath(dir));
     } catch (error) {
       // A lock already in the data home is the newer one.
       if (await pathExists(packageLockPath(dir))) {

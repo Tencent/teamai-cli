@@ -12,7 +12,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   loadTeamConfig: vi.fn(),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn(),
   },
@@ -23,8 +23,8 @@ vi.mock('../utils/logger.js', () => ({
 
 // The loader shells on PATH; by default none besides $SHELL, so only $SHELL's startup files are owed the block.
 const installedShells = new Set<string>();
-vi.mock('../utils/lookpath.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../utils/lookpath.js')>();
+vi.mock('@teamai/shared/lookpath', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@teamai/shared/lookpath')>();
   return {
     ...actual,
     isOnPath: (bin: string, options?: Parameters<typeof actual.isOnPath>[1]) =>

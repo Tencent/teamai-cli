@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { AgentModelRecords, RecordedAgentModel, ResourceItem } from './types.js';
-import type { AgentSpec, ToolName } from './resources/agent-format.js';
+import { deliveryPlaceOf, type DeliveryPlace } from './locate.js';
+import type { AgentSpec } from './resources/agent-format.js';
+import type { AgentTool } from './resources/agents.js';
 import type { ModelAliases, ModelResolution } from './models/aliases.js';
 import type { Check, CheckStage, DoctorContext } from './doctor.js';
 import { readFileSafe } from './utils/fs.js';
@@ -20,8 +22,9 @@ interface AgentModelView {
   aliases: ModelAliases;
   agents: { name: string; spec: AgentSpec }[];
   /** The installed tools that receive agents. */
-  tools: ToolName[];
+  tools: AgentTool[];
   records: AgentModelRecords;
+  place: DeliveryPlace;
 }
 
 const CHECK_NAME = 'Agent model aliases can be resolved';
@@ -72,19 +75,20 @@ async function readView(ctx: DoctorContext): Promise<AgentModelView | null> {
     if (parsed?.ok && parsed.spec.model !== undefined) agents.push({ name: item.name, spec: parsed.spec });
   }
 
-  if (agents.length === 0) return { aliases, agents, tools: [], records: {} };
-  const tools = (await new AgentsHandler().agentToolDirs(teamConfig, localConfig)).map(({ tool }) => tool);
+  if (agents.length === 0) return { aliases, agents, tools: [], records: {}, place: deliveryPlaceOf(teamConfig, localConfig) };
+  const tools = (await new AgentsHandler().agentToolDirs(teamConfig, localConfig)).map(({ tool, format }) => ({ tool, format }));
 
-  return { aliases, agents, tools, records: await recordedAgentModels(localConfig) };
+  return { aliases, agents, tools, records: await recordedAgentModels(localConfig), place: deliveryPlaceOf(teamConfig, localConfig) };
 }
 
 /** Each installed tool `spec` targets, with what it receives for `spec`'s model. */
-async function resolutions(view: AgentModelView, spec: AgentSpec): Promise<{ tool: ToolName; resolution: ModelResolution }[]> {
+async function resolutions(view: AgentModelView, spec: AgentSpec): Promise<(AgentTool & { resolution: ModelResolution })[]> {
   const { resolveAgentModel } = await import('./models/aliases.js');
+  const { targetsTool } = await import('./resources/agents.js');
 
   return view.tools
-    .filter((tool) => !spec.targets || spec.targets.includes(tool))
-    .map((tool) => ({ tool, resolution: resolveAgentModel(view.aliases, spec, tool) }));
+    .filter((target) => targetsTool(spec, target))
+    .map((target) => ({ ...target, resolution: resolveAgentModel(view.aliases, spec, target.tool, view.place) }));
 }
 
 /** The received agents pull holds in at least one tool, because their model cannot be resolved there. */
@@ -198,10 +202,10 @@ export async function agentModelNotes(ctx: DoctorContext): Promise<string[]> {
     const alias = spec.model!;
 
     if (!isModelAlias(view.aliases, alias)) continue;
-    const byRow = new Map<string, ToolName[]>();
+    const byRow = new Map<string, string[]>();
 
-    for (const { tool, resolution } of await resolutions(view, spec)) {
-      const row = await describeTool(spec, tool, resolution, view.records[name]?.[tool]);
+    for (const { tool, format, resolution } of await resolutions(view, spec)) {
+      const row = await describeTool(spec, format, resolution, view.records[name]?.[tool]);
       byRow.set(row, [...byRow.get(row) ?? [], tool]);
     }
 
@@ -225,17 +229,18 @@ export async function agentModelNotes(ctx: DoctorContext): Promise<string[]> {
  * then the step that decided it. The recorded copy is named when the last
  * pull deployed something else.
  */
-async function describeTool(spec: AgentSpec, tool: ToolName, resolution: ModelResolution, recorded: RecordedAgentModel | undefined): Promise<string> {
+async function describeTool(spec: AgentSpec, format: AgentTool['format'], resolution: ModelResolution, recorded: RecordedAgentModel | undefined): Promise<string> {
   if (!resolution.ok) return `held, its copy is kept  [see the failing check "${CHECK_NAME}"]`;
   const { sameAgentModel } = await import('./resources/agents.js');
-  const now = await describeModel(spec, tool, resolution);
+  const now = await describeModel(spec, format, resolution);
 
   if (!recorded || sameAgentModel(recorded, resolution)) return now;
 
-  return `${now}; the last pull deployed ${await describeModel(spec, tool, recorded)}, which \`teamai pull\` updates`;
+  return `${now}; the last pull deployed ${await describeModel(spec, format, recorded)}, which \`teamai pull\` updates`;
 }
 
-async function describeModel(spec: AgentSpec, tool: ToolName, resolved: RecordedAgentModel): Promise<string> {
+/** What a copy in `tool`'s format receives: an instance's comes from the extras, aliases entry and switch of the tool it extends. */
+async function describeModel(spec: AgentSpec, tool: AgentTool['format'], resolved: RecordedAgentModel): Promise<string> {
   const { agentEffortField, toolExtrasFor } = await import('./resources/agent-format.js');
   const { step, model, source } = resolved;
   const effortField = agentEffortField(tool);

@@ -12,7 +12,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   loadStateForScope: vi.fn().mockResolvedValue({}),
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: {
     debug: vi.fn(), error: vi.fn(), info: vi.fn(), success: vi.fn(), warn: vi.fn(), dim: vi.fn(),
   },

@@ -26,7 +26,7 @@ vi.mock('../push.js', () => prMocks);
 
 const logMocks = vi.hoisted(() => ({ info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }));
 const spin = vi.hoisted(() => ({ succeed: vi.fn(), warn: vi.fn() }));
-vi.mock('../utils/logger.js', () => ({ log: logMocks, spinner: vi.fn(() => ({ start: () => spin })) }));
+vi.mock('@teamai/shared/log', () => ({ log: logMocks, spinner: vi.fn(() => ({ start: () => spin })) }));
 
 import { pushManifestChange, runManifestEdit } from '../manifest-edit.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';

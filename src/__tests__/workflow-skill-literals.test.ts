@@ -5,7 +5,7 @@ import { attemptEnv } from '../workflow/attempt-marker.js';
 import { parseSkillCall } from '../workflow/drivers/skill/skill-driver.js';
 import { AttemptIdSchema, RunIdSchema } from '../workflow/store.js';
 import {
-  ackLiteral, adoptLiteral, chooseHostLiteral, describeLiteral, generatedStartPatterns, INVOCATIONS, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral,
+  ackLiteral, adoptLiteral, chooseSessionHostLiteral, describeLiteral, generatedStartPatterns, INVOCATIONS, localStartLiteral, nextLiteral, personRespondLiteral, pollLiteral,
   reportLiteral, respondLiteral, resumeLiteral, runnerArgs, skillResumeLiteral, startLiteral, takeoverLiteral, unavailableLiteral, type Invocation,
 } from '../workflow/drivers/skill/literals.js';
 import { loadCommandTable } from '../../scripts/command-table.js';
@@ -69,7 +69,7 @@ describe.each(INVOCATIONS)('skill driver literals run as %s', (invocation) => {
     expect(skillCall(takeoverLiteral(invocation, RUN, { confirmed: true }), invocation)).toEqual({ kind: 'takeover', run: RUN, confirmed: true });
     expect(skillCall(reportLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: false });
     expect(skillCall(unavailableLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'report', run: RUN, attempt: ATTEMPT, role: 'agent', modelUnavailable: true });
-    expect(skillCall(chooseHostLiteral(invocation, RUN, 'h2'), invocation)).toEqual({ kind: 'choose', run: RUN, choice: 'h2' });
+    expect(skillCall(chooseSessionHostLiteral(invocation, RUN, 'h2'), invocation)).toEqual({ kind: 'choose', run: RUN, choice: 'h2' });
     expect(skillCall(ackLiteral(invocation, RUN, ATTEMPT), invocation)).toEqual({ kind: 'ack', run: RUN, attempt: ATTEMPT });
     const adopt = adoptLiteral(invocation, RUN, ATTEMPT).replace('{dir}', '/hosts/the place');
     expect(adopt).not.toBe(adoptLiteral(invocation, RUN, ATTEMPT));
@@ -128,12 +128,11 @@ describe('--tools of the skill driver', () => {
     expect(skillCall(describeLiteral('teamai', 'check', { tool: '{tool}' }).replace("'{tool}'", 'omp'), 'teamai')).toEqual({ kind: 'describe', name: 'check', tool: 'omp' });
   });
 
-  it('refuses a role map or a tool teamai does not know', () => {
+  it('refuses a role map or what can name no tool, and leaves a name to the scope whose tool instances it may name', () => {
     for (const tools of ['implementer=codex', 'default=claude,implementer=codex', 'default=']) {
       expect(parseSkillCall({ kind: 'start', name: 'check', options: { tools } }, {}), tools).toEqual({ error: { code: 'invalid_arguments', message: ONE_TOOL, next: null } });
     }
-    expect(parseSkillCall({ kind: 'start', name: 'check', options: { tools: 'default=vim' } }, {}))
-      .toEqual({ error: { code: 'invalid_arguments', message: expect.stringMatching(/^--tools default=vim names no tool teamai knows: claude, .*hermes/), next: null } });
+    expect(parseSkillCall({ kind: 'start', name: 'check', options: { tools: 'default=acme-claude' } }, {})).toMatchObject({ kind: 'start', tool: 'acme-claude' });
     expect(parseSkillCall({ kind: 'start', name: 'check', options: { describe: true, tools: 'default={tool}' } }, {}))
       .toEqual({ error: { code: 'invalid_arguments', message: expect.stringMatching(/^--tools default=\{tool\} names no tool teamai knows: claude, /), next: null } });
   });
@@ -165,9 +164,9 @@ describe('start and respond options of the skill driver', () => {
 });
 
 describe('next options of the skill driver', () => {
-  it('name the host choices, the shape of an offer, and that one call takes one of --wait, --takeover, --choice and --ack', () => {
+  it('name the session host choices, the shape of an offer, and that one call takes one of --wait, --takeover, --choice and --ack', () => {
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { choice: 'h9' } }, {}))
-      .toEqual({ error: { code: 'invalid_arguments', message: '--choice takes the id of a host question option: h1, h2, h3, h4', next: null } });
+      .toEqual({ error: { code: 'invalid_arguments', message: '--choice takes the id of a session host question option: h1, h2, h3, h4', next: null } });
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { ack: ATTEMPT } }, {}))
       .toEqual({ error: { code: 'invalid_arguments', message: `--ack takes the offer of a dispatch action, such as dispatch.a1b2c3d4e; got ${ATTEMPT}`, next: null } });
     expect(parseSkillCall({ kind: 'next', run: RUN, options: { wait: true, ack: `dispatch.${ATTEMPT}` } }, {}))

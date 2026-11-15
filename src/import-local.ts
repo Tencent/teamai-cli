@@ -11,10 +11,10 @@ import { z } from 'zod';
 
 import { ImportInputError } from './import-from-repo.js';
 import type { Install } from './locate.js';
-import type { JsonValue } from './types.js';
+import type { JsonValue } from '@teamai/shared/json';
 import type { ShortcutEnd } from './workflow-commands.js';
 import { listFilesRecursive, readFileSafe, writeFile, ensureDir } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { assertSafePath, defaultAllowedRoots } from './utils/path-safety.js';
 
 /** A file over this size is not imported. */
@@ -171,13 +171,13 @@ async function deliveredToUserScope(): Promise<Readonly<Record<string, string>> 
 async function scanRules(): Promise<{ candidates: Candidate[] }> {
   const { resolveMemberToolRoots } = await import('./config.js');
   const { locate } = await import('./locate.js');
-  const { TOOLS } = await import('./tools.js');
+  const { TOOL_ORDER } = await import('./tool-registry.js');
   const { DEFAULT_TOOL_PATHS } = await import('./types.js');
   const toolRoots = await resolveMemberToolRoots(undefined) ?? {};
   const install: Install = { scope: 'user', toolPaths: DEFAULT_TOOL_PATHS, agents: {}, toolRoots, gitExclude: false };
   const dirs = new Set<string>();
 
-  for (const tool of Object.keys(TOOLS)) {
+  for (const tool of TOOL_ORDER) {
     const rules = await locate(tool, 'rules', install);
 
     if (rules.channel === 'files' && rules.own?.kind === 'dir') dirs.add(rules.own.path);

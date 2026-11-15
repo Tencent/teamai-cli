@@ -4,7 +4,7 @@ import os from 'node:os';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 
@@ -14,7 +14,7 @@ import {
   dshSandboxNote,
   reconcileDshHooks,
 } from '../dsh-hooks.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { reconcileHooksToAllTools } from '../hooks.js';
 import type { HookDef } from '../types.js';
 import { hookAdapterDir } from '../locate.js';

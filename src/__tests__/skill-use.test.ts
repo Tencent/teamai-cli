@@ -10,7 +10,8 @@ import path from 'node:path';
 
 import { createDispatcher, HookStdinSchema, type HookStdin } from '../hook-dispatch.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
-import { isToolId, TOOLS } from '../tools.js';
+import { TOOLS } from '../tools.js';
+import { isToolId } from '../tool-registry.js';
 import { DEFAULT_TOOL_PATHS, type LocalConfig } from '../types.js';
 import { readUsageEvents } from '../usage-tracker.js';
 import { sendWebhook } from '../webhook.js';

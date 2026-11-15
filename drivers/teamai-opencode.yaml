@@ -1,0 +1,6 @@
+schemaVersion: v1alpha1
+name: teamai-opencode
+description: Run every step on this machine, with prompt steps on OpenCode unless a step or --tools names another tool.
+tool: opencode
+runtimes:
+  - use: tools

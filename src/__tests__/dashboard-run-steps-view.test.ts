@@ -88,6 +88,50 @@ describe("a run's Steps", () => {
     expect([...new Set(chinese.keys)].filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
   });
 
+  it('shows what the runtime shows of a pass\'s place, with its link and fields, and the login a pass waits for before its place opens', () => {
+    const step: Step = {
+      step: 'review', pass: 1, status: 'running',
+      runtime: {
+        name: 'sbx', driver: 'teamai-sbx', handle: 'teamai-r7-a1', phase: 'running',
+        display: { label: 'teamai-r7-a1 (sbx)', url: 'https://sandboxes.example.test/teamai-r7-a1', fields: { sandbox: 'teamai-r7-a1', image: 'teamai-warm:3f9c' } },
+      },
+    };
+    const waiting: Step = { step: 'fix', pass: 1, status: 'running', loginWait: { tool: 'codex', holder: { run: 'r00000001', attempt: 'a00000001' } } };
+    const { html } = render([step, waiting]);
+
+    expect(html).toContain('<a href="https://sandboxes.example.test/teamai-r7-a1" target="_blank" rel="noopener noreferrer" data-verbatim>teamai-r7-a1 (sbx)</a>');
+    expect(text(html)).toContain('sandbox: teamai-r7-a1 · image: teamai-warm:3f9c');
+    expect(text(html)).toContain('Waits for login: codex · held by attempt a00000001 of run r00000001');
+
+    const chinese = render([step, waiting], 'zh-CN');
+    expect([...new Set(chinese.keys)].filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
+  });
+
+  it('names a pass\'s place as its runtime shows it rather than by the handle teamai keeps for it, which is the runtime\'s own id', () => {
+    const handle = JSON.stringify({ place: 'teamai-r7-a1', socket: '/private/tmp/teamai-r7/attempt.sock' });
+    const shown: Step = { step: 'tell', pass: 1, status: 'succeeded', runtime: { name: 'sandbox', driver: 'boxed', handle, phase: 'closed', display: { label: 'teamai-r7-a1 (docker)' } } };
+    const bare: Step = { step: 'mark', pass: 1, status: 'succeeded', runtime: { name: 'fleet', driver: 'gpu-fleet', handle: 'fleet-r7-a2', phase: 'closed' } };
+    const { html } = render([shown, bare]);
+
+    expect(text(html)).toContain('Runtime: sandbox · closed Place: teamai-r7-a1 (docker)');
+    expect(text(html)).not.toContain('attempt.sock');
+    expect(text(html)).toContain('Runtime: fleet · fleet-r7-a2 · closed');
+  });
+
+  it('shows why the runtime could not close a pass\'s place, which may still hold what ran there', () => {
+    const step: Step = {
+      step: 'review', pass: 1, status: 'failed',
+      runtime: { name: 'sandbox', driver: 'sandboxed', handle: 'teamai-r7-a1', phase: 'collected', closeFailed: { code: 'close_failed', message: 'docker rm teamai-r7-a1 failed: the daemon is not running' } },
+    };
+    const { html } = render([step]);
+
+    expect(text(html)).toContain('Not closed: close_failed · docker rm teamai-r7-a1 failed: the daemon is not running');
+    expect(html).toContain('<div class="runtime-line amber">');
+
+    const chinese = render([step], 'zh-CN');
+    expect([...new Set(chinese.keys)].filter((key) => !Object.hasOwn(dashboardMessages, key))).toEqual([]);
+  });
+
   it('names each card part in Chinese', () => {
     const { html, keys } = render(STEPS, 'zh-CN');
 

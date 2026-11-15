@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionCapture } from '../session-flow/captures.js';
-import type { Session } from '../session-flow/ir.js';
+import type { Session } from '@teamai/tool-core/sessions/ir';
 import { judgeSession } from '../session-flow/session-work.js';
 
 const session = (): Session => ({

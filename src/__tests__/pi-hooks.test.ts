@@ -34,7 +34,7 @@ async function runSessionStartWithBrokenStdin(src: string): Promise<void> {
   await handlers.get('session_start')?.({}, { cwd: '/tmp/project' });
 }
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
 }));
 
@@ -48,7 +48,7 @@ import {
   PI_HOOK_FILE,
 } from '../pi-hooks.js';
 import { reconcileHooksToAllTools } from '../hooks.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { HookDef } from '../types.js';
 import { loadPiExtension, type ExtensionDispatch } from './helpers/pi-extensions.js';
 import { hookAdapterDir } from '../locate.js';

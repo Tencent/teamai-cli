@@ -8,7 +8,7 @@ vi.mock('cross-spawn', async (importOriginal) => {
 });
 
 import crossSpawn from 'cross-spawn';
-import { runTool } from '../tool-launch/run.js';
+import { runTool } from '@teamai/runtime-tools/headless';
 
 // CI runs only on ubuntu and macOS, so the spawn options are what can be checked: they keep a console window from
 // opening when the host process (an editor, or the hook dispatcher) has none.

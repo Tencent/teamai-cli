@@ -3,6 +3,7 @@
  * run's trials exist, so `teamai benchmark run` leaves no run. Each refusal says what happened and what to do.
  */
 import fs from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import os from 'node:os';
 
 import path from 'node:path';
@@ -15,7 +16,6 @@ import { RunScorers } from '../scorers/run-scorers.js';
 import { pinnedDefinition, type PinnedScorer } from '../scorers/pin.js';
 import { resolveTeamRef, TeamRefError } from '../team-ref.js';
 import { roleDeclaration, type RoleDeclaration } from '../roles.js';
-import { isAgentToolId } from '../tools.js';
 import type { LocalConfig } from '../types.js';
 import { definedFields } from '../utils/defined-fields.js';
 import { withTeamRevision } from '../workflow/cache.js';
@@ -25,13 +25,13 @@ import { runDeadline } from '../workflow/limits.js';
 import { findAttemptRun } from '../workflow/run-location.js';
 import { judgeUnavailable } from '../scorers/judges-here.js';
 import { chooseJudgeModel } from '../scorers/judge-model.js';
-import type { RunState, WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
+import type { WorkflowEnvelope, WorkflowFailure } from '../workflow/types.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { git } from '../workflow/worktree.js';
 import { addedOf, compileBundle, freezePlan, trialScorersOf, type BenchmarkEstimate, type BenchmarkPlan, type CompiledBundle, type PinnedRubric, type PlannedArm } from './plan.js';
 import { isMixedTask } from './calibration.js';
 import { estimateOf, judgeCallsOf } from './estimate.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { defaultsArmOf, parseSuite, type Arm, type Suite, type Task, type TaskCheck, TaskJudge } from './suite.js';
 import { coveredDelivery, coveredSkillName, teamFilesAt } from './team-without.js';
 import { pinArmWorkflow, type PinnedArmWorkflow } from './arm-workflow.js';
@@ -42,7 +42,7 @@ import { runCheckAt, type CheckRun } from '../scorers/check-run.js';
 import { commitCacheOf, firstUnreachable } from '../workflow/place/place.js';
 import { leavesOut, withoutRefusal } from './team-without.js';
 import { commitCheckFiles, trialBlocker, type CommittedSuite } from './trial.js';
-import { planOfRun, trialsUnattended } from './run-plan.js';
+import { trialsUnattended } from './run-plan.js';
 
 /** What planning reads besides the suite. */
 interface BenchmarkStart {
@@ -507,8 +507,7 @@ async function resolveArm({ name, tool, model, role, recall }: Arm, team: ArmTea
   if (model === undefined) return { ok: true, arm: { name, tool, source: 'team', team, ...roleField, ...recallField } };
   const loaded = await aliases();
   const alias = isModelAlias(loaded, model);
-  // An alias maps only the tools teamai knows, so it gives any other tool no model; a model name passes as written.
-  const resolution: ModelResolution = isAgentToolId(tool) ? resolveModelValue(loaded, model, tool) : alias ? { ok: true, step: 'default' } : { ok: true, step: 'literal', model };
+  const resolution: ModelResolution = resolveModelValue(loaded, model, tool);
 
   if (!resolution.ok || resolution.model === undefined) {
     return { ok: false, message: `Arm "${name}" uses ${alias ? `model alias "${model}"` : `model "${model}"`}, which ${noModelCause(resolution, tool)}. ${NO_MODEL_FIX[noModelReason(resolution)]}` };
@@ -654,16 +653,6 @@ function selectionOf(config: LocalConfig): TeamSelection {
 }
 
 /**
- * Why `teamai workflow resume` refuses `run`: a benchmark run whose plan a teamai before an upgrade froze in another
- * schemaVersion, which this one cannot measure. Undefined for any other run, which resume handles as it does every run.
- */
-export function outdatedBenchmarkPlan(run: RunState): WorkflowFailure | undefined {
-  const planned = planOfRun(run);
-
-  return 'failure' in planned && planned.failure.code === 'benchmark_plan_outdated' ? planned.failure : undefined;
-}
-
-/**
  * `teamai benchmark try <task file>`: whether a task's check tells its solution from no change, before the task reaches a
  * suite. Reads the task file and the SUITE.yaml (or suite.yaml) two directories up from it as written, with no
  * install, and validates both as pull does. A check task's check must fail by its own exit at `startingCommit`, as its
@@ -679,7 +668,7 @@ export async function tryBenchmarkTask(file: string, options: { checkout: string
 
   if (held.kind === 'invalid') return error('benchmark_invalid', held.message);
   const suiteFile = path.join(suiteDir, held.kind === 'folder' ? held.marker : RESOURCE_LAYOUTS.benchmarks.marker);
-  const read = (at: string): Promise<string | undefined> => fs.readFile(at, 'utf8').catch(() => undefined);
+  const read = (at: string): Promise<string | undefined> => readRegularFile(at, 'utf8').catch(() => undefined);
   const [suiteText, taskText] = [await read(suiteFile), await read(file)];
 
   if (taskText === undefined) return error('benchmark_not_found', `The task file ${file} could not be read. Pass the path of a task file, such as benchmarks/<suite>/tasks/<task>.yaml in a checkout of the team repo.`);

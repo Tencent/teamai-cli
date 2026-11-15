@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { dashboardReport, dataHomeKey } from '../dashboard-collector.js';
-import { _setLogFilePath, _resetState } from '../utils/debug-log.js';
+import { _setLogFilePath, _resetState } from '@teamai/shared/debug-log';
 
 // ─── legacy `dashboard-report` config gate ───
 //

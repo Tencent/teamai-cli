@@ -1,4 +1,5 @@
-import { channelsOf, TOOL_IDS, TOOLS, type ToolId } from '../tools.js';
+import { TOOL_IDS, type ToolId } from '../tools.js';
+import { baseToolOf, channelsOf, descriptorOf, type DescriptorOf } from '../tool-registry.js';
 
 // -*- coding: utf-8 -*-
 /**
@@ -50,13 +51,15 @@ export function normalizeAgentType(name: string): string {
  * `hook-handlers.ts` imports this file statically on every hook dispatch.
  * `src/tools.ts` holds data and type-only imports, so loading it costs little.
  */
-export type CodexToolId = { [T in ToolId]: (typeof TOOLS)[T]['launch'] extends 'codex' ? T : never }[ToolId];
+export type CodexToolId = { [T in ToolId]: DescriptorOf<T>['launch'] extends 'codex' ? T : never }[ToolId];
 
-export const CODEX_TOOL_IDS: readonly CodexToolId[] = TOOL_IDS.filter((tool): tool is CodexToolId => TOOLS[tool].launch === 'codex');
+export const CODEX_TOOL_IDS: readonly CodexToolId[] = TOOL_IDS.filter((tool): tool is CodexToolId => descriptorOf(tool).launch === 'codex');
 
-/** Whether `tool` runs Codex (`CODEX_TOOL_IDS`). */
+/** Whether `tool`, or the tool an instance extends, runs Codex (`CODEX_TOOL_IDS`). */
 export function isCodexTool(tool: string): boolean {
-  return CODEX_TOOL_IDS.some((id) => id === tool);
+  const base = baseToolOf(tool);
+
+  return CODEX_TOOL_IDS.some((id) => id === base);
 }
 
 /**

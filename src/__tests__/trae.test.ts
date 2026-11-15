@@ -12,7 +12,7 @@ import { loadStateForScope, saveStateForScope } from '../config.js';
 import { checkoutKey } from '../pull.js';
 import { getDataHome, managedMcpManifestPath, TeamaiConfigSchema, scopedToolPaths } from '../types.js';
 import type { LocalConfig } from '../types.js';
-import { AGENT_TOOLS } from '../tools.js';
+import { AGENT_TOOLS } from '../tool-registry.js';
 
 describe('Trae support', () => {
   afterEach(() => vi.unstubAllEnvs());
