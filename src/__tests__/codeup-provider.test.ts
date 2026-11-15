@@ -271,6 +271,20 @@ describe('Codeup token resolution', () => {
     expect(content).toContain('machine other.host login bob password secret');
     expect(content).not.toMatch(/^machine placeholder/m);
   });
+
+  it('writeNetrcToken consumes credential values that look like entry keywords', () => {
+    fs.writeFileSync(
+      path.join(tmpHome, '.netrc'),
+      'machine codeup.aliyun.com login alice account default password old-token\n',
+    );
+
+    writeNetrcToken('new-token', 'alice');
+    const content = fs.readFileSync(path.join(tmpHome, '.netrc'), 'utf-8');
+
+    expect(content).not.toContain('old-token');
+    expect(content).not.toMatch(/^default/m);
+    expect(content).toContain('machine codeup.aliyun.com login alice password new-token');
+  });
 });
 
 describe('Codeup clone transport', () => {

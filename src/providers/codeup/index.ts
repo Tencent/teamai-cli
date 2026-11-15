@@ -18,7 +18,7 @@ import {
   CodeupRepoNotFoundError,
 } from './codeup-api.js';
 import { parseCodeupRepoInput, codeupInputTransport, type CodeupTransport, CODEUP_HOST } from './repo-url.js';
-import { log } from '../../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { askQuestion, isInteractive } from '../../utils/prompt.js';
 
 const ORG_ID_QUESTION = 'Your Codeup organizationId (the numeric organization ID from the Yunxiao console, Organization Management → Basic Information): ';

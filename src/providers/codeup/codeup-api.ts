@@ -4,8 +4,9 @@ import path from 'node:path';
 import { z } from 'zod';
 import { endedRequest, mergedAs, type PullRequestRecord, type PullRequestRef } from '../types.js';
 import { CODEUP_HOST, type CodeupTransport } from './repo-url.js';
-import { getUserHome, legacyUserHome } from '../../utils/home.js';
-import { sanitizeGitUrl } from '../../utils/redact.js';
+import { getUserHome, legacyUserHome } from '@teamai/shared/home';
+import { sanitizeGitUrl } from '@teamai/shared/redact';
+import { readRegularFileSync, writeRegularFileSync } from '@teamai/shared/regular-file';
 
 /**
  * Codeup (Aliyun Yunxiao code management, codeup.aliyun.com) OpenAPI client.
@@ -165,7 +166,7 @@ function readNetrcEntry(): NetrcEntry | null {
     let content: string;
 
     try {
-      content = fs.readFileSync(file, 'utf-8');
+      content = readRegularFileSync(file, 'utf-8');
     } catch {
       continue; // Missing or unreadable here — try the next location.
     }
@@ -207,43 +208,70 @@ function isCommented(text: string, index: number): boolean {
 }
 
 /**
+ * Every netrc entry boundary in the text — a `machine` or `default` token at
+ * keyword position — with its character index and the machine's host value.
+ * The walk consumes each keyword's value token, so a credential literally
+ * named `machine` or `default` is a value, never a boundary; commented-out
+ * tokens are skipped, the same rule the read side applies.
+ */
+function netrcEntryStarts(text: string): { index: number; host: string | null }[] {
+  const tokens = /\S+/g;
+  const starts: { index: number; host: string | null }[] = [];
+  let consumeValue = false;
+  let pendingHost = -1;
+
+  for (;;) {
+    const match = tokens.exec(text);
+
+    if (!match) break;
+
+    if (isCommented(text, match.index)) continue;
+
+    if (consumeValue) {
+      consumeValue = false;
+
+      const awaiting = pendingHost === -1 ? undefined : starts[pendingHost];
+
+      if (awaiting) awaiting.host = match[0];
+      pendingHost = -1;
+
+      continue;
+    }
+
+    if (match[0] === 'machine') {
+      starts.push({ index: match.index, host: null });
+      pendingHost = starts.length - 1;
+      consumeValue = true;
+    } else if (match[0] === 'default') {
+      starts.push({ index: match.index, host: null });
+    } else if (match[0] === 'login' || match[0] === 'password' || match[0] === 'account' || match[0] === 'macdef') {
+      consumeValue = true;
+    }
+  }
+
+  return starts;
+}
+
+/**
  * Cut every codeup.aliyun.com machine entry out of netrc content by token
- * span — from its `machine` keyword to the next `machine`/`default` keyword —
- * so an entry sharing its line with another host's survives. Commented-out
- * text is not an entry: a match after a `#` on its line is skipped at both
- * ends of the span, so a commented codeup line never swallows the next host.
+ * span — from its `machine` keyword to the next entry boundary — so an entry
+ * sharing its line with another host's survives, and neither commented-out
+ * text nor credential values pass for a boundary.
  */
 function removeCodeupEntries(content: string): string {
-  const codeupMachine = new RegExp(`\\bmachine\\s+${CODEUP_HOST.replaceAll('.', '\\.')}($|\\s)`, 'g');
-  const nextKeyword = /\b(machine|default)\b/g;
   let out = content;
 
   for (;;) {
-    const match = codeupMachine.exec(out);
+    const starts = netrcEntryStarts(out);
+    const at = starts.findIndex((entry) => entry.host === CODEUP_HOST);
+    const start = at === -1 ? undefined : starts[at];
 
-    if (!match) return out;
+    if (!start) return out;
 
-    if (isCommented(out, match.index)) continue;
+    const next = starts[at + 1];
+    const end = next ? next.index : out.length;
 
-    const afterKeyword = match.index + match[0].length;
-
-    nextKeyword.lastIndex = afterKeyword;
-
-    let end = out.length;
-
-    for (;;) {
-      const next = nextKeyword.exec(out);
-
-      if (!next) break;
-
-      if (!isCommented(out, next.index)) {
-        end = next.index;
-        break;
-      }
-    }
-
-    out = out.slice(0, match.index) + out.slice(end);
-    codeupMachine.lastIndex = 0;
+    out = out.slice(0, start.index) + out.slice(end);
   }
 }
 
@@ -257,7 +285,7 @@ export function writeNetrcToken(token: string, username: string): void {
   let existing = '';
 
   try {
-    existing = fs.readFileSync(file, 'utf-8');
+    existing = readRegularFileSync(file, 'utf-8');
   } catch {
     // no existing file — start fresh
   }
@@ -266,7 +294,7 @@ export function writeNetrcToken(token: string, username: string): void {
   const filtered = removeCodeupEntries(existing).replace(/\s+$/, '');
   const next = filtered ? `${filtered}\n${entry}\n` : `${entry}\n`;
 
-  fs.writeFileSync(file, next, { mode: 0o600 });
+  writeRegularFileSync(file, next, { mode: 0o600 });
 
   try {
     fs.chmodSync(file, 0o600);
@@ -331,7 +359,7 @@ function codeupConfigPath(): string {
 
 function loadCodeupConfig(): CodeupConfig {
   try {
-    return CodeupConfigSchema.parse(JSON.parse(fs.readFileSync(codeupConfigPath(), 'utf-8')));
+    return CodeupConfigSchema.parse(JSON.parse(readRegularFileSync(codeupConfigPath(), 'utf-8')));
   } catch {
     return {};
   }
@@ -342,7 +370,7 @@ function saveCodeupConfig(values: CodeupConfig): void {
   const next = { ...loadCodeupConfig(), ...values };
 
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
+  writeRegularFileSync(file, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
 
   try {
     fs.chmodSync(file, 0o600);
