@@ -225,30 +225,20 @@ export async function runConfinedStepOnRuntime(input: RuntimeConfinedInput): Pro
   const reads = confinedEnvNames(tool);
   const given = Object.fromEntries(Object.entries(credentials).filter(([name]) => reads.includes(name)));
   const startedAt = Date.now();
-  // A stop while the place opens, or before the prompt is sent, ends it unsent: the attempt takes it in whatever it has
-  // sent by then, nothing yet or the open.
-  let stopped = false;
+  // The attempt takes the run's stop from `signal` in whatever it has sent by then: nothing yet, the open or the prompt.
+  const opened = await attemptRun.open(undefined, { tool, credentials: given, ...(signal && { signal }) });
 
-  const stop = (): void => {
-    stopped = true;
+  if (!opened.ok) return { kind: 'ran', report: { outcome: 'failed', tool, message: opened.failure.message, failure: opened.failure } };
+  let timedOut = false;
+  const isStopped = (): boolean => timedOut || signal?.aborted === true;
+
+  const timer = setTimeout(() => {
+    timedOut = true;
     void attemptRun.cancel();
-  };
-
-  signal?.addEventListener('abort', stop, { once: true });
-
-  if (signal?.aborted) stop();
-  const opened = await attemptRun.open(undefined, { tool, credentials: given });
-
-  if (!opened.ok) {
-    signal?.removeEventListener('abort', stop);
-
-    return { kind: 'ran', report: { outcome: 'failed', tool, message: opened.failure.message, failure: opened.failure } };
-  }
-
-  const timer = setTimeout(stop, timeoutOf(lease));
+  }, timeoutOf(lease));
 
   // Stopped while the place opened: no operation runs there yet, so the prompt is not sent at all.
-  const end: PromptEnd = stopped ? { kind: 'cancelled' } : await attemptRun.prompt({
+  const end: PromptEnd = isStopped() ? { kind: 'cancelled' } : await attemptRun.prompt({
     lease: {
       step: lease.step, tool, prompt: lease.prompt ?? '', result: attemptResultPath(config, run, lease.attempt), permissions: 'approval-required', interactive: false,
       ...(model && { model: model.effort ? { name: model.name, effort: model.effort } : { name: model.name } }),
@@ -257,12 +247,11 @@ export async function runConfinedStepOnRuntime(input: RuntimeConfinedInput): Pro
     confined: { dir: lease.confined.dir, level: lease.confined.level, access, ...(schema && { schema: schema.schema }) },
   }, {
     onAccepted: () => {
-      if (stopped) void attemptRun.cancel();
+      if (isStopped()) void attemptRun.cancel();
     },
   });
 
   clearTimeout(timer);
-  signal?.removeEventListener('abort', stop);
 
   return { kind: 'ran', report: runtimeConfinedReport({ runtime, tool, model, alias, level: lease.confined.level, end, durationMs: Date.now() - startedAt, retry: { run, step: lease.step } }) };
 }

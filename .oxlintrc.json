@@ -98,6 +98,7 @@
     "teamai/spawn-command": "error",
     // readline re-emits a socket's or stream's errors on its interface, and throws them when nothing listens there.
     "teamai/readline-error": "error",
+    "teamai/attempt-abort": "error",
     // Linux answers from /proc the process reads macOS runs ps for, and the agent wait budget counts only what it is told on Linux.
     "teamai/process-reads": "error",
     // A ChildProcess built with new backs no process, and its kill signals pid 0: the process group of the whole run.

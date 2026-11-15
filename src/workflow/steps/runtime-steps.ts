@@ -192,40 +192,33 @@ export type SetUp = (signal: AbortSignal | undefined) => Promise<WorkflowFailure
 
 /**
  * `runPlaceSetup`'s `on` for the attempt's runtime: setup's command as an exec of the attempt's open place, with setup's keys and none of the tool's credentials, then a
- * collect, so the checks that follow read setup's work on the host. A stop is the runtime's `cancel`.
+ * collect, so the checks that follow read setup's work on the host. The attempt cancels it once `signal` aborts.
  */
 export function runtimeSetup(run: AttemptRun) {
   return async ({ command, dir, env, unset, signal }: { command: string; dir: string; env: Record<string, string>; unset: string[]; signal: AbortSignal | undefined }): Promise<{ code: number; output: string } | { failure: WorkflowFailure }> => {
-    const stop = (): void => { void run.cancel(); };
-
-    signal?.addEventListener('abort', stop, { once: true });
     let output = '';
 
-    try {
-      const end = await run.setup({ argv: shellArgv(command), env, unset, credentials: {}, cwd: dir }, { onOutput: (_stream, data) => { output = `${output}${data}`.slice(-STDERR_KEPT); } });
-      const uncollected = end.kind === 'exited' ? await run.collect() : undefined;
+    const end = await run.setup({ argv: shellArgv(command), env, unset, credentials: {}, cwd: dir }, { onOutput: (_stream, data) => { output = `${output}${data}`.slice(-STDERR_KEPT); } }, { ...(signal && { signal }) });
+    const uncollected = end.kind === 'exited' ? await run.collect() : undefined;
 
-      switch (end.kind) {
-        case 'exited':
-          return uncollected ? { failure: uncollected } : { code: end.code, output: output || end.stdout };
-        case 'cancelled':
-          return { code: STOPPED_EXIT_CODE, output };
-        case 'interrupted':
-          return { failure: interrupted() };
-        case 'left':
-          return { failure: left() };
-        case 'failed':
-          return { failure: { code: 'runtime_failed', message: `The step runtime could not run setup "${command}" (${end.failure.code}): ${end.failure.message}` } };
-        case 'lost':
-          return { failure: lost(`setup "${command}"`, end.failure) };
-        default: {
-          const unhandled: never = end;
+    switch (end.kind) {
+      case 'exited':
+        return uncollected ? { failure: uncollected } : { code: end.code, output: output || end.stdout };
+      case 'cancelled':
+        return { code: STOPPED_EXIT_CODE, output };
+      case 'interrupted':
+        return { failure: interrupted() };
+      case 'left':
+        return { failure: left() };
+      case 'failed':
+        return { failure: { code: 'runtime_failed', message: `The step runtime could not run setup "${command}" (${end.failure.code}): ${end.failure.message}` } };
+      case 'lost':
+        return { failure: lost(`setup "${command}"`, end.failure) };
+      default: {
+        const unhandled: never = end;
 
-          return unhandled;
-        }
+        return unhandled;
       }
-    } finally {
-      signal?.removeEventListener('abort', stop);
     }
   };
 }
@@ -366,31 +359,15 @@ export function runtimePrompter(run: AttemptRun, { view, runId, step, tool, prov
   const launch = async (extended: string, input: StepRun, signal: AbortSignal | undefined, interactive: boolean): Promise<StepRunResult> => {
     let accepted = false;
     let timedOut = false;
-    // A stop before a new prompt is sent ends it unsent; one while a restart reattaches is kept and sent once the
-    // runtime accepts it. The attempt takes a stop in whatever it has sent by then: nothing yet, the open, or setup.
-    let stopped = false;
+    // The attempt takes the driver's abort from `signal` in whatever it has sent by then: nothing yet, the open, setup or
+    // the prompt. A prompt a restart reattaches to is cancelled again once the runtime accepts it.
+    const isStopped = (): boolean => timedOut || signal?.aborted === true;
+    const opened = await run.open(view, { tool, credentials: given, ...(isThroughOuter && { unset }), ...(toolHome && { toolHome }), ...(signal && { signal }) });
 
-    const stop = (): void => {
-      stopped = true;
-      void run.cancel();
-    };
-
-    signal?.addEventListener('abort', stop, { once: true });
-
-    if (signal?.aborted) stop();
-
-    const unstarted = (failure: WorkflowFailure): StepRunResult => {
-      signal?.removeEventListener('abort', stop);
-
-      return { started: false, exitCode: 1, failure };
-    };
-
-    const opened = await run.open(view, { tool, credentials: given, ...(isThroughOuter && { unset }), ...(toolHome && { toolHome }) });
-
-    if (!opened.ok) return unstarted(opened.failure);
+    if (!opened.ok) return { started: false, exitCode: 1, failure: opened.failure };
     const unready = await setUp(signal);
 
-    if (unready) return unstarted(unready);
+    if (unready) return { started: false, exitCode: 1, failure: unready };
     const lease: PromptLease = { step, tool, prompt: stepPrompt(input, { inPrompt: true }), result: input.resultPath, permissions: input.unattended ? 'unattended' : 'approval-required', interactive };
 
     if (input.model) lease.model = input.model.effort ? { name: input.model.name, effort: input.model.effort } : { name: input.model.name };
@@ -421,19 +398,18 @@ export function runtimePrompter(run: AttemptRun, { view, runId, step, tool, prov
 
     const timer = timeoutMs === undefined || timeoutMs > MAX_TIMER_MS ? undefined : setTimeout(() => {
       timedOut = true;
-      stop();
+      void run.cancel();
     }, timeoutMs);
 
     const end = await run.prompt({ lease, env, provided, unset, credentials: given, cwd: input.cwd }, {
       onAccepted: () => {
         accepted = true;
 
-        if (stopped) void run.cancel();
+        if (isStopped()) void run.cancel();
       },
     });
 
     clearTimeout(timer);
-    signal?.removeEventListener('abort', stop);
     const uncollected = await run.collect();
 
     switch (end.kind) {

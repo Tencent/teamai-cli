@@ -74,18 +74,14 @@ describe('a prompt step on a runtime that launches agents its own way', () => {
   it('passes the driver\'s abort on to an open whose runtime never reports the place ready, and ends unsent', async () => {
     const controller = new AbortController();
     let isOpening = false;
-    let endOpen: ((opened: Awaited<ReturnType<AttemptRun['open']>>) => void) | undefined;
     let isPromptSent = false;
     const run: AttemptRun = {
       ...promptOnlyRun().run,
-      // As an attempt ends an open once its runtime answers the cancel of it, and not before.
-      open: async () => new Promise((resolve) => {
-        endOpen = resolve;
+      // As an attempt ends an open once the step's signal it was given aborts and its runtime answers the cancel, and not before.
+      open: async (_view, place) => new Promise((resolve) => {
+        place?.signal?.addEventListener('abort', () => resolve({ ok: false, failure: { code: 'runtime_lost', message: 'Step runtime "box" did not answer the cancel of the open within 15 s.' } }), { once: true });
         isOpening = true;
       }),
-      cancel: async () => {
-        endOpen?.({ ok: false, failure: { code: 'runtime_lost', message: 'Step runtime "box" did not answer the cancel of the open within 15 s.' } });
-      },
       prompt: async () => {
         isPromptSent = true;
 

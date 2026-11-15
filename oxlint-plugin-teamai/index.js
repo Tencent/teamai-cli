@@ -32,6 +32,7 @@ import processReads from './rules/process-reads.js';
 import unspawnedChild from './rules/unspawned-child.js';
 import signalOwner from './rules/signal-owner.js';
 import readlineError from './rules/readline-error.js';
+import attemptAbort from './rules/attempt-abort.js';
 import spawnCommand from './rules/spawn-command.js';
 import recursiveReaddir from './rules/recursive-readdir.js';
 import regularFileReads from './rules/regular-file-reads.js';
@@ -82,6 +83,7 @@ export default definePlugin({
     'git-exit-code': gitExitCode,
     'piped-git': pipedGit,
     'readline-error': readlineError,
+    'attempt-abort': attemptAbort,
     'process-reads': processReads,
     'unspawned-child': unspawnedChild,
     'signal-owner': signalOwner,

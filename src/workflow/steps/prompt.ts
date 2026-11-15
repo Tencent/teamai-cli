@@ -690,7 +690,8 @@ async function promptPickedThere({ config, lock, driver, lease, onRuntime, signa
   const failed = (failure: WorkflowFailure, tool?: string): ReportInput => ({ attempt: lease.attempt, revision: lease.revision, driver, ...(tool !== undefined && { tool }), ...failureReport(failure) });
   const cwd = lease.cwd ?? driver.workspace;
   const result = attemptResultPath(config, lock.run, lease.attempt);
-  const opened = await run.open(await placeView(config, lock.run, lease, cwd));
+  // The attempt takes the run's stop from `signal` in whatever it has sent by then: nothing yet, the open, setup or the prompt.
+  const opened = await run.open(await placeView(config, lock.run, lease, cwd), { signal });
 
   if (!opened.ok) return failed(opened.failure);
   const unready = await runPlaceSetup({ config, run: lock.run, attempt: lease.attempt, mode, env: onRuntime.teamEnv, signal, on: runtimeSetup(run) });
@@ -698,21 +699,12 @@ async function promptPickedThere({ config, lock, driver, lease, onRuntime, signa
   if (unready) return failed(unready);
   const scoped = runtimeStepEnv(lease, lease.processEnv ?? {}, { config, run: lock.run, mode });
 
-  const stop = (): void => {
-    void run.cancel();
-  };
-
-  signal.addEventListener('abort', stop, { once: true });
-
-  if (signal.aborted) stop();
-
   // The step's own tool, else the default of whoever runs it: the runtime renders the prompt and picks from its own copy of the step.
   const end = await run.prompt({
     lease: { step: lease.step, tool: lease.tool ?? 'default', prompt: lease.prompt ?? '', result, permissions: lease.permissions === 'unattended' ? 'unattended' : 'approval-required', interactive: false },
     env: scoped.env, provided: scoped.provided, unset: scoped.unset, credentials: {}, cwd,
   }, {});
 
-  signal.removeEventListener('abort', stop);
   const uncollected = await run.collect();
 
   switch (end.kind) {

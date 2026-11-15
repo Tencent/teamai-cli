@@ -538,17 +538,19 @@ export interface AttemptRun {
    * Opens the place, with what of the host it gets, or with nothing for a confined prompt's place. `toolHome` is the
    * tool home a prompt's tool keeps its session in, recorded for every later lookup; `credentials` are the values its
    * tool gets, sent and never recorded; `tool` is the tool its prompt runs, which the runtime is told; `unset`, for an
-   * entry through another runtime, the names its prompt goes without, which the outer keeps from the tool.
+   * entry through another runtime, the names its prompt goes without, which the outer keeps from the tool. `signal` is
+   * the step's: from now until the close, its abort cancels the attempt in whatever phase it is in then, at once when it
+   * already aborted, so a caller adds no listener of its own.
    */
-  open(view: PlaceView | undefined, place?: { tool?: string; toolHome?: z.infer<typeof ToolHomeSchema>; credentials?: Record<string, string>; unset?: string[] }): Promise<{ ok: true; handle: string } | { ok: false; failure: WorkflowFailure }>;
+  open(view: PlaceView | undefined, place?: { tool?: string; toolHome?: z.infer<typeof ToolHomeSchema>; credentials?: Record<string, string>; unset?: string[]; signal?: AbortSignal }): Promise<{ ok: true; handle: string } | { ok: false; failure: WorkflowFailure }>;
   /** Runs the step's `command`, or a prompt step's `tool`, as the attempt's one exec. */
   exec(request: Omit<ExecRequest, 'op' | 'handle'>, events: ExecEvents, kind: Exclude<ExecKind, 'setup'>): Promise<AttemptExecEnd>;
   /**
    * Runs the workflow's setup as an exec of the open place, recorded apart from the step's exec, under a new id. A setup
    * a teamai before this one left is stopped before its place is prepared again (`stopLeftSetup`), and here again for a
-   * caller that did not.
+   * caller that did not. `signal`, setup's own, such as one its time limit aborts, cancels it as the open's does.
    */
-  setup(request: Omit<ExecRequest, 'op' | 'handle'>, events: ExecEvents): Promise<AttemptExecEnd>;
+  setup(request: Omit<ExecRequest, 'op' | 'handle'>, events: ExecEvents, stop?: { signal?: AbortSignal }): Promise<AttemptExecEnd>;
   /**
    * Stops the setup a killed teamai left running, before the place it ran in is prepared again: on a runtime that
    * mounts the host's folders, it would go on writing into the new one. Ends `lost` when the stop is not confirmed, so
@@ -795,6 +797,20 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
   let mayRun: RuntimeFailure | undefined;
   // The credentials the place was opened with, in memory only, so what the runtime says of the place is kept masked.
   let openedWith: Record<string, string> = {};
+
+  /** Cancels the attempt once `signal` aborts, at once when it already has, until the answer is called. */
+  const follow = (signal: AbortSignal): (() => void) => {
+    const onAbort = (): void => { void sends.cancel(); };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    if (signal.aborted) onAbort();
+
+    return () => { signal.removeEventListener('abort', onAbort); };
+  };
+
+  // The step's signal the attempt follows, from its open until its close.
+  let stepSignal: { signal: AbortSignal; unfollow: () => void } | undefined;
   // Whether this attempt's runtime answered for its place, as alive: once it did, its stop or close of it is one.
   let isPlaceKnown = false;
 
@@ -955,8 +971,35 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
     return end;
   };
 
+  /** Runs setup as `setup` does, for the signal `setup` follows meanwhile. */
+  const setUpOnce = async (request: Omit<ExecRequest, 'op' | 'handle'>, events: ExecEvents): Promise<AttemptExecEnd> => {
+    const before = await current();
+    const handle = before?.open.handle;
+
+    if (!before || handle === undefined) return { kind: 'failed', failure: { code: 'runtime_protocol', message: `Attempt ${attempt} has no open place to run setup in.` } };
+
+    // Stopped before its place was prepared again (`stopLeftSetup`); stopped here too for a caller that did not, late as that is.
+    if (before.setup) {
+      const notStopped = await stopLeftRunning(handle, before.setup.op);
+
+      if (notStopped) return leftSetupNotStopped(notStopped);
+    }
+
+    const setup = { op: newOpId() };
+    await save({ ...before, setup, phase: 'running' });
+    const acceptance = accepting(events);
+    const end = await sends.exec({ op: setup.op, handle, ...request }, { ...events, onAccepted: acceptance.onAccepted, onDisplay: acceptance.onDisplay }, 'setup', { reconnects: false, kept: acceptance.kept });
+
+    return end.kind === 'left' ? end : ended(end);
+  };
+
   return {
-    async open(view, { tool, toolHome: home, credentials = {}, unset } = {}) {
+    async open(view, { tool, toolHome: home, credentials = {}, unset, signal } = {}) {
+      if (signal && signal !== stepSignal?.signal) {
+        stepSignal?.unfollow();
+        stepSignal = { signal, unfollow: follow(signal) };
+      }
+
       // A stop that came before the open was sent, read again after each wait that comes before the send: nothing is
       // asked of the runtime, so it makes no place.
       const unsent = { ok: false as const, failure: { code: 'cancelled', message: `teamai sent no open of attempt ${attempt} to step runtime "${runtime.name}": the step was stopped first.` } };
@@ -1139,25 +1182,14 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
       return end.kind === 'left' ? end : ended(end);
     },
 
-    async setup(request, events) {
-      const before = await current();
-      const handle = before?.open.handle;
+    async setup(request, events, { signal } = {}) {
+      const unfollow = signal && signal !== stepSignal?.signal ? follow(signal) : undefined;
 
-      if (!before || handle === undefined) return { kind: 'failed', failure: { code: 'runtime_protocol', message: `Attempt ${attempt} has no open place to run setup in.` } };
-
-      // Stopped before its place was prepared again (`stopLeftSetup`); stopped here too for a caller that did not, late as that is.
-      if (before.setup) {
-        const notStopped = await stopLeftRunning(handle, before.setup.op);
-
-        if (notStopped) return leftSetupNotStopped(notStopped);
+      try {
+        return await setUpOnce(request, events);
+      } finally {
+        unfollow?.();
       }
-
-      const setup = { op: newOpId() };
-      await save({ ...before, setup, phase: 'running' });
-      const acceptance = accepting(events);
-      const end = await sends.exec({ op: setup.op, handle, ...request }, { ...events, onAccepted: acceptance.onAccepted, onDisplay: acceptance.onDisplay }, 'setup', { reconnects: false, kept: acceptance.kept });
-
-      return end.kind === 'left' ? end : ended(end);
     },
 
     async prompt(request, events) {
@@ -1251,6 +1283,9 @@ function attemptThrough({ config, run, attempt, sends, entry, driver, sources, d
     },
 
     async close(how) {
+      // The step is over: a later abort of its signal is no stop of the attempt's.
+      stepSignal?.unfollow();
+      stepSignal = undefined;
       const before = await current();
 
       if (!before || before.phase === 'closed' || isLeft) return undefined;

@@ -200,20 +200,20 @@ describe('runConfinedStepOnRuntime', () => {
   it('passes the run\'s stop on to an open whose runtime never reports the place ready, and sends no prompt', async () => {
     const dir = await dirWith(root, 'evidence', { 'diff.txt': '+ a line\n' });
     const controller = new AbortController();
-    let endOpen: ((opened: Awaited<ReturnType<AttemptRun['open']>>) => void) | undefined;
+    let isOpening = false;
     const { attemptRun: judging, prompts } = judgeRun(() => undefined);
     const attemptRun: AttemptRun = {
       ...judging,
-      // As an attempt ends an open once its runtime answers the cancel of it, and not before.
-      open: async () => new Promise((resolve) => { endOpen = resolve; }),
-      cancel: async () => {
-        endOpen?.({ ok: false, failure: { code: 'runtime_lost', message: 'Step runtime "toy" did not answer the cancel of the open within 15 s.' } });
-      },
+      // As an attempt ends an open once the step's signal it was given aborts and its runtime answers the cancel, and not before.
+      open: async (_view, place) => new Promise((resolve) => {
+        place?.signal?.addEventListener('abort', () => resolve({ ok: false, failure: { code: 'runtime_lost', message: 'Step runtime "toy" did not answer the cancel of the open within 15 s.' } }), { once: true });
+        isOpening = true;
+      }),
     };
     const lease = { ...leaseIn(dir), confined: { dir, level: 'best-effort' as const, tools: ['claude'] } };
 
     const running = runConfinedStepOnRuntime({ config, run, secrets: {}, lease, signal: controller.signal, runtime: 'toy', attemptRun, offers: [{ level: 'best-effort', access: 'read', tools: ['claude'] }], credentials: {} });
-    await vi.waitFor(() => { expect(endOpen).toBeDefined(); });
+    await vi.waitFor(() => { expect(isOpening).toBe(true); });
     controller.abort();
 
     expect(await Promise.race([running, new Promise<'still opening'>((resolve) => { setTimeout(() => resolve('still opening'), 5_000); })])).toMatchObject({ kind: 'ran', report: { outcome: 'failed', failure: { code: 'runtime_lost' } } });
