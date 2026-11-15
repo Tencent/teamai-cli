@@ -131,6 +131,12 @@ for (const [flags, description] of GLOBAL_OPTIONS) program.option(flags, descrip
 
 program
   .hook('preAction', async (thisCommand, actionCommand) => {
+    // stdout is the JSON for every `--json` command, and loading the team config
+    // can warn (a roles manifest that does not parse) before the command runs
+    // (#1885). First, so the migration below and every later log line go to
+    // stderr. `--json <payload>` takes a string, not `true`, so it is untouched.
+    if (actionCommand.opts().json === true) setStderrOnly(true);
+
     // A command a step starts in its clone reads and writes under that clone's own install, as the install's pull did,
     // so nothing it writes reaches the member's home. First, so every path resolved below is the install's.
     if (attemptMarker(process.env) !== undefined) {
