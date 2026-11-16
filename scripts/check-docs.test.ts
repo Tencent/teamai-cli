@@ -136,6 +136,8 @@ it('checks rendered headings and titled and reference links, ignoring code examp
   fs.writeFileSync(path.join(root, 'docs/anchor-edge.md'), [
     '## [Usage](guide.md)',
     '## <em>Emphasis</em>',
+    '## 🚀 Launch',
+    '## Setup<br>',
     '## परिचय',
     '',
     'Setext heading',
@@ -159,6 +161,8 @@ it('checks rendered headings and titled and reference links, ignoring code examp
     '',
     '[Linked heading](docs/anchor-edge.md#usage)',
     '[Formatted heading](docs/anchor-edge.md#emphasis)',
+    '[Emoji prefix](docs/anchor-edge.md#-launch)',
+    '[HTML line break](docs/anchor-edge.md#setup)',
     '[Combining marks](docs/anchor-edge.md#परिचय)',
     '[Setext](docs/anchor-edge.md#setext-heading)',
     '[Indented](docs/anchor-edge.md#indented-heading)',
@@ -170,6 +174,8 @@ it('checks rendered headings and titled and reference links, ignoring code examp
     '~~~',
     '',
     '[Titled](docs/anchor-edge.md#bad-title "Details")',
+    '[Missing leading hyphen](docs/anchor-edge.md#launch)',
+    '[Tag name in fragment](docs/anchor-edge.md#setupbr)',
     '[Reference][missing-ref]',
     '[missing-ref][]',
     '[missing-ref]',
@@ -184,6 +190,8 @@ it('checks rendered headings and titled and reference links, ignoring code examp
   expect(checked.status).toBe(1);
   expect(checked.output.split(/\r?\n/).filter((line) => line.includes('links docs/anchor-edge.md'))).toEqual([
     expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#bad-title,/u),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#launch,/u),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#setupbr,/u),
     ...Array.from({ length: 3 }, () => expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#bad-ref,/u)),
     expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#example-heading,/u),
     expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#example-id,/u),
