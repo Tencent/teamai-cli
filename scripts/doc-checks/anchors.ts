@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Nodes } from 'mdast';
+import { decodeNamedCharacterReference } from 'decode-named-character-reference';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { readMarkdown } from './read-markdown.js';
 
@@ -40,6 +41,16 @@ function slug(text: string): string {
     .replace(/\s/g, '-');
 }
 
+function decodeEntities(value: string): string {
+  return value.replace(/&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi, (reference, body: string) => {
+    if (body[0] !== '#') return decodeNamedCharacterReference(body) || reference;
+    const hex = body[1]?.toLowerCase() === 'x';
+    const codePoint = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
+
+    return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : '\uFFFD';
+  });
+}
+
 function readDocument(file: string) {
   const headings = new Set<string>();
   const explicitAnchors = new Set<string>();
@@ -56,11 +67,11 @@ function readDocument(file: string) {
     } else if (node.type === 'html') {
       const html = node.value.replace(/<!--[\s\S]*?-->/g, '');
 
-      for (const tag of html.matchAll(/<a\b[^>]*>/gi)) {
-        for (const match of tag[0].matchAll(/\b(?:id|name)\s*=\s*(?:(["'])(.*?)\1|([^\s>]+))/gi)) {
+      for (const tag of html.matchAll(/<a\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
+        for (const match of tag[0].matchAll(/(?:^|\s)(?:id|name)\s*=\s*(?:(["'])(.*?)\1|([^\s>]+))/gi)) {
           const id = match[2] ?? match[3];
 
-          if (id) explicitAnchors.add(id);
+          if (id) explicitAnchors.add(decodeEntities(id));
         }
       }
     } else if (node.type === 'definition') {
