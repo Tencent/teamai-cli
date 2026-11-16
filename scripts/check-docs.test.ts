@@ -105,6 +105,32 @@ it('check rejects a README matrix that disagrees with the tool descriptor', () =
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('Documentation check failed: lists every tool but the internal builds');
 });
+it('check validates GitHub-style heading and explicit Markdown anchors in every documentation surface', () => {
+  const root = checkout();
+  const target = path.join(root, 'docs/anchor-target.md');
+  fs.writeFileSync(target, [
+    '# Name_with underscore',
+    '## 重复',
+    '## 重复',
+    '## `code` and <tool>',
+    '<a id="explicit-id"></a>',
+    "<a name='explicit-name'></a>",
+  ].join('\n'));
+  fs.appendFileSync(path.join(root, 'README.md'), '\n[underscore](docs/anchor-target.md#name_with-underscore)\n[duplicate](docs/anchor-target.md#重复-1)\n');
+  const skill = path.join(root, 'skill-data/core/SKILL.md');
+  fs.appendFileSync(skill, '\n[code and tool](../../docs/anchor-target.md#code-and-tool)\n[id](../../docs/anchor-target.md#explicit-id)\n[name](../../docs/anchor-target.md#explicit-name)\n');
+  expect(run(root, '--only=anchors')).toMatchObject({ status: 0 });
+
+  fs.appendFileSync(path.join(root, 'README.md'), '\n[missing](docs/anchor-target.md#missing-readme-anchor)\n');
+  fs.appendFileSync(skill, '\n[missing](../../docs/anchor-target.md#missing-skill-anchor)\n');
+  const page = path.join(root, 'docs/guide/zh-CN/benchmarks.md');
+  fs.writeFileSync(page, fs.readFileSync(page, 'utf8').replace('dashboard.md#基准测试benchmarks', 'dashboard.md#benchmarks'));
+  const checked = run(root, '--only=anchors');
+  expect(checked.status).toBe(1);
+  expect(checked.output).toMatch(/README\.md:\d+ links docs\/anchor-target\.md#missing-readme-anchor, which has no heading for it\./u);
+  expect(checked.output).toMatch(/skill-data\/core\/SKILL\.md:\d+ links \.\.\/\.\.\/docs\/anchor-target\.md#missing-skill-anchor, which has no heading for it\./u);
+  expect(checked.output).toMatch(/docs\/guide\/zh-CN\/benchmarks\.md:\d+ links dashboard\.md#benchmarks, which has no heading for it\./u);
+});
 it('check rejects a lint rule with no row in the plugin README, and a row with no rule', () => {
   const root = checkout();
   const readme = path.join(root, LINT_README);
