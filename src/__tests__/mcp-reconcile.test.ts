@@ -4071,11 +4071,29 @@ servers:
       .toEqual(['codebuddy:local:0', 'codebuddy:local:1']);
   });
 
-  it('concurrent reconcile of two worktrees keeps BOTH ownership records (no lost update)', async () => {
+  it('keeps MCP state while the machine lock is busy, previews without taking it, and retries after release', async () => {
+    const lock = path.join(homeDir, '.teamai', '.mcp-lock');
+    const file = path.join(homeDir, '.claude.json');
+    const manifest = path.join(homeDir, '.teamai', 'managed-mcp.json');
+    await writeMcpYaml('servers:\n  - name: shared\n    transport: http\n    url: https://team.example/mcp\n');
+    expect(await acquireLock(lock)).toBe(true);
+
+    try {
+      await reconcileMcpForConfig(teamConfig, localConfig, { dryRun: true });
+      await expect(reconcileMcpForConfig(teamConfig, localConfig)).rejects.toThrow('Timed out waiting to sync MCP configs');
+      expect(await fse.pathExists(file)).toBe(false);
+      expect(await fse.pathExists(manifest)).toBe(false);
+    } finally {
+      await releaseLock(lock);
+    }
+
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    expect((await fse.readJson(file)).mcpServers.shared).toBeDefined();
+    expect(await fse.pathExists(lock)).toBe(false);
+  });
+
+  it.each([[false, false], [true, false], [true, true]])('concurrent reconcile keeps configs and ownership, local scopes=%s, failed save=%s', async (localScopes, failedSave) => {
     const { managedMcpManifestPath } = await import('../types.js');
-    // Two worktrees sharing one partition data home — the exact concurrency the
-    // reviewer flagged. Per-worktree files mean simultaneous reconciles touch
-    // disjoint files, so neither can clobber the other's ownership record.
     const sharedDataHome = path.join(tmpDir, 'cc-partition');
     await fse.ensureDir(sharedDataHome);
     const wtA = path.join(tmpDir, 'ccA');
@@ -4085,8 +4103,8 @@ servers:
         await fse.ensureDir(path.join(wt, d, 'skills'));
       }
     }
-    const cfgA = { ...localConfig, scope: 'project', projectRoot: wtA, dataHome: sharedDataHome } as unknown as LocalConfig;
-    const cfgB = { ...localConfig, scope: 'project', projectRoot: wtB, dataHome: sharedDataHome } as unknown as LocalConfig;
+    const cfgA = { ...localConfig, scope: 'project', projectRoot: wtA, dataHome: sharedDataHome, enabledAgents: ['claude', 'cursor'] } as LocalConfig;
+    const cfgB = { ...localConfig, scope: 'project', projectRoot: wtB, dataHome: sharedDataHome, enabledAgents: ['claude', 'cursor'] } as LocalConfig;
 
     await writeMcpYaml(`
 servers:
@@ -4095,20 +4113,57 @@ servers:
     url: https://team.example/mcp
 `);
 
-    // Reconcile both worktrees simultaneously.
-    await Promise.all([
-      reconcileMcpForConfig(teamConfig, cfgA),
-      reconcileMcpForConfig(teamConfig, cfgB),
-    ]);
+    const team = { ...teamConfig, sharing: { ...teamConfig.sharing, gitExclude: { enabled: localScopes } } };
+    const sharedFile = path.join(homeDir, '.claude.json');
+    const fileIo = await import('../utils/fs.js');
+    const writeAtomic = fileIo.writeJsonAtomic;
+    let writers = 0;
+    let release!: () => void;
+    const otherWritten = new Promise<void>((resolve) => { release = resolve; });
+    let started!: () => void;
+    const firstWriting = new Promise<void>((resolve) => { started = resolve; });
+    const writes = vi.spyOn(fileIo, 'writeJsonAtomic').mockImplementation(async (...args) => {
+      const file = String(args[0]);
 
-    // BOTH ownership records survive — each in its own per-worktree file.
-    const aManifest = await fse.readJson(managedMcpManifestPath(sharedDataHome, wtA));
-    const bManifest = await fse.readJson(managedMcpManifestPath(sharedDataHome, wtB));
-    expect(aManifest['claude:project'].some((r: { name: string }) => r.name === 'shared')).toBe(true);
-    expect(bManifest['claude:project'].some((r: { name: string }) => r.name === 'shared')).toBe(true);
-    // And both workspace files got the server.
-    expect((await fse.readJson(path.join(wtA, '.mcp.json'))).mcpServers.shared).toBeDefined();
-    expect((await fse.readJson(path.join(wtB, '.mcp.json'))).mcpServers.shared).toBeDefined();
+      // Let a competing write finish before this stale snapshot lands, unless the transaction holds it back.
+      if (localScopes && file === sharedFile && ++writers === 1) {
+        started();
+        await Promise.race([otherWritten, new Promise((resolve) => setTimeout(resolve, 500))]);
+      }
+
+      if (failedSave && file === managedMcpManifestPath(sharedDataHome, wtA)) throw new Error('ownership write failed');
+      await writeAtomic(...args);
+
+      if (file === sharedFile) release();
+    });
+
+    try {
+      const first = reconcileMcpForConfig(team, cfgA);
+
+      if (localScopes) await firstWriting;
+      const results = await Promise.allSettled([
+        first,
+        reconcileMcpForConfig(team, cfgB),
+      ]);
+
+      expect(results.map((result) => result.status)).toEqual([failedSave ? 'rejected' : 'fulfilled', 'fulfilled']);
+      if (results[0]?.status === 'rejected') expect(results[0].reason.message).toContain('ownership write failed');
+    } finally {
+      writes.mockRestore();
+    }
+
+    for (const wt of failedSave ? [wtB] : [wtA, wtB]) {
+      const manifest = await fse.readJson(managedMcpManifestPath(sharedDataHome, wt));
+      expect(manifest['cursor:project'].some((r: { name: string }) => r.name === 'shared')).toBe(true);
+      const doc = await fse.readJson(localScopes ? sharedFile : path.join(wt, '.mcp.json'));
+      const servers = localScopes ? doc.projects?.[fs.realpathSync(wt)]?.mcpServers : doc.mcpServers;
+      expect(servers?.shared, `Claude MCP server for ${wt}`).toBeDefined();
+
+      if (localScopes) {
+        const local = await fse.readJson(path.join(sharedDataHome, 'managed-local-mcp.json'));
+        expect(local[`claude:local:${fs.realpathSync(wt)}`].some((r: { name: string }) => r.name === 'shared')).toBe(true);
+      }
+    }
   });
 
   it('project-wide uninstall clears every worktree — no sibling left "server present, ownership missing"', async () => {

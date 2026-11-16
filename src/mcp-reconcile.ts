@@ -2957,6 +2957,26 @@ export async function reconcileMcpForConfig(
   localConfig: LocalConfig,
   options: McpReconcileOptions = {},
 ): Promise<McpReconcileResult> {
+  const reconcile = () => reconcileMcpForConfigLocked(teamConfig, localConfig, options);
+
+  return options.dryRun ? reconcile() : withMcpLock(reconcile);
+}
+
+/** MCP configs and ownership span scopes, so their reads, writes and rollback share one machine lock. */
+export async function withMcpLock<T>(body: () => Promise<T>): Promise<T> {
+  const lock = path.join(getTeamaiHomeDir(), '.mcp-lock');
+  const result = await withFileLock(lock, { attempts: 50, delayMs: 100 }, body);
+
+  if (!result.held) throw new Error(`Timed out waiting to sync MCP configs (${lock}). Try the command again.`);
+
+  return result.value;
+}
+
+async function reconcileMcpForConfigLocked(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  options: McpReconcileOptions,
+): Promise<McpReconcileResult> {
   // Each project config's exclusion from git, established before a resolved value is written into it.
   const exclusions = new Map<string, GitExclusion>();
   // The project configs this run wrote: a line it added for one stays, whatever fails after.
@@ -4591,6 +4611,10 @@ async function leaveLocalScope(
  * read or write stay. The files it could not clean.
  */
 export async function removeLocalScopeMcpServers(dataHome: string, toolRoots?: Record<string, string>): Promise<string[]> {
+  return withMcpLock(() => removeLocalScopeMcpServersLocked(dataHome, toolRoots));
+}
+
+async function removeLocalScopeMcpServersLocked(dataHome: string, toolRoots?: Record<string, string>): Promise<string[]> {
   const manifestPath = path.join(dataHome, 'managed-local-mcp.json');
   const manifest = await readManifest(manifestPath);
   const recorded = Object.keys(manifest).length > 0;
