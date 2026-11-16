@@ -1474,6 +1474,10 @@ export class SkillsHandler extends ResourceHandler {
       const { tool, dest } = target;
 
       try {
+        // pre-push-sync imports this module, so it is loaded here. A push cut short between its renames left the member's
+        // copy in a hidden sibling; put it back before this judges or delivers over the skill's name (#1880).
+        await (await import('../utils/pre-push-sync.js')).restoreCutShortSync(dest);
+
         if (ledger && await keepsEditedCopy(ledger, item, target)) {
           ledger.toolsMissingSkills.add(tool);
           continue;

@@ -253,6 +253,7 @@ async function syncSkillsToLocal(
 
     if (skillsDir === null || !await pathExists(skillsDir)) continue;
 
+    for (const skillName of teamSkillPaths.keys()) await restoreCutShortSync(path.join(skillsDir, skillName));
     const localSkillNames = await listDirs(skillsDir);
 
     for (const skillName of localSkillNames) {
@@ -317,6 +318,27 @@ async function replaceSkillDir(teamSkill: TeamSkillSource, localSkillDir: string
   }
 
   await removeLeftover(previous);
+}
+
+/**
+ * Put back the skill a replaceSkillDir cut short between its two renames left
+ * in `.<name>.<pid>.<hex>.teamai-prev`, when nothing has taken its place, and
+ * drop the update it staged beside it. Called before anything reads or writes
+ * the skill, so the member's own files in it are not left hidden.
+ */
+export async function restoreCutShortSync(localSkillDir: string): Promise<void> {
+  const parent = path.dirname(localSkillDir);
+
+  // lstat, not pathExists: a dangling link has taken the skill's place too. No skills directory to look in (none, or a
+  // file pull reports as blocking it): nothing was cut short there.
+  if (await fse.lstat(localSkillDir).then(() => true, () => false) || !await fse.stat(parent).then((stat) => stat.isDirectory(), () => false)) return;
+  const prefix = `.${path.basename(localSkillDir)}.`;
+  const tag = (await fse.readdir(parent)).find((name) => name.startsWith(prefix) && /^\d+\.[0-9a-f]{12}\.teamai-prev$/.test(name.slice(prefix.length)));
+
+  if (tag === undefined) return;
+  await fse.rename(path.join(parent, tag), localSkillDir);
+  await removeLeftover(path.join(parent, tag.replace(/\.teamai-prev$/, '.teamai-sync')));
+  log.warn(`A push cut short left skill ${path.basename(localSkillDir)} in ${tag}; it is back at ${localSkillDir}.`);
 }
 
 /**
