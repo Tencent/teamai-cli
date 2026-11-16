@@ -68,8 +68,9 @@ function readDocument(file: string) {
       const html = node.value.replace(/<!--[\s\S]*?-->/g, '');
 
       for (const tag of html.matchAll(/<a\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
-        for (const match of tag[0].matchAll(/(?:^|\s)(?:id|name)\s*=\s*(?:(["'])(.*?)\1|([^\s>]+))/gi)) {
-          const id = match[2] ?? match[3];
+        for (const match of tag[0].matchAll(/\s+([^\s"'=<>`]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) {
+          if (!/^(?:id|name)$/i.test(match[1] ?? '')) continue;
+          const id = match[2] ?? match[3] ?? match[4];
 
           if (id) explicitAnchors.add(decodeEntities(id));
         }
@@ -139,7 +140,7 @@ for (const file of files) {
 
     const { headings, explicitAnchors } = document(target);
 
-    if (!headings.has(anchor.toLowerCase()) && !explicitAnchors.has(anchor)) {
+    if (!headings.has(anchor) && !explicitAnchors.has(anchor)) {
       console.error(`${path.relative(root, file).split(path.sep).join('/')}:${line} links ${link}, which has no heading for it.`);
       process.exitCode = 1;
     }
