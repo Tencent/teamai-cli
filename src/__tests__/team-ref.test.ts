@@ -459,6 +459,75 @@ describe('pushRepoBranch explicit destination', () => {
     expect(await fs.readFile(pendingConfig, 'utf8')).toContain('note: pending');
   });
 
+  it('refuses to overwrite an env file the destination changed, keeping the pending edit', async () => {
+    const { localPath, git } = await fixture('explicit-env-divergent');
+    const envFile = path.join(localPath, 'env', 'env.yaml');
+    const envText = (...keys: string[]) => `variables:\n${keys.map((key) => `  - key: ${key}\n    value: v\n`).join('')}`;
+    await fs.mkdir(path.dirname(envFile));
+    await fs.writeFile(envFile, envText('BASE_KEY'));
+    await git.add('.');
+    await git.commit('env');
+    await git.push(['origin', 'main']);
+    await git.checkoutLocalBranch('review/env');
+    await fs.writeFile(envFile, envText('BASE_KEY', 'COLLEAGUE_KEY'));
+    await git.add('.');
+    await git.commit('colleague');
+    await git.push(['-u', 'origin', 'review/env']);
+    await git.checkout('main');
+    await git.raw(['branch', '-D', 'review/env']);
+    await fs.writeFile(envFile, envText('BASE_KEY', 'MEMBER_KEY'));
+
+    await expect(prepareExplicitBranch(localPath, 'review/env')).rejects.toThrow('Cannot apply env/env.yaml to review/env');
+
+    expect(await fs.readFile(envFile, 'utf8')).toBe(envText('BASE_KEY', 'MEMBER_KEY'));
+    expect((await git.branchLocal()).current).toBe('main');
+  });
+
+  it('does not leave a merged teamai.yaml behind when a later env file conflicts', async () => {
+    const { localPath, git } = await fixture('explicit-config-then-env-conflict');
+    const envFile = path.join(localPath, 'env', 'env.yaml');
+    const configFile = path.join(localPath, 'teamai.yaml');
+    const envText = (...keys: string[]) => `variables:\n${keys.map((key) => `  - key: ${key}\n    value: v\n`).join('')}`;
+    await fs.mkdir(path.dirname(envFile));
+    await fs.writeFile(envFile, envText('BASE_KEY'));
+    await fs.writeFile(configFile, 'team: test\n');
+    await git.add('.');
+    await git.commit('base');
+    await git.push(['origin', 'main']);
+    await git.checkoutLocalBranch('review/both');
+    await fs.writeFile(envFile, envText('BASE_KEY', 'COLLEAGUE_KEY'));
+    await fs.writeFile(configFile, 'team: test\ncolleague: yes\n');
+    await git.add('.');
+    await git.commit('colleague');
+    await git.push(['-u', 'origin', 'review/both']);
+    await git.checkout('main');
+    await git.raw(['branch', '-D', 'review/both']);
+    await fs.writeFile(envFile, envText('BASE_KEY', 'MEMBER_KEY'));
+    await fs.writeFile(configFile, 'team: test\nmember: yes\n');
+
+    await expect(prepareExplicitBranch(localPath, 'review/both')).rejects.toThrow('Cannot apply env/env.yaml to review/both');
+
+    expect(await fs.readFile(configFile, 'utf8')).toBe('team: test\nmember: yes\n');
+    expect(await fs.readFile(envFile, 'utf8')).toBe(envText('BASE_KEY', 'MEMBER_KEY'));
+    expect((await git.branchLocal()).current).toBe('main');
+  });
+
+  it('carries an env edit onto a destination that left the env file alone', async () => {
+    const { localPath, git } = await fixture('explicit-env-carry');
+    const envFile = path.join(localPath, 'env', 'env.yaml');
+    await fs.mkdir(path.dirname(envFile));
+    await fs.writeFile(envFile, 'variables:\n  - key: BASE_KEY\n    value: v\n');
+    await git.add('.');
+    await git.commit('env');
+    await git.push(['origin', 'main']);
+    await fs.writeFile(envFile, 'variables:\n  - key: BASE_KEY\n    value: v\n  - key: MEMBER_KEY\n    value: v\n');
+
+    await prepareExplicitBranch(localPath, 'review/env');
+
+    expect(await fs.readFile(envFile, 'utf8')).toContain('MEMBER_KEY');
+    expect((await git.branchLocal()).current).toBe('review/env');
+  });
+
   it('carries a staged rename without recreating the old path', async () => {
     const { localPath, git } = await fixture('explicit-rename');
     const oldPath = path.join(localPath, 'old.yaml');
