@@ -135,6 +135,8 @@ it('checks rendered headings and titled and reference links, ignoring code examp
   const root = checkout();
   fs.writeFileSync(path.join(root, 'docs/anchor-edge.md'), [
     '## [Usage](guide.md)',
+    '## <em>Emphasis</em>',
+    '## परिचय',
     '',
     'Setext heading',
     '--------------',
@@ -151,10 +153,13 @@ it('checks rendered headings and titled and reference links, ignoring code examp
     '<a id="example-id"></a>',
     '~~~',
   ].join('\n'));
+  fs.writeFileSync(path.join(root, 'docs/my guide.md'), '# Existing anchor\n');
   const readme = path.join(root, 'README.md');
   fs.appendFileSync(readme, [
     '',
     '[Linked heading](docs/anchor-edge.md#usage)',
+    '[Formatted heading](docs/anchor-edge.md#emphasis)',
+    '[Combining marks](docs/anchor-edge.md#परिचय)',
     '[Setext](docs/anchor-edge.md#setext-heading)',
     '[Indented](docs/anchor-edge.md#indented-heading)',
     '[Collision](docs/anchor-edge.md#foo-1-1)',
@@ -170,6 +175,7 @@ it('checks rendered headings and titled and reference links, ignoring code examp
     '[missing-ref]',
     '[Code heading](docs/anchor-edge.md#example-heading)',
     '[Code id](docs/anchor-edge.md#example-id)',
+    '[Encoded target path](docs/my%20guide.md#missing-encoded-path)',
     '',
     '[missing-ref]: docs/anchor-edge.md#bad-ref "Details"',
     '',
@@ -182,6 +188,7 @@ it('checks rendered headings and titled and reference links, ignoring code examp
     expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#example-heading,/u),
     expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#example-id,/u),
   ]);
+  expect(checked.output).toMatch(/README\.md:\d+ links docs\/my%20guide\.md#missing-encoded-path,/u);
 });
 it('check rejects a lint rule with no row in the plugin README, and a row with no rule', () => {
   const root = checkout();

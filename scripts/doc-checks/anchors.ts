@@ -5,6 +5,7 @@ import { fromMarkdown } from 'mdast-util-from-markdown';
 import { readMarkdown } from './read-markdown.js';
 
 const root = process.cwd();
+const FORMATTING_TAGS = new Set(['a', 'abbr', 'b', 'code', 'del', 'em', 'i', 'ins', 'kbd', 'mark', 's', 'small', 'span', 'strike', 'strong', 'sub', 'sup', 'tt', 'u']);
 
 function markdownFiles(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -29,14 +30,18 @@ function headingText(node: Nodes): string {
 
   if (node.type === 'break') return ' ';
 
-  if (node.type === 'html') return /^<([^>\s/]+)>$/.exec(node.value)?.[1] ?? '';
+  if (node.type === 'html') {
+    const tag = /^<([^>\s/]+)>$/.exec(node.value)?.[1];
+
+    return tag && !FORMATTING_TAGS.has(tag.toLowerCase()) ? tag : '';
+  }
 
   return 'value' in node ? node.value : '';
 }
 
 function slug(text: string): string {
   return text.toLowerCase()
-    .replace(/[^\p{L}\p{N}\s_-]/gu, '')
+    .replace(/[^\p{L}\p{M}\p{N}\s_-]/gu, '')
     .trim()
     .replace(/\s/g, '-');
 }
@@ -101,7 +106,15 @@ for (const file of files) {
     const hash = link.indexOf('#');
 
     if (hash < 0 || hash === link.length - 1) continue;
-    const relative = link.slice(0, hash);
+    const encodedRelative = link.slice(0, hash);
+    let relative = encodedRelative;
+
+    try {
+      relative = decodeURIComponent(encodedRelative);
+    } catch {
+      // Leave an invalid path encoded so it cannot resolve to an unrelated file.
+    }
+
     const target = path.resolve(path.dirname(file), relative || path.basename(file));
 
     if (!target.endsWith('.md') || !fs.existsSync(target)) continue;
