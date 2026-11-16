@@ -288,14 +288,16 @@ it('check refuses a quoted glossary Avoid spelling in prose and ignores it in co
 });
 it('check finds a quoted Chinese glossary Avoid spelling without ASCII word boundaries', () => {
   const root = checkout();
-  fs.appendFileSync(path.join(root, 'docs/dev/glossary.md'), '\n_Avoid_: "资产"\n');
-  fs.appendFileSync(path.join(root, 'docs/guide/workflow.md'), '\n这是资产。资产管理也使用了该词。\n');
-  fs.appendFileSync(path.join(root, 'docs/guide/sharing.md'), '\n`资产`, <img alt="资产">, [x](资产.md)\n');
+  fs.appendFileSync(path.join(root, 'docs/dev/glossary.md'), '\n_Avoid_: "资产", "AI 助手", "助手 AI"\n');
+  fs.appendFileSync(path.join(root, 'docs/guide/workflow.md'), '\n这是资产。资产管理也使用了该词。AI 助手和助手 AI均为禁用写法。\n');
+  fs.appendFileSync(path.join(root, 'docs/guide/sharing.md'), '\n`资产`, `AI 助手`, `助手 AI`, <img alt="资产">, [x](资产.md)\n');
 
   const checked = run(root, '--only=glossary-terms');
 
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('docs/guide/workflow.md uses "资产" 2 times.');
+  expect(checked.output).toContain('docs/guide/workflow.md uses "AI 助手" 1 times.');
+  expect(checked.output).toContain('docs/guide/workflow.md uses "助手 AI" 1 times.');
   expect(checked.output).not.toContain('docs/guide/sharing.md');
 });
 it('check refuses a DriverCan key the workflow engine page does not name', () => {
