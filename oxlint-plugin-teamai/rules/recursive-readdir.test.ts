@@ -78,17 +78,9 @@ valid('allows entriesUnder, and a readdir that is no file module\'s', `import { 
 declare const archive: { readdir(dir: string, options: object): string[] };
 export const all = (dir: string) => [entriesUnder(dir), archive.readdir(dir, { recursive: true })];`);
 
-valid('allows a file not yet moved as many recursive listings as it is given', `import fs from 'node:fs';
-export const pages = (dir: string) => fs.readdirSync(dir, { recursive: true, encoding: 'utf8' });`, { filename: 'src/recall.ts' });
-
-invalid('rejects a recursive listing a file not yet moved adds over its count', `import fs from 'node:fs';
-export const pages = (dir: string) => [fs.readdirSync(dir, { recursive: true }), fs.readdirSync(dir, { recursive: true })];`, (output) => {
-  expect(output).toContain('lets this file keep 1 such calls, and it has 2.');
-}, { filename: 'src/recall.ts' });
-
-invalid('rejects a file not yet moved once it lists recursively fewer times than its count', `import fs from 'node:fs';
-export const pages = (dir: string) => fs.readdirSync(dir);`, (output) => {
-  expect(output).toContain('set its count there to 0, or remove the file from the list at 0');
+invalid('rejects a recursive listing in a file removed from NOT_YET_MOVED', `import fs from 'node:fs';
+export const pages = (dir: string) => fs.readdirSync(dir, { recursive: true, encoding: 'utf8' });`, (output) => {
+  expect(output).toContain(MESSAGE);
 }, { filename: 'src/recall.ts' });
 
 it('takes no option, so no file is let off it but through NOT_YET_MOVED', () => {

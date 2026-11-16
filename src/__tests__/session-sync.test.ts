@@ -701,6 +701,21 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     expect(new SyncManager(alice).listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2']);
   });
 
+  it('folds the %-escaped directory away when what is left there is a link', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const escaped = path.join(alice, 'sessions', 'repos', 'github.com%2Forg%2Falpha');
+    fs.mkdirSync(escaped, { recursive: true });
+    fs.symlinkSync(path.join(repoRoot, 'missing'), path.join(escaped, 'gone'), process.platform === 'win32' ? 'junction' : 'dir');
+
+    const mgr = new SyncManager(alice);
+    await mgr.saveSession(mkSession(), mkMeta());
+
+    expect(fs.existsSync(escaped)).toBe(false);
+    expect(mgr.listSessions(identity)).toHaveLength(1);
+  });
+
   it('undoes a move whose commit is rejected, and moves the archive on a later push, leaving unrelated files out', async () => {
     const alice = path.join(repoRoot, 'alice');
     git(repoRoot, 'init', '-q', '-b', 'main', alice);

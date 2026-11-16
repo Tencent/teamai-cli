@@ -29,6 +29,7 @@
 
 import * as fs from 'node:fs';
 import { readRegularFileSync } from '@teamai/shared/regular-file';
+import { entriesUnder } from '@teamai/shared/entries-under';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -956,7 +957,7 @@ export class SyncManager {
     }
 
     fs.rmSync(path.join(from, '_index.json'), { force: true });
-    const hasFilesLeft = fs.readdirSync(from, { recursive: true }).some((p) => fs.statSync(path.join(from, String(p))).isFile());
+    const hasFilesLeft = entriesUnder(from).some(({ entry }) => entry.isFile());
 
     if (!hasFilesLeft) fs.rmSync(from, { recursive: true });
     this.rebuildIndexLocked(repoIdentity);

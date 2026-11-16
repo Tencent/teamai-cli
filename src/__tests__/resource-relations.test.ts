@@ -772,6 +772,24 @@ describe('computeDerivedRelations — rule paths to code page sources', () => {
     }
   });
 
+  it('collectCodePages reads no page behind a link to a folder', () => {
+    const tmp = makeTmpDir();
+    try {
+      const inside = codePage(tmp, 'pay/modules/ledger.md', ['src/ledger/receipts.ts']);
+      const outside = path.join(tmp, 'outside');
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(outside, 'elsewhere.md'), '---\nsource: src/ledger/elsewhere.ts\n---\n');
+      const codeRoot = path.join(tmp, 'teamwiki', 'evidence', 'code');
+      fs.symlinkSync(outside, path.join(codeRoot, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+
+      expect(collectCodePages(path.join(tmp, 'teamwiki'), new Set())).toEqual([
+        { treePath: inside.treePath, slug: 'pay', sources: ['src/ledger/receipts.ts'] },
+      ]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('relationLines renders derived edges and a declared relation wins', () => {
     const tmp = makeTmpDir();
     try {

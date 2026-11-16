@@ -320,9 +320,17 @@ const teamaiContext = async (directory) => {
     }
   };
   const rules = async (dir) => {
-    let names = [];
+    // A link is not followed: one out of the folder would read what is outside it, and two to a parent never end.
+    const names = [];
+    const pending = [''];
     try {
-      names = await fs.readdir(dir, { recursive: true });
+      for (let folder = pending.pop(); folder !== undefined; folder = pending.pop()) {
+        for (const entry of await fs.readdir(path.join(dir, folder), { withFileTypes: true })) {
+          const name = path.join(folder, entry.name);
+          if (entry.isDirectory()) pending.push(name);
+          else if (entry.isFile()) names.push(name);
+        }
+      }
     } catch {
       return [];
     }

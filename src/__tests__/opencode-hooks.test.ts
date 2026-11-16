@@ -610,6 +610,24 @@ describe('OpenCode V2 plugin: team MCP servers', () => {
     await host.cleanup?.();
   });
 
+  it('reads no rule behind a link in a rules directory', async () => {
+    const project = path.join(tmp, 'project');
+    const rules = path.join(project, '.opencode', 'rules');
+    const outside = path.join(tmp, 'outside');
+    await fse.outputFile(path.join(rules, 'inside.md'), 'INSIDE-RULE\n');
+    await fse.outputFile(path.join(outside, 'linked.md'), 'OUTSIDE-RULE\n');
+    await fse.ensureDir(path.join(project, 'src'));
+    fse.symlinkSync(outside, path.join(rules, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+
+    const host = await loadV2Plugin(buildPluginSource(path.join(tmp, 'user')), {}, path.join(project, 'src'));
+    const event = { sessionID: 'ses', system: [] as Array<{ type: string; text: string }> };
+    await host.callbacks['session.context'](event);
+    const text = event.system.map((part) => part.text).join('\n');
+    expect(text).toContain('INSIDE-RULE');
+    expect(text).not.toContain('OUTSIDE-RULE');
+    await host.cleanup?.();
+  });
+
 });
 
 describe('OpenCode subprocess failures', () => {
