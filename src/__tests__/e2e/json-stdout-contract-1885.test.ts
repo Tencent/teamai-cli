@@ -77,6 +77,10 @@ describe('a roles manifest that does not parse keeps every --json command parsea
     ['list'],
     ['digest'],
     ['codebase', '--lint'],
+    ['roles', 'list'],
+    ['session', 'list', '--finished'],
+    ['session', 'show', 'missing-session'],
+    ['session', 'migrate'],
   ])('%s --json puts the JSON on stdout and the warning on stderr', (...args: string[]) => {
     const { stdout, stderr } = run([...args, '--json'], project, home);
 
