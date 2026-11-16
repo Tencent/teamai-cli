@@ -19,8 +19,7 @@ const UNREAD_MESSAGE = 'Give readdir or opendir its options as an object literal
  */
 export const NOT_YET_MOVED = new Map(Object.entries({
   // Upstream's own listings, in files this repository shares with upstream, left as upstream has them so a sync merges
-  // cleanly. The fix proposed upstream, "fix: recursive listings follow links out of the folder they list, and two links
-  // to a parent never end", moves those of src/recall.ts and src/session-flow/sync.ts to a walk that follows no link.
+  // cleanly.
   'scripts/check-docs.test.ts': 1,
   'scripts/doc-checks/workflow-docs-examples.ts': 1,
   'src/__tests__/agent-session-copy.test.ts': 2,
@@ -67,8 +66,6 @@ export const NOT_YET_MOVED = new Map(Object.entries({
   'src/__tests__/workflow-skill-secrets.test.ts': 1,
   'src/__tests__/workflow-skill-transitions.test.ts': 1,
   'src/__tests__/workflow-worktree-role.test.ts': 3,
-  'src/recall.ts': 1,
-  'src/session-flow/sync.ts': 1,
 }));
 
 scopedFiles([...NOT_YET_MOVED.keys()]);
