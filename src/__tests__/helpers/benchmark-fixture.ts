@@ -247,7 +247,7 @@ export function fixTask(startingCommit: string, prompt = 'Make node test.js pass
   return `schemaVersion: v1alpha1
 title: Fix the answer
 prompt: ${prompt}
-startingCommit: ${startingCommit}
+startingCommit: ${JSON.stringify(startingCommit)}
 check:
   run: node test.js
   protect: [test.js]
