@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import fse from 'fs-extra';
-import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 
 // ── Mocks ────────────────────────────────────────────────
 
@@ -123,14 +123,13 @@ function builtinBlock(text: string, tool: string): string[] | undefined {
     return block;
 }
 
-function mockHome(home: string): () => void {
-    const originalHome = process.env.HOME;
-    process.env.HOME = home;
-    return () => {
-        if (originalHome === undefined) delete process.env.HOME;
-        else process.env.HOME = originalHome;
-    };
+function mockHome(home: string): void {
+    vi.stubEnv('HOME', home);
 }
+
+afterEach(() => {
+    vi.unstubAllEnvs();
+});
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -424,7 +423,7 @@ describe('hooksList', () => {
 
 describe('hooksList', () => {
     it('should list hook status for configured tools', async () => {
-        const restoreHome = mockHome('/home/testuser');
+        mockHome('/home/testuser');
         const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
         mockedGetHookStatus
             .mockResolvedValueOnce('installed')
@@ -457,13 +456,12 @@ describe('hooksList', () => {
             expect(output).toContain('not configured');
             expect(output).toContain('no settings configured');
         } finally {
-            restoreHome();
             consoleLog.mockRestore();
         }
     });
 
     it('should list only HOME base dir when project config detected (#264)', async () => {
-        const restoreHome = mockHome('/home/testuser');
+        mockHome('/home/testuser');
         const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
         const projectConfig = {
             ...mockLocalConfig,
@@ -490,7 +488,6 @@ describe('hooksList', () => {
                 { tool: 'claude', from: 'version', builtinOverride: undefined },
             );
         } finally {
-            restoreHome();
             consoleLog.mockRestore();
         }
     });
@@ -506,7 +503,7 @@ describe('hooksList', () => {
     // resources in ~/.qoder-cn, so the previous project-scope lookup probed the
     // international build's ~/.qoder/settings.json and always said "missing".
     it('probes each tool settings file at the scope hooks were injected into', async () => {
-        const restoreHome = mockHome('/home/testuser');
+        mockHome('/home/testuser');
         const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
         mockedAutoDetectInit.mockResolvedValue({
             localConfig: { ...mockLocalConfig, scope: 'project', projectRoot: '/path/to/project' },
@@ -516,7 +513,6 @@ describe('hooksList', () => {
         try {
             await hooksList({});
         } finally {
-            restoreHome();
             consoleLog.mockRestore();
         }
 
@@ -534,7 +530,7 @@ describe('hooksList', () => {
     // the file is one install. Listing it twice would report the second target as
     // "missing" — the hooks there carry the owning target's dispatch identity.
     it('lists a settings file shared by two targets once, for its owner', async () => {
-        const restoreHome = mockHome('/home/testuser');
+        mockHome('/home/testuser');
         const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
         const projectRoot = '/path/to/project';
         mockedAutoDetectInit.mockResolvedValue({
@@ -550,7 +546,6 @@ describe('hooksList', () => {
         try {
             await hooksList({});
         } finally {
-            restoreHome();
             consoleLog.mockRestore();
         }
 
@@ -567,7 +562,7 @@ describe('hooksList', () => {
     // `<root>/.qoder/settings.json` for Qoder's dispatch identity, reported
     // `missing`, and never listed the enabled `qoder-cn` at all.
     it('gives the shared file to the enabled target, not the table-earlier one', async () => {
-        const restoreHome = mockHome('/home/testuser');
+        mockHome('/home/testuser');
         const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
         const projectRoot = '/path/to/project';
         mockedAutoDetectInit.mockResolvedValue({
@@ -584,7 +579,6 @@ describe('hooksList', () => {
         try {
             await hooksList({});
         } finally {
-            restoreHome();
             consoleLog.mockRestore();
         }
 
@@ -596,7 +590,7 @@ describe('hooksList', () => {
 
     // The same rule with no whitelist: `disabledAgents` alone moves ownership.
     it('gives the shared file to Qoder CN when Qoder is disabled', async () => {
-        const restoreHome = mockHome('/home/testuser');
+        mockHome('/home/testuser');
         const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
         const projectRoot = '/path/to/project';
         mockedAutoDetectInit.mockResolvedValue({
@@ -613,7 +607,6 @@ describe('hooksList', () => {
         try {
             await hooksList({});
         } finally {
-            restoreHome();
             consoleLog.mockRestore();
         }
 
@@ -697,7 +690,7 @@ describe('hooksList', () => {
         // reconciliation writes one generated artifact each, so its presence
         // is the status. Falling through to the generic branch printed
         // "not configured" for tools the pipeline does install hooks for.
-        const restoreHome = mockHome('/home/testuser');
+        mockHome('/home/testuser');
         const out: string[] = [];
         const consoleLog = vi.spyOn(console, 'log').mockImplementation((m?: unknown) => { out.push(String(m)); });
         mockedAutoDetectInit.mockResolvedValue({
@@ -708,7 +701,6 @@ describe('hooksList', () => {
         try {
             await hooksList({});
         } finally {
-            restoreHome();
             consoleLog.mockRestore();
         }
 
@@ -822,18 +814,14 @@ describe('hooksRemove', () => {
     });
 
     it('removes from HOME and cleans up legacy projectRoot entries (#264)', async () => {
-        const restoreHome = mockHome('/home/testuser');
+        mockHome('/home/testuser');
         mockedAutoDetectInit.mockResolvedValue({
             localConfig: { ...mockLocalConfig, scope: 'project', projectRoot: '/path/to/project' },
             teamConfig: mockTeamConfig,
         });
         const reconciledMainTools = new Set(['codex']);
         mockedReconcile.mockResolvedValueOnce(reconciledMainTools);
-        try {
-            await hooksRemove({});
-        } finally {
-            restoreHome();
-        }
+        await hooksRemove({});
         // Main removal targets HOME with the user manifest; the legacy
         // <projectRoot> cleanup is delegated to the shared sweep helper.
         expect(mockedReconcile).toHaveBeenCalledTimes(1);
@@ -855,7 +843,7 @@ describe('hooksRemove', () => {
     });
 
     it('self mode removes once, without a redundant legacy sweep (#370)', async () => {
-        const restoreHome = mockHome('/home/testuser');
+        mockHome('/home/testuser');
         mockedAutoDetectInit.mockResolvedValue({
             localConfig: {
                 ...mockLocalConfig,
@@ -865,11 +853,7 @@ describe('hooksRemove', () => {
             },
             teamConfig: mockTeamConfig,
         });
-        try {
-            await hooksRemove({});
-        } finally {
-            restoreHome();
-        }
+        await hooksRemove({});
         // Self mode's primary target is <projectRoot>; the legacy sweep would be
         // the same location (double work) or HOME (would clobber user scope), so
         // it must not fire — exactly one removal against <projectRoot>. The
@@ -892,7 +876,7 @@ describe('hooksRemove', () => {
 
     it('explicit project removal deletes the shared Pi extension', async () => {
         const tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-hooks-remove-pi-'));
-        const restoreHome = mockHome(tmp);
+        mockHome(tmp);
         const globalPiHook = path.join(tmp, '.pi', 'agent', 'extensions', 'teamai-hooks.ts');
         await fse.ensureDir(path.dirname(globalPiHook));
         await fse.writeFile(globalPiHook, '// [teamai] hooks extension');
@@ -905,14 +889,13 @@ describe('hooksRemove', () => {
             await hooksRemove({});
             expect(await fse.pathExists(globalPiHook)).toBe(false);
         } finally {
-            restoreHome();
             await fse.remove(tmp);
         }
     });
 
     it('also clears the CodeBuddy hooks an earlier release wrote in the default home (#1221)', async () => {
         const tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-hooks-remove-cb-'));
-        const restoreHome = mockHome(tmp);
+        mockHome(tmp);
         vi.stubEnv('CODEBUDDY_CONFIG_DIR', path.join(tmp, 'cb'));
         const defaultSettings = path.join(tmp, '.codebuddy', 'settings.json');
         await fse.outputJson(defaultSettings, { hooks: {} });
@@ -924,8 +907,6 @@ describe('hooksRemove', () => {
         try {
             await hooksRemove({});
         } finally {
-            vi.unstubAllEnvs();
-            restoreHome();
             await fse.remove(tmp);
         }
 
@@ -934,7 +915,7 @@ describe('hooksRemove', () => {
 
     it('also deletes the Pi extension an earlier release wrote in the default home (#1221)', async () => {
         const tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-hooks-remove-pi-moved-'));
-        const restoreHome = mockHome(tmp);
+        mockHome(tmp);
         vi.stubEnv('PI_CODING_AGENT_DIR', path.join(tmp, 'pi-agent'));
         const movedPiHook = path.join(tmp, 'pi-agent', 'extensions', 'teamai-hooks.ts');
         const defaultPiHook = path.join(tmp, '.pi', 'agent', 'extensions', 'teamai-hooks.ts');
@@ -949,8 +930,6 @@ describe('hooksRemove', () => {
             expect(await fse.pathExists(movedPiHook)).toBe(false);
             expect(await fse.pathExists(defaultPiHook)).toBe(false);
         } finally {
-            vi.unstubAllEnvs();
-            restoreHome();
             await fse.remove(tmp);
         }
     });
