@@ -1,9 +1,10 @@
 /**
  * E2E (#1881): `teamai init <url>` must not treat a teamai.yaml that fails the
  * schema as a missing one. It refuses, pushes nothing, and removes only the
- * clone and the empty project data folder this run created. The same cleanup
- * applies when init refuses a repo in self mode (#1500). A data folder that
- * was already there stays.
+ * clone, the empty project data folder this run created, and an empty
+ * ~/.teamai/projects that this run created. An empty teamai.yaml is still
+ * missing: init writes the skeleton. A data folder that was already there
+ * stays. Self-mode cleanup is in init-self-mode-refusal.test.ts.
  *
  * Runs the built CLI against local bare repos.
  */
@@ -103,11 +104,6 @@ function bareRepo(name: string, env: NodeJS.ProcessEnv, files: Record<string, st
   return { bare, head: git(['rev-parse', 'HEAD'], bare, env).trim() };
 }
 
-function projects(home: string): string[] {
-  const dir = path.join(home, '.teamai', 'projects');
-  return fs.existsSync(dir) ? fs.readdirSync(dir) : [];
-}
-
 const INIT = (url: string, extra: string[] = []) => ['init', url, '--provider', 'git', '--agent', 'claude', '--force', ...extra];
 
 const INVALID_YAML = [
@@ -143,8 +139,26 @@ describe('init refuses a teamai.yaml that does not validate (#1881)', () => {
     expect(git(['rev-parse', 'HEAD'], bare, m.env).trim()).toBe(head);
     expect(git(['log', '-1', '--format=%s'], bare, m.env)).not.toContain('Initialize team repo skeleton');
     expect(fs.existsSync(m.dataHome)).toBe(false);
-    expect(projects(m.home)).toEqual([]);
+    expect(fs.existsSync(path.join(m.home, '.teamai', 'projects'))).toBe(false);
     expect(fs.existsSync(path.join(m.home, '.teamai', 'config.yaml'))).toBe(false);
+  });
+
+  it('treats an empty teamai.yaml as missing and writes the skeleton', () => {
+    const url = 'https://git.example.invalid/team/empty-yaml.git';
+    const envProbe = { ...process.env, ...GIT_ENV, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(sandbox, 'unused-gitconfig-empty-yaml') };
+    const { bare, head } = bareRepo('empty-yaml', envProbe, { 'teamai.yaml': '', 'README.md': '# team\n' });
+    const m = member('empty-yaml', url, bare);
+
+    const res = teamai(INIT(url), m.app, m.env);
+
+    expect(res.code, res.output).toBe(0);
+    expect(res.output).toContain('Creating default config');
+    expect(res.output).not.toContain('does not validate');
+    const shown = git(['show', 'HEAD:teamai.yaml'], bare, m.env);
+    expect(shown).toContain('team:');
+    expect(shown).toContain(`repo: ${url}`);
+    expect(git(['rev-parse', 'HEAD'], bare, m.env).trim()).not.toBe(head);
+    expect(git(['log', '-1', '--format=%s'], bare, m.env)).toContain('Initialize team repo skeleton');
   });
 
   it('keeps a project data folder that was already there, including an empty one', () => {
@@ -202,43 +216,3 @@ describe('init refuses a teamai.yaml that does not validate (#1881)', () => {
   });
 });
 
-describe('init refusal of a self-mode repo removes only a data folder this run created (#1881)', () => {
-  it('removes the empty project data folder a refused self-mode init created', () => {
-    const url = 'https://git.example.invalid/team/self.git';
-    const envProbe = { ...process.env, ...GIT_ENV, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(sandbox, 'unused-gitconfig-self') };
-    const { bare, head } = bareRepo('self', envProbe, {
-      '.teamai/teamai.yaml': `team: biz\nmode: self\nrepo: ${url}\nprovider: git\n`,
-      'README.md': '# biz\n',
-    });
-    const m = member('self', url, bare);
-
-    const res = teamai(INIT(url), m.app, m.env);
-
-    expect(res.code, res.output).toBe(1);
-    expect(res.output).toContain(
-      `${url} is a repo in self mode: its config is .teamai/teamai.yaml. Clone the repository and run \`teamai init --self\` in it.`,
-    );
-    expect(res.output).not.toContain('Creating default config');
-    expect(git(['rev-parse', 'HEAD'], bare, m.env).trim()).toBe(head);
-    expect(fs.existsSync(m.dataHome)).toBe(false);
-    expect(projects(m.home)).toEqual([]);
-    expect(fs.existsSync(path.join(m.home, '.teamai', 'team-repo'))).toBe(false);
-  });
-
-  it('keeps an empty project data folder that was there before the self-mode refusal', () => {
-    const url = 'https://git.example.invalid/team/self-kept.git';
-    const envProbe = { ...process.env, ...GIT_ENV, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(sandbox, 'unused-gitconfig-self-kept') };
-    const { bare } = bareRepo('self-kept', envProbe, {
-      '.teamai/teamai.yaml': `team: biz\nmode: self\nrepo: ${url}\nprovider: git\n`,
-    });
-    const m = member('self-kept', url, bare);
-    fs.mkdirSync(m.dataHome, { recursive: true });
-
-    const res = teamai(INIT(url), m.app, m.env);
-
-    expect(res.code, res.output).toBe(1);
-    expect(res.output).toContain('is a repo in self mode');
-    expect(fs.existsSync(m.dataHome)).toBe(true);
-    expect(fs.readdirSync(m.dataHome)).toEqual([]);
-  });
-});

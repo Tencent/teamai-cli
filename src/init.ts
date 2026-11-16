@@ -2260,6 +2260,10 @@ export async function init(options: GlobalOptions & {
   const localPath = expandHome(defaultLocalPath);
   // Recorded before the clone: a refusal removes this folder only when the clone created it (#1881).
   const dataHomeExisted = await pathExists(teamaiHome);
+  // ~/.teamai/projects appears as the parent of a new partition. A refusal
+  // removes it only when this run created it and nothing else is left in it.
+  const projectsDir = path.join(getUserHome(), '.teamai', 'projects');
+  const projectsDirExisted = path.resolve(path.dirname(teamaiHome)) !== path.resolve(projectsDir) || await pathExists(projectsDir);
   // The clone init uses is another install's than the config beside it, whether
   // it clones it now or reuses one an earlier init left: settle that install
   // now, as the config save below would, instead of leaving its config to run
@@ -2569,6 +2573,14 @@ export async function init(options: GlobalOptions & {
       }
     }
 
+    if (!projectsDirExisted && await pathExists(projectsDir)) {
+      const left = await fs.promises.readdir(projectsDir).catch(() => null);
+
+      if (left?.length === 0) {
+        await remove(projectsDir);
+      }
+    }
+
     log.error(message);
     process.exit(1);
   };
@@ -2592,9 +2604,13 @@ export async function init(options: GlobalOptions & {
   // is decided only by --scope / default (issue #250).
   const teamConfig = await loadTeamConfig(localPath, null);
 
-  // loadTeamConfig returns null for a missing file and for one the schema refuses.
-  // Only the missing file is a new team; replacing the other would publish the skeleton over it (#1881).
-  if (!teamConfig && await pathExists(path.join(localPath, 'teamai.yaml'))) {
+  // loadTeamConfig returns null for a missing file, an empty one, one it cannot
+  // open, and one the schema refuses. Only the last has content. Replacing that
+  // one would publish the skeleton over the team's settings (#1881). An empty
+  // or unreadable file is still missing: init writes the skeleton, as before.
+  const teamYaml = await readFileSafe(path.join(localPath, 'teamai.yaml'));
+
+  if (!teamConfig && teamYaml?.trim()) {
     await refuseInit(
       `${repoInput} has a teamai.yaml that does not validate, so init stops instead of replacing it. ` +
         'Fix teamai.yaml in the team repo as the error above says, then run init again.',
