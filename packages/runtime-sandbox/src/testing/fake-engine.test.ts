@@ -64,6 +64,13 @@ afterEach(() => {
 });
 
 describe('the fake engine', () => {
+  it('repairs a fake engine whose state directory has already gone', () => {
+    fs.rmSync(engine.state, { recursive: true, force: true });
+
+    expect(() => { engine.repair(); }).not.toThrow();
+    expect(() => { engine.repair(); }).not.toThrow();
+  });
+
   it('fails an exec that reaches a container removed while it was on its way with No such container, starting nothing and leaving nothing of it', async () => {
     await runContainer('box');
     engine.holdExec(1_500);
