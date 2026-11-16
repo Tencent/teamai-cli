@@ -139,6 +139,9 @@ it('checks rendered headings and titled and reference links, ignoring code examp
     '## 🚀 Launch',
     '## Setup<br>',
     '## परिचय',
+    '<!-- <a id="hidden"></a> -->',
+    '<a id="Release"></a>',
+    '<a id="first" name="second"></a>',
     '',
     'Setext heading',
     '--------------',
@@ -173,6 +176,11 @@ it('checks rendered headings and titled and reference links, ignoring code examp
     '[Example link](docs/anchor-edge.md#example-missing)',
     '~~~',
     '',
+    '[Explicit ID](docs/anchor-edge.md#Release)',
+    '[First explicit anchor](docs/anchor-edge.md#first)',
+    '[Second explicit anchor](docs/anchor-edge.md#second)',
+    '[Commented-out anchor](docs/anchor-edge.md#hidden)',
+    '[Wrong explicit ID case](docs/anchor-edge.md#release)',
     '[Titled](docs/anchor-edge.md#bad-title "Details")',
     '[Missing leading hyphen](docs/anchor-edge.md#launch)',
     '[Tag name in fragment](docs/anchor-edge.md#setupbr)',
@@ -189,6 +197,8 @@ it('checks rendered headings and titled and reference links, ignoring code examp
   const checked = run(root, '--only=anchors');
   expect(checked.status).toBe(1);
   expect(checked.output.split(/\r?\n/).filter((line) => line.includes('links docs/anchor-edge.md'))).toEqual([
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#hidden,/u),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#release,/u),
     expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#bad-title,/u),
     expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#launch,/u),
     expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#setupbr,/u),

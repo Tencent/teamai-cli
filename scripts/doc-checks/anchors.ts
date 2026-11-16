@@ -54,10 +54,14 @@ function readDocument(file: string) {
       for (let suffix = 1; headings.has(id); suffix += 1) id = `${base}-${suffix}`;
       headings.add(id);
     } else if (node.type === 'html') {
-      for (const match of node.value.matchAll(/<a\b[^>]*\s(?:id|name)\s*=\s*(?:(["'])(.*?)\1|([^\s>]+))[^>]*>/gi)) {
-        const id = match[2] ?? match[3];
+      const html = node.value.replace(/<!--[\s\S]*?-->/g, '');
 
-        if (id) explicitAnchors.add(id.toLowerCase());
+      for (const tag of html.matchAll(/<a\b[^>]*>/gi)) {
+        for (const match of tag[0].matchAll(/\b(?:id|name)\s*=\s*(?:(["'])(.*?)\1|([^\s>]+))/gi)) {
+          const id = match[2] ?? match[3];
+
+          if (id) explicitAnchors.add(id);
+        }
       }
     } else if (node.type === 'definition') {
       if (!definitions.has(node.identifier)) definitions.set(node.identifier, node.url);
@@ -68,7 +72,7 @@ function readDocument(file: string) {
     }
   }
 
-  return { anchors: new Set([...headings, ...explicitAnchors]), definitions, links };
+  return { headings, explicitAnchors, definitions, links };
 }
 
 const files = [
@@ -114,15 +118,17 @@ for (const file of files) {
     if (!target.endsWith('.md') || !fs.existsSync(target)) continue;
 
     const fragment = link.slice(hash + 1);
-    let anchor = fragment.toLowerCase();
+    let anchor = fragment;
 
     try {
-      anchor = decodeURIComponent(fragment).toLowerCase();
+      anchor = decodeURIComponent(fragment);
     } catch {
       // Report an invalid fragment as a broken link without stopping the remaining checks.
     }
 
-    if (!document(target).anchors.has(anchor)) {
+    const { headings, explicitAnchors } = document(target);
+
+    if (!headings.has(anchor.toLowerCase()) && !explicitAnchors.has(anchor)) {
       console.error(`${path.relative(root, file).split(path.sep).join('/')}:${line} links ${link}, which has no heading for it.`);
       process.exitCode = 1;
     }
