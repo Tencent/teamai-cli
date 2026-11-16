@@ -155,6 +155,10 @@ export async function resolveResourceNamespaces(localConfig: LocalConfig): Promi
   };
 }
 
+const NamespaceMergeDocSchema = z.object({
+  sharing: z.object({ namespaceMerge: SharingConfigSchema.shape.namespaceMerge }).optional(),
+});
+
 /**
  * Read `sharing.namespaceMerge` straight from teamai.yaml. This must NOT go
  * through `loadTeamConfig`: that loads tool instances, whose namespaces resolve
@@ -163,10 +167,6 @@ export async function resolveResourceNamespaces(localConfig: LocalConfig): Promi
  * the one field is cheap and cycle-free; anything unreadable or not exactly
  * `intersect` keeps the default `union`.
  */
-const NamespaceMergeDocSchema = z.object({
-  sharing: z.object({ namespaceMerge: SharingConfigSchema.shape.namespaceMerge }).optional(),
-});
-
 async function readNamespaceMergeMode(repoPath: string): Promise<NamespaceMergeMode> {
   try {
     const content = await readFileSafe(path.join(repoPath, 'teamai.yaml'));
