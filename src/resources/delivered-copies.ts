@@ -68,7 +68,7 @@ export interface DeliveryLedger {
   readonly previous: DeliveredHashes | undefined;
   /** What the pull leaves on record: `previous` with its writes and removals applied. */
   readonly hashes: DeliveredHashes;
-  readonly kept: { dest: string; teamRelPath: string; teamChanged: boolean }[];
+  readonly kept: { dest: string; teamRelPath: string; teamChanged: boolean; editAt?: string }[];
   /** Files with no record that pull left as the member's, and the team resource each holds back (#993). */
   readonly members: { dest: string; teamRelPath: string; link?: true }[];
   /**
@@ -678,11 +678,13 @@ async function overwritesMembersFile(previous: DeliveredHashes, item: ResourceIt
  */
 export async function keepsEditedCopy(ledger: DeliveryLedger, item: ResourceItem, target: DeliveryTarget): Promise<boolean> {
   const verdict = await judgeCopy(ledger.previous, item, target);
+  // Push takes nothing from the copy of an agent or rule folder: the folder is edited in the team repo.
+  const editAt = item.folder === true ? `${path.posix.dirname(item.relativePath)}/` : undefined;
 
   if (verdict.kind === 'write') return false;
 
   if (verdict.kind === 'keep') {
-    ledger.kept.push({ dest: target.dest, teamRelPath: item.relativePath, teamChanged: verdict.teamChanged });
+    ledger.kept.push({ dest: target.dest, teamRelPath: item.relativePath, teamChanged: verdict.teamChanged, ...(editAt !== undefined && { editAt }) });
 
     return true;
   }
@@ -695,7 +697,7 @@ export async function keepsEditedCopy(ledger: DeliveryLedger, item: ResourceItem
   } else if (recordedUnder(ledger.otherRecords, target.dest).length > 0) {
     const next = await nextHashes(ledger.otherRecords, item, target);
     const teamChanged = [...next].some(([file, hash]) => hash !== (ledger.otherRecords[file] ?? null));
-    ledger.kept.push({ dest: target.dest, teamRelPath: item.relativePath, teamChanged });
+    ledger.kept.push({ dest: target.dest, teamRelPath: item.relativePath, teamChanged, ...(editAt !== undefined && { editAt }) });
   } else {
     ledger.members.push({ dest: target.dest, teamRelPath: item.relativePath });
   }
@@ -850,9 +852,19 @@ export function reportKept(ledger: DeliveryLedger, scopeLabel: string): number {
 
   const named = new Set<string>();
 
-  for (const { dest, teamRelPath, teamChanged } of ledger.kept.splice(0)) {
+  for (const { dest, teamRelPath, teamChanged, editAt } of ledger.kept.splice(0)) {
     if (named.has(dest)) continue;
     named.add(dest);
+
+    // A folder's copy is edited in the team repo, and push takes nothing from it (#1880).
+    if (editAt !== undefined) {
+      log.warn(
+        `[${scopeLabel}] Kept ${dest}: you changed it${teamChanged ? `, and the version teamai would deploy there (${teamRelPath}) has changed since` : ''}. `
+        + `Edit ${editAt} in the team repo and let the next pull deliver it; push takes nothing from this copy. `
+        + 'Or delete your copy and run `teamai pull --force` to take the team version.',
+      );
+      continue;
+    }
 
     if (teamChanged) {
       log.warn(

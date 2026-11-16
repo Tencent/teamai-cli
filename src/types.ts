@@ -1553,7 +1553,7 @@ export interface ResourceItem {
   needsDeliveredBlob?: boolean;
   /** Repo-backed resources placed into a namespace: the shared-root path the author keeps editing. */
   prePlacementPath?: string;
-  /** Rules only: a rule folder, `rules/[<ns>/]<name>/RULE.md` with the files it names (#1787). `sourcePath` is its RULE.md. */
+  /** An agent or rule folder: an edited copy is the member's, and push takes nothing from it, since the folder is edited in the team repo (#1787, #1880). */
   folder?: true;
 }
 
