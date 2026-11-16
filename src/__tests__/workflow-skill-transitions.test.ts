@@ -2554,6 +2554,18 @@ const CASES: Array<{ name: string; rows: string[]; run: () => Promise<string[]> 
     },
   },
   {
+    name: 'a run that a pass started and that planned no judging of it, as when no scorer sampled the pass, says each scorer gave the pass no label',
+    rows: ['J7', 'J8', 'J9'],
+    run: async () => {
+      const scoring: { label?: RunId } = {};
+      const unsampled = LABEL_PASS('verified').replace("groups:['review-quality']", 'groups:[]');
+      const made = await harness({ review: REVIEW, 'label-pass': unsampled }, { scorers: SCORERS, client: scoringStarted(scoring) });
+      const done = await reviewed(made);
+      expect(await polledFor(made, done, 'judged')).toContainEqual({ kind: 'judged', step: 'review', scorer: 'review-quality', label: '', code: 'not_planned' });
+      return made.rows;
+    },
+  },
+  {
     name: 'the confined judge of a run that a pass started comes to the session that judges, in a turn of the scored run, and its turns lead back there',
     rows: ['J7', 'J8', 'J9'],
     run: async () => {
