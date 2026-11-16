@@ -131,6 +131,58 @@ it('check validates GitHub-style heading and explicit Markdown anchors in every 
   expect(checked.output).toMatch(/skill-data\/core\/SKILL\.md:\d+ links \.\.\/\.\.\/docs\/anchor-target\.md#missing-skill-anchor, which has no heading for it\./u);
   expect(checked.output).toMatch(/docs\/guide\/zh-CN\/benchmarks\.md:\d+ links dashboard\.md#benchmarks, which has no heading for it\./u);
 });
+it('checks rendered headings and titled and reference links, ignoring code examples', () => {
+  const root = checkout();
+  fs.writeFileSync(path.join(root, 'docs/anchor-edge.md'), [
+    '## [Usage](guide.md)',
+    '',
+    'Setext heading',
+    '--------------',
+    '',
+    '   ## Indented heading',
+    '',
+    '## Foo',
+    '## Foo',
+    '## Foo-1',
+    '## Foo',
+    '',
+    '~~~md',
+    '## Example heading',
+    '<a id="example-id"></a>',
+    '~~~',
+  ].join('\n'));
+  const readme = path.join(root, 'README.md');
+  fs.appendFileSync(readme, [
+    '',
+    '[Linked heading](docs/anchor-edge.md#usage)',
+    '[Setext](docs/anchor-edge.md#setext-heading)',
+    '[Indented](docs/anchor-edge.md#indented-heading)',
+    '[Collision](docs/anchor-edge.md#foo-1-1)',
+    '[Next duplicate](docs/anchor-edge.md#foo-2)',
+    '',
+    '~~~markdown',
+    '[Example link](docs/anchor-edge.md#example-missing)',
+    '~~~',
+    '',
+    '[Titled](docs/anchor-edge.md#bad-title "Details")',
+    '[Reference][missing-ref]',
+    '[missing-ref][]',
+    '[missing-ref]',
+    '[Code heading](docs/anchor-edge.md#example-heading)',
+    '[Code id](docs/anchor-edge.md#example-id)',
+    '',
+    '[missing-ref]: docs/anchor-edge.md#bad-ref "Details"',
+    '',
+  ].join('\n'));
+  const checked = run(root, '--only=anchors');
+  expect(checked.status).toBe(1);
+  expect(checked.output.split(/\r?\n/).filter((line) => line.includes('links docs/anchor-edge.md'))).toEqual([
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#bad-title,/u),
+    ...Array.from({ length: 3 }, () => expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#bad-ref,/u)),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#example-heading,/u),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#example-id,/u),
+  ]);
+});
 it('check rejects a lint rule with no row in the plugin README, and a row with no rule', () => {
   const root = checkout();
   const readme = path.join(root, LINT_README);

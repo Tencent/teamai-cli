@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { Nodes } from 'mdast';
+import { fromMarkdown } from 'mdast-util-from-markdown';
 import { readMarkdown } from './read-markdown.js';
 
 const root = process.cwd();
@@ -12,35 +14,62 @@ function markdownFiles(dir: string): string[] {
   });
 }
 
+function* nodes(node: Nodes): Generator<Nodes> {
+  yield node;
+
+  if ('children' in node) {
+    for (const child of node.children) yield* nodes(child);
+  }
+}
+
+function headingText(node: Nodes): string {
+  if ('children' in node) return node.children.map(headingText).join('');
+
+  if (node.type === 'image' || node.type === 'imageReference') return node.alt ?? '';
+
+  if (node.type === 'break') return ' ';
+
+  if (node.type === 'html') return /^<([^>\s/]+)>$/.exec(node.value)?.[1] ?? '';
+
+  return 'value' in node ? node.value : '';
+}
+
 function slug(text: string): string {
   return text.toLowerCase()
-    .replace(/<\/[^>]+>/g, '')
-    .replace(/<([^>\s/]+)>/g, '$1')
-    .replace(/<[^>]+>/g, '')
-    .replace(/[`*~]/g, '')
     .replace(/[^\p{L}\p{N}\s_-]/gu, '')
     .trim()
     .replace(/\s/g, '-');
 }
 
-function anchors(file: string): Set<string> {
-  const seen = new Map<string, number>();
-  const result = new Set<string>();
+function readDocument(file: string) {
+  const headings = new Set<string>();
+  const explicitAnchors = new Set<string>();
+  const definitions = new Map<string, string>();
+  const links: { line: number; url?: string; reference?: string }[] = [];
 
-  for (const match of readMarkdown(file).matchAll(/^#{1,6}\s+(.+?)\s*#*$/gm)) {
-    const base = slug(match[1] ?? '');
-    const count = seen.get(base) ?? 0;
-    seen.set(base, count + 1);
-    result.add(count ? `${base}-${count}` : base);
+  for (const node of nodes(fromMarkdown(readMarkdown(file)))) {
+    if (node.type === 'heading') {
+      const base = slug(headingText(node));
+      let id = base;
+
+      for (let suffix = 1; headings.has(id); suffix += 1) id = `${base}-${suffix}`;
+      headings.add(id);
+    } else if (node.type === 'html') {
+      for (const match of node.value.matchAll(/<a\b[^>]*\s(?:id|name)\s*=\s*(?:(["'])(.*?)\1|([^\s>]+))[^>]*>/gi)) {
+        const id = match[2] ?? match[3];
+
+        if (id) explicitAnchors.add(id.toLowerCase());
+      }
+    } else if (node.type === 'definition') {
+      if (!definitions.has(node.identifier)) definitions.set(node.identifier, node.url);
+    } else if (node.type === 'link' && node.position) {
+      links.push({ line: node.position.start.line, url: node.url });
+    } else if (node.type === 'linkReference' && node.position) {
+      links.push({ line: node.position.start.line, reference: node.identifier });
+    }
   }
 
-  for (const match of readMarkdown(file).matchAll(/<a\b[^>]*\b(?:id|name)\s*=\s*(?:(["'])(.*?)\1|([^\s>]+))[^>]*>/gi)) {
-    const explicit = match[2] ?? match[3];
-
-    if (explicit) result.add(explicit.toLowerCase());
-  }
-
-  return result;
+  return { anchors: new Set([...headings, ...explicitAnchors]), definitions, links };
 }
 
 const files = [
@@ -49,27 +78,44 @@ const files = [
   ...markdownFiles(path.join(root, 'skill-data')),
 ];
 
-const cache = new Map<string, Set<string>>();
+const cache = new Map<string, ReturnType<typeof readDocument>>();
+
+function document(file: string): ReturnType<typeof readDocument> {
+  const cached = cache.get(file);
+
+  if (cached) return cached;
+  const parsed = readDocument(file);
+  cache.set(file, parsed);
+
+  return parsed;
+}
 
 for (const file of files) {
-  const text = readMarkdown(file);
+  const { definitions, links } = document(file);
 
-  for (const match of text.matchAll(/\[[^\]]*\]\(([^)\s]+#[^)\s]+)\)/g)) {
-    const link = match[1] ?? '';
+  for (const { line, url, reference } of links) {
+    const link = url ?? definitions.get(reference ?? '');
 
-    if (/^[a-z]+:/i.test(link) || link.includes('{')) continue;
+    if (!link || /^[a-z][a-z\d+.-]*:/i.test(link) || link.startsWith('//') || link.includes('{')) continue;
 
-    const [relative, rawFragment] = link.split('#', 2);
+    const hash = link.indexOf('#');
+
+    if (hash < 0 || hash === link.length - 1) continue;
+    const relative = link.slice(0, hash);
     const target = path.resolve(path.dirname(file), relative || path.basename(file));
 
     if (!target.endsWith('.md') || !fs.existsSync(target)) continue;
 
-    const fragment = decodeURIComponent(rawFragment ?? '').toLowerCase();
-    const targetAnchors = cache.get(target) ?? anchors(target);
-    cache.set(target, targetAnchors);
+    const fragment = link.slice(hash + 1);
+    let anchor = fragment.toLowerCase();
 
-    if (!targetAnchors.has(fragment)) {
-      const line = text.slice(0, match.index).split('\n').length;
+    try {
+      anchor = decodeURIComponent(fragment).toLowerCase();
+    } catch {
+      // Report an invalid fragment as a broken link without stopping the remaining checks.
+    }
+
+    if (!document(target).anchors.has(anchor)) {
       console.error(`${path.relative(root, file).split(path.sep).join('/')}:${line} links ${link}, which has no heading for it.`);
       process.exitCode = 1;
     }
