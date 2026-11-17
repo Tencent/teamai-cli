@@ -66,6 +66,10 @@ teamai init https://dev.azure.com/org/project/_git/repo
 - HTTPS：预先配置 Git Credential Helper；不要把用户名、密码或 Token 写进 URL。
 - SSH：预先配置 SSH Key，并确保 `ssh-agent` 能访问私钥。
 
+### Gerrit
+
+Gerrit 仓库根据主机名、`29418` 端口或 URL 中的 `/gerrit/` 路径段识别，`provider` 仍为 `git`。`teamai push` 会把改动推到 `refs/for/<默认分支>` 而不是普通分支，直接进入评审：不会创建 PR；之后再次编辑并推送会更新同一个 Change。
+
 ## GitHub Provider
 
 ### 认证

@@ -1225,6 +1225,18 @@ export const PendingPushSchema = z.object({
    * at that path before this push, and that history proves nothing about it.
    */
   base: z.string().optional(),
+  /**
+   * Tree this record's last successful Gerrit review push carried. Gerrit keeps
+   * no branch of ours, so this is what tells an unchanged re-push from a new
+   * one; without it every push would open another Change.
+   */
+  reviewTree: z.string().optional(),
+  /**
+   * `Change-Id` of the Gerrit review this record opened. Reusing it makes a
+   * later edit (or a moved default branch) a new patchset of that Change
+   * instead of a second Change.
+   */
+  changeId: z.string().optional(),
   items: z.array(PendingPushItemSchema).default([]),
 });
 

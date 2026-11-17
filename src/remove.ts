@@ -347,6 +347,7 @@ async function removeCore(
       commitMsg,
       gitFiles,
       branchName,
+      { provider: localConfig.provider ?? teamConfig.provider },
     );
 
     if (!hasChanges) {

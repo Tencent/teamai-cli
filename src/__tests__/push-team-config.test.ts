@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -137,6 +138,49 @@ describe('push carries teamai.yaml (source add regression)', () => {
     expect(pushed).toContain('sources:');
     expect(pushed).toContain('https://git.example/dev');
   });
+
+  it('config-only: a Gerrit remote completes without a pull request', async () => {
+    const teamRepo = await initTeamRepos(tmpDir);
+    const remote = path.join(tmpDir, 'remote.git');
+    const gerritUrl = 'ssh://alice@gerrit.example.com:29418/acme/team.git';
+    const fileUrl = `file:///${remote.split(path.sep).join('/').replace(/^\/+/, '')}`;
+    // simple-git refuses url.*.insteadOf, so write the transport rewrite directly.
+    execFileSync('git', ['remote', 'set-url', 'origin', gerritUrl], { cwd: teamRepo });
+    // Transport stays local while the configured URL the CLI reads is Gerrit.
+    execFileSync('git', ['config', `url.${fileUrl}.insteadOf`, gerritUrl], { cwd: teamRepo });
+
+    const yamlPath = path.join(teamRepo, 'teamai.yaml');
+    const base = fs.readFileSync(yamlPath, 'utf8');
+    fs.writeFileSync(yamlPath, `${base}sources:\n  - name: dev\n    repo: https://git.example/dev\n`);
+
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: {
+        repo: { localPath: teamRepo, remote: gerritUrl },
+        username: 'alice',
+        scope: 'project',
+        projectRoot: teamRepo,
+      },
+      teamConfig: { repo: gerritUrl, toolPaths: {} },
+    });
+
+    const originalExitCode = process.exitCode;
+    try {
+      const { push } = await import('../push.js');
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await push({ all: true });
+      logSpy.mockRestore();
+
+      expect(process.exitCode).toBe(originalExitCode);
+      expect(mockCreatePullRequest).not.toHaveBeenCalled();
+      // The config change reached the review ref, not a branch.
+      const refs = execFileSync('git', ['for-each-ref', '--format=%(refname)'], {
+        cwd: remote, encoding: 'utf8',
+      });
+      expect(refs).toContain('refs/for/main');
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  }, 60_000);
 
   it.each([
     { name: 'carries a second config edit onto the same branch', pending: 'autoUpdate: false\n', conflicts: false, refresh: false },

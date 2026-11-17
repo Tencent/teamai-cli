@@ -62,6 +62,8 @@ vi.mock('../utils/git.js', () => ({
   getDefaultBranch: vi.fn().mockResolvedValue('main'),
   getFileContentAtRev: vi.fn().mockResolvedValue(null),
   getHeadCommit: vi.fn().mockResolvedValue('base000'),
+  isGerritClone: vi.fn().mockResolvedValue(false),
+  dropPushBranchIfLeft: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('../roles.js', async () => {

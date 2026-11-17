@@ -14,7 +14,7 @@
  */
 import path from 'node:path';
 import { pathExists } from './fs.js';
-import { remoteBranchExists, hashObject, blobInHistory, pathAddedSince, pathDeletedSince, getHeadCommit, getFileContentAtRev } from './git.js';
+import { remoteBranchExists, hashObject, blobInHistory, pathAddedSince, pathDeletedSince, getHeadCommit, getFileContentAtRev, isGerritClone } from './git.js';
 import { placedResourcePath } from '../push-namespaces.js';
 import { log } from '@teamai/shared/log';
 import type { PendingPush, PendingPushItem, ResourceItem, State } from '../types.js';
@@ -84,7 +84,11 @@ export async function openPrDestinations(input: {
  * for destinations. `prunePendingPushes` applies the scan-presence rule after
  * the scan; the two together keep exactly what it keeps on its own.
  */
-export async function dropClosedPendingPushes(repoPath: string, pending: PendingPush[]): Promise<PendingPush[]> {
+export async function dropClosedPendingPushes(repoPath: string, pending: PendingPush[], provider?: string): Promise<PendingPush[]> {
+  // A Gerrit review lives only on `refs/for`; none of our branches reaches
+  // origin, so "branch gone" says nothing about whether the review is open.
+  if (await isGerritClone(repoPath, provider)) return pending ?? [];
+
   const kept: PendingPush[] = [];
 
   for (const entry of pending ?? []) {
@@ -112,6 +116,7 @@ export async function prunePendingPushes(
   repoPath: string,
   pending: PendingPush[],
   scanned: ResourceItem[],
+  provider?: string,
 ): Promise<{ pending: PendingPush[]; changed: boolean }> {
   // Kept by name, a superset of destination matches: a record kept too long is
   // only ever used through `isRecordedItem`, while one dropped too early opens a
@@ -120,6 +125,7 @@ export async function prunePendingPushes(
   const kept: PendingPush[] = [];
   // State files written before this field existed parse to undefined.
   const entries = pending ?? [];
+  const gerrit = await isGerritClone(repoPath, provider);
 
   for (const entry of entries) {
     const stillScanned = entry.items.some((i) => scannedKeys.has(itemKey(i.type, i.name)));
@@ -129,11 +135,15 @@ export async function prunePendingPushes(
       continue;
     }
 
-    const exists = await remoteBranchExists(repoPath, entry.branch);
+    // A Gerrit review is not backed by a branch of ours, so its absence from
+    // origin is not a closure signal.
+    if (!gerrit) {
+      const exists = await remoteBranchExists(repoPath, entry.branch);
 
-    if (exists === false) {
-      log.debug(`Dropping pending push ${entry.branch}: branch gone from origin`);
-      continue;
+      if (exists === false) {
+        log.debug(`Dropping pending push ${entry.branch}: branch gone from origin`);
+        continue;
+      }
     }
 
     kept.push(entry);
