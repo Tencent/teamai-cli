@@ -11,6 +11,7 @@ import { z } from 'zod';
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
+import { githubApiUrl } from '../providers/github/api-url.js';
 import { getGitHubToken } from '../providers/github/gh-cli.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
 import { TEAMAI_COMMENT_SIGNATURE } from '../providers/mr-threads.js';
@@ -25,13 +26,8 @@ const API_TIMEOUT_MS = 15_000;
 // GitLab caps note pages at 100; same guard as fetchGitLabDiscussions (mr-fetch.ts).
 const MAX_NOTE_PAGES = 20;
 
-/**
- * The GitHub REST API root: `GITHUB_API_URL`, which GitHub Actions sets to the GitHub Enterprise server's API, else
- * github.com's.
- */
-export function githubApiUrl(): string {
-  return (process.env['GITHUB_API_URL']?.trim() || 'https://api.github.com').replace(/\/+$/, '');
-}
+/** The GitHub REST API root — see {@link githubApiUrl} in providers/github/api-url.ts. */
+export { githubApiUrl };
 
 // ─── Types ────────────────────────────────────────────────
 

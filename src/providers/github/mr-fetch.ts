@@ -1,5 +1,7 @@
-import type { OutgoingHttpHeaders } from 'node:http';
+import { type ClientRequest, type IncomingMessage, type OutgoingHttpHeaders } from 'node:http';
+import http from 'node:http';
 import https from 'node:https';
+import { urlToHttpOptions } from 'node:url';
 
 import { z } from 'zod';
 
@@ -7,6 +9,7 @@ import { type MRData, type MRFetchOptions, type MRThread } from '../../types.js'
 import type { JsonValue } from '@teamai/shared/json';
 import { log } from '@teamai/shared/log';
 import { pruneThreads } from '../mr-threads.js';
+import { githubApiUrl } from './api-url.js';
 import { getGitHubToken, ghExec } from './gh-cli.js';
 
 /** GitHub PR URL 解析结果 */
@@ -57,6 +60,32 @@ const GitHubApiCommitSchema = z.object({
   commit: z.object({ message: z.string() }),
 });
 
+/** Where one REST request goes and what sends it. */
+interface RestCall {
+  /** The module that sends it: node:http for a plain http: root, node:https otherwise. */
+  module: 'http' | 'https';
+  options: https.RequestOptions;
+}
+
+/** Sends a {@link RestCall}: one contract both modules satisfy. */
+function sendRestCall(call: RestCall, onResponse: (res: IncomingMessage) => void): ClientRequest {
+  return call.module === 'http' ? http.request(call.options, onResponse) : https.request(call.options, onResponse);
+}
+
+/**
+ * Builds the request for one REST call against `githubApiUrl()`, so an
+ * Enterprise root's path prefix (for example `/api/v3`) is kept and a plain
+ * `http:` root (a local API in tests or a gateway) goes over node:http.
+ */
+function restRequest(call: RestCall, path: string, headers: OutgoingHttpHeaders): RestCall {
+  return { ...call, options: { ...urlToHttpOptions(new URL(githubApiUrl() + path)), headers } };
+}
+
+/** The module and TLS setting a root's requests use. */
+function restCallFor(root: URL): RestCall {
+  return { module: root.protocol === 'http:' ? 'http' : 'https', options: {} };
+}
+
 /**
  * 通过 Node.js 内置 https 模块调用 GitHub REST API。
  *
@@ -73,8 +102,11 @@ async function githubApiGet(path: string): Promise<JsonValue> {
 
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    const req = https.request(
-      { hostname: 'api.github.com', path, headers },
+    // Resolved before the request so a test's spy sees the root the env selects.
+    const call = restRequest(restCallFor(new URL(githubApiUrl())), path, headers);
+
+    const req = sendRestCall(
+      call,
       (res) => {
         res.on('error', reject);
         const chunks: Buffer[] = [];
@@ -240,8 +272,10 @@ async function fetchGitHubPRViaApi(owner: string, repo: string, number: string):
 
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    const req = https.request(
-      { hostname: 'api.github.com', path: `/repos/${owner}/${repo}/pulls/${number}`, headers },
+    const call = restRequest(restCallFor(new URL(githubApiUrl())), `/repos/${owner}/${repo}/pulls/${number}`, headers);
+
+    const req = sendRestCall(
+      call,
       (res) => {
         res.on('error', reject);
         const chunks: Buffer[] = [];
