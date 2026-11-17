@@ -28,7 +28,7 @@ vi.mock('../utils/git.js', () => ({
 }));
 
 import { log } from '@teamai/shared/log';
-import { syncTeamUpdatesToLocal } from '../utils/pre-push-sync.js';
+import { restoreCutShortSync, syncTeamUpdatesToLocal } from '../utils/pre-push-sync.js';
 import { fileHash } from '../utils/fs.js';
 import { recordDelivered } from '../resources/delivered-copies.js';
 import { withSkillFrontmatter } from '../resources/skills.js';
@@ -36,6 +36,64 @@ import { teamRuleToCopilotInstructions } from '../resources/copilot-instructions
 import { teamRuleToOmpRule } from '../resources/omp-rule.js';
 import { teamRuleToKiroSteering } from '../resources/kiro-steering.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
+
+describe('restoreCutShortSync', () => {
+  /** A skills folder holding a stale backup beside a cut-short pair: `.teamai-prev` v1, and `-prev`/`-sync` for the v3. */
+  async function cutShortSkills(): Promise<string> {
+    const root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-restore-'));
+    const skillsDir = path.join(root, 'skills');
+
+    await fse.outputFile(path.join(skillsDir, '.deploy.100.111111111111.teamai-prev', 'SKILL.md'), 'v1\n');
+    await fse.outputFile(path.join(skillsDir, '.deploy.200.222222222222.teamai-prev', 'SKILL.md'), 'notes\n');
+    await fse.outputFile(path.join(skillsDir, '.deploy.200.222222222222.teamai-sync', 'SKILL.md'), 'v3\n');
+
+    return skillsDir;
+  }
+
+  afterEach(() => {
+    vi.mocked(log.warn).mockClear();
+  });
+
+  it('puts back only the backup its staged update sits beside, whatever order readdir returns', async () => {
+    const stale = ['deploy', '.deploy.100.111111111111.teamai-prev', '.deploy.200.222222222222.teamai-prev', '.deploy.200.222222222222.teamai-sync'];
+
+    for (const order of [stale, stale.toReversed()]) {
+      const skillsDir = await cutShortSkills();
+      const skill = path.join(skillsDir, 'deploy');
+      await restoreCutShortSync(skill, async () => order);
+
+      // The stale backup holds an older version the member has moved past, so the member's files come back with the pair.
+      expect(await fse.readFile(path.join(skill, 'SKILL.md'), 'utf8')).toBe('notes\n');
+      expect(await fse.pathExists(path.join(skillsDir, '.deploy.200.222222222222.teamai-sync'))).toBe(false);
+      expect(await fse.pathExists(path.join(skillsDir, '.deploy.100.111111111111.teamai-prev'))).toBe(true);
+    }
+  });
+
+  it('puts nothing back when the only backup has no staged update beside it', async () => {
+    const skillsDir = await cutShortSkills();
+    const skill = path.join(skillsDir, 'deploy');
+    await fse.remove(path.join(skillsDir, '.deploy.200.222222222222.teamai-sync'));
+
+    await restoreCutShortSync(skill, async () => ['deploy', '.deploy.100.111111111111.teamai-prev']);
+
+    expect(await fse.pathExists(skill)).toBe(false);
+    expect(await fse.pathExists(path.join(skillsDir, '.deploy.100.111111111111.teamai-prev'))).toBe(true);
+  });
+
+  it('ignores a name readdir returns that is not a folder of its own', async () => {
+    const skillsDir = await cutShortSkills();
+    const skill = path.join(skillsDir, 'deploy');
+    const entered = vi.fn();
+
+    await restoreCutShortSync(skill, async () => {
+      entered();
+      return ['deploy', '..', '.deploy.100.111111111111.teamai-prev', 'nested/.deploy.200.222222222222.teamai-prev'];
+    });
+
+    expect(entered).toHaveBeenCalled();
+    expect(await fse.pathExists(skill)).toBe(false);
+  });
+});
 
 describe('syncTeamUpdatesToLocal — rules', () => {
   let tmpDir: string;

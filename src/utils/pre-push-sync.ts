@@ -333,14 +333,17 @@ async function replaceSkillDir(teamSkill: TeamSkillSource, localSkillDir: string
  * version the member has since moved on from (#1880). Two pairs are as
  * unprovable as none, and readdir order is not meaningful.
  */
-export async function restoreCutShortSync(localSkillDir: string): Promise<void> {
+/** Lists one directory's entry names; a test passes its own to fix `readdir` order. */
+type EntryNames = (dir: string) => Promise<string[]>;
+
+export async function restoreCutShortSync(localSkillDir: string, readdir: EntryNames = async (dir) => fse.readdir(dir)): Promise<void> {
   const parent = path.dirname(localSkillDir);
 
   // lstat, not pathExists: a dangling link has taken the skill's place too. No skills directory to look in (none, or a
   // file pull reports as blocking it): nothing was cut short there.
   if (await fse.lstat(localSkillDir).then(() => true, () => false) || !await fse.stat(parent).then((stat) => stat.isDirectory(), () => false)) return;
   const prefix = `.${path.basename(localSkillDir)}.`;
-  const names = (await fse.readdir(parent)).filter((name) => name.startsWith(prefix));
+  const names = (await readdir(parent)).filter((name) => name.startsWith(prefix));
 
   const pairs = names.flatMap((name) => {
     const rest = name.slice(prefix.length);
