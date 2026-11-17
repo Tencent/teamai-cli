@@ -861,7 +861,7 @@ export function reportKept(ledger: DeliveryLedger, scopeLabel: string): number {
     if (editAt !== undefined) {
       const line = `[${scopeLabel}] Kept ${dest}: you changed it${teamChanged ? `, and the version teamai would deploy there (${teamRelPath}) has changed since` : ''}. `
         + `Push takes nothing from this copy: make your change in ${editAt} in the team repo, `
-        + 'then delete your copy and run `teamai pull --force`.';
+        + 'then delete your copy and run `teamai pull --force` to take the team version.';
 
       if (teamChanged) log.warn(line);
       else log.info(line);
