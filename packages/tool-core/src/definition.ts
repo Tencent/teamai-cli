@@ -29,7 +29,7 @@ export type SkillCall = { readonly name: string; readonly evidence: Evidence };
  * Codex resolves, the `<skill>` block Pi expands `/skill:name` into, the
  * `@command://name` the CodeBuddy plugin sends, or the `/name` most tools take.
  */
-export type PromptForm = '$name' | 'skill-block' | 'command-uri' | '/name';
+export type PromptForm = '$name' | 'skill-block' | 'command-uri' | 'markdown-mention' | '/name';
 
 export type SkillLoad =
   | { readonly calls: readonly SkillCall[]; readonly promptForm?: PromptForm | readonly PromptForm[] }

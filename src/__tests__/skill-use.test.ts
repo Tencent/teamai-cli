@@ -363,6 +363,25 @@ describe('skill use from a prompt mention (#1221)', () => {
     expect(await credits()).toEqual([{ skill: SKILL, tool: 'codex' }]);
   });
 
+  it.each(['qoder', 'qoder-cn'])('credits %s Markdown skill mentions and keeps slash commands', async (tool) => {
+    install(`.${tool}/skills`);
+    for (const text of [
+      'Use [@missing](skill://missing)',
+      `Use [@${SKILL}](https://example.test/${SKILL})`,
+      `Use [@${SKILL}](skill://different-skill)`,
+    ]) {
+      await prompt({ session_id: 'ignored', cwd, prompt: text }, tool);
+    }
+    expect(await credits()).toEqual([]);
+    for (const [index, text] of [
+      `Use [@${SKILL}](skill://${SKILL}) for this task`,
+      `/${SKILL} go`,
+    ].entries()) {
+      await prompt({ session_id: `qoder-${index}`, cwd, prompt: text }, tool);
+    }
+    expect(await credits()).toEqual([{ skill: SKILL, tool }, { skill: SKILL, tool }]);
+  });
+
   it('gates Codex mentions on Codex installations', async () => {
     install('.pi/agent/skills', { skill: 'pi-only' });
     const payload = { session_id: 'own-roots', turn_id: 'T1', prompt: '$pi-only', cwd };

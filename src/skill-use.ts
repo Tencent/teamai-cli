@@ -199,6 +199,9 @@ function promptCandidates(prompt: string, tool: string): SkillCandidate[] {
         // conversation is not a skill use.
         pattern = new RegExp(`^@command://(${NAME})(?=\\s|$)`, 'g');
         break;
+      case 'markdown-mention':
+        pattern = new RegExp(`\\[@(${NAME})\\]\\(skill://\\1\\)`, 'g');
+        break;
       case '/name':
         // A whole token at the start, so a prompt beginning with an absolute path is not a skill use.
         pattern = new RegExp(`^/(${NAME})(?=\\s|$)`, 'g');
