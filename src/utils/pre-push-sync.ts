@@ -325,6 +325,12 @@ async function replaceSkillDir(teamSkill: TeamSkillSource, localSkillDir: string
  * in `.<name>.<pid>.<hex>.teamai-prev`, when nothing has taken its place, and
  * drop the update it staged beside it. Called before anything reads or writes
  * the skill, so the member's own files in it are not left hidden.
+ *
+ * Only a `-prev` with its `-sync` sibling proves the cut: a finished sync
+ * renames its `-sync` into place, so a lone `-prev` is a `removeLeftover` that
+ * failed after the skill was already whole, and restoring it would put back a
+ * version the member has since moved on from (#1880). Two pairs are as
+ * unprovable as none, and readdir order is not meaningful.
  */
 export async function restoreCutShortSync(localSkillDir: string): Promise<void> {
   const parent = path.dirname(localSkillDir);
@@ -333,12 +339,33 @@ export async function restoreCutShortSync(localSkillDir: string): Promise<void> 
   // file pull reports as blocking it): nothing was cut short there.
   if (await fse.lstat(localSkillDir).then(() => true, () => false) || !await fse.stat(parent).then((stat) => stat.isDirectory(), () => false)) return;
   const prefix = `.${path.basename(localSkillDir)}.`;
-  const tag = (await fse.readdir(parent)).find((name) => name.startsWith(prefix) && /^\d+\.[0-9a-f]{12}\.teamai-prev$/.test(name.slice(prefix.length)));
+  const names = (await fse.readdir(parent)).filter((name) => name.startsWith(prefix));
 
-  if (tag === undefined) return;
-  await fse.rename(path.join(parent, tag), localSkillDir);
-  await removeLeftover(path.join(parent, tag.replace(/\.teamai-prev$/, '.teamai-sync')));
-  log.warn(`A push cut short left skill ${path.basename(localSkillDir)} in ${tag}; it is back at ${localSkillDir}.`);
+  const pairs = names.flatMap((name) => {
+    const rest = name.slice(prefix.length);
+
+    if (!/^\d+\.[0-9a-f]{12}\.teamai-prev$/.test(rest)) return [];
+    const sync = `${prefix}${rest.replace(/\.teamai-prev$/, '.teamai-sync')}`;
+
+    return names.includes(sync) ? [{ previous: name, staged: sync }] : [];
+  });
+
+  if (pairs.length !== 1) {
+    const left = names.filter((name) => name.endsWith('.teamai-prev') || name.endsWith('.teamai-sync')).map((name) => path.join(parent, name));
+
+    if (left.length > 0) {
+      log.warn(`A push was cut short near skill ${path.basename(localSkillDir)}, and ${left.join(', ')} `
+        + 'cannot be told from a leftover. Nothing was put back: check them and move the one holding your skill into place.');
+    }
+
+    return;
+  }
+
+  const [{ previous, staged }] = pairs;
+
+  await fse.rename(path.join(parent, previous), localSkillDir);
+  await removeLeftover(path.join(parent, staged));
+  log.warn(`A push cut short left skill ${path.basename(localSkillDir)} in ${previous}; it is back at ${localSkillDir}.`);
 }
 
 /**
