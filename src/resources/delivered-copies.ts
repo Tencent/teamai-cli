@@ -856,13 +856,15 @@ export function reportKept(ledger: DeliveryLedger, scopeLabel: string): number {
     if (named.has(dest)) continue;
     named.add(dest);
 
-    // A folder's copy is edited in the team repo, and push takes nothing from it (#1880).
+    // A folder's copy is edited in the team repo, and push takes nothing from it (#1880). Moving the edit there
+    // leaves these bytes unchanged, so only deleting the copy takes the team version.
     if (editAt !== undefined) {
-      log.warn(
-        `[${scopeLabel}] Kept ${dest}: you changed it${teamChanged ? `, and the version teamai would deploy there (${teamRelPath}) has changed since` : ''}. `
-        + `Edit ${editAt} in the team repo and let the next pull deliver it; push takes nothing from this copy. `
-        + 'Or delete your copy and run `teamai pull --force` to take the team version.',
-      );
+      const line = `[${scopeLabel}] Kept ${dest}: you changed it${teamChanged ? `, and the version teamai would deploy there (${teamRelPath}) has changed since` : ''}. `
+        + `Push takes nothing from this copy: make your change in ${editAt} in the team repo, `
+        + 'then delete your copy and run `teamai pull --force` to take the team version.';
+
+      if (teamChanged) log.warn(line);
+      else log.info(line);
       continue;
     }
 
