@@ -20,7 +20,10 @@ const IGNORED_NAMES = new Set([
 ]);
 
 /** A pre-push sync's update and backup of a skill (`replaceSkillDir`): `.<name>.<pid>.<12 hex>.teamai-sync` and `-prev`. */
-const SYNC_NAME = /^\..+\.\d+\.[0-9a-f]{12}\.teamai-(?:sync|prev)$/;
+export const SYNC_NAME = /^\..+\.\d+\.[0-9a-f]{12}\.teamai-(?:sync|prev)$/;
+
+/** The part of a sync folder's name after the skill's: `<pid>.<12 hex>.teamai-sync` and `-prev`, which `syncFolders` builds. */
+export const SYNC_SUFFIX = /^\d+\.[0-9a-f]{12}\.teamai-(?:sync|prev)$/;
 
 /**
  * The folders a pre-push sync builds beside skill folder `dir`: `staged`, the update, renamed into place once whole, and

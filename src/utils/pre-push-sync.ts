@@ -11,6 +11,7 @@ import {
   readFileSafe,
   writeFile,
   syncFolders,
+  SYNC_SUFFIX,
 } from './fs.js';
 import { getFileContentAtRev, getFileContentWhenAdded } from './git.js';
 import { installOf, locate, ownOf, writable } from '../locate.js';
@@ -344,8 +345,8 @@ export async function restoreCutShortSync(localSkillDir: string): Promise<void> 
   const pairs = names.flatMap((name) => {
     const rest = name.slice(prefix.length);
 
-    if (!/^\d+\.[0-9a-f]{12}\.teamai-prev$/.test(rest)) return [];
-    const sync = `${prefix}${rest.replace(/\.teamai-prev$/, '.teamai-sync')}`;
+    if (!SYNC_SUFFIX.test(rest) || !rest.endsWith('.teamai-prev')) return [];
+    const sync = `${prefix}${rest.slice(0, -'.teamai-prev'.length)}.teamai-sync`;
 
     return names.includes(sync) ? [{ previous: name, staged: sync }] : [];
   });
