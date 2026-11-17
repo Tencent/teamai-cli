@@ -180,7 +180,8 @@ function changedByYouFix(delivery: ToolDelivery, foldersKept: ReadonlySet<string
 
   return foldersKept.has(delivery.tool)
     ? ' A copy changed by you is kept by pull: `teamai push` takes nothing from the copy of an agent or rule folder, '
-      + 'so make your change in the team folder, then delete your copy and run `teamai pull --force`.'
+      + 'so make your change in the team folder, then delete your copy and run `teamai pull --force` '
+      + 'to take the team version.'
     : ' A copy changed by you is kept by pull: share it with `teamai push`, '
       + 'or delete it and run `teamai pull --force` to take the team version.';
 }

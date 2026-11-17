@@ -436,7 +436,7 @@ describe('pull keeps a delivered copy the member changed (#822 item 5)', () => {
     expect(read(folderCopy)).toContain('My extra line.');
     // The edit lands in the team folder, and the copy goes: moving the edit alone leaves these bytes, so pull keeps it.
     expect(output).toContain('make your change in rules/api-style/ in the team repo');
-    expect(output).toContain('then delete your copy and run `teamai pull --force`');
+    expect(output).toContain('then delete your copy and run `teamai pull --force` to take the team version.');
     expect(output).not.toContain(`Kept ${folderCopy}: you changed it since teamai delivered it. Share it with \`teamai push\``);
   });
 });
