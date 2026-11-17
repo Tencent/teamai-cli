@@ -43,6 +43,7 @@ import {
   redactCredential,
   ghIsAuthenticated,
   getGitHubToken,
+  ensureGhAvailable,
   ensureGhAuthenticated,
   RepoNotFoundError,
 } from '../providers/github/gh-cli.js';
@@ -171,6 +172,14 @@ describe('ghIsAuthenticated', () => {
     delete process.env.GITHUB_TOKEN;
     delete process.env.GH_TOKEN;
     expect(ghIsAuthenticated()).toBe(false);
+  });
+
+  it('does not count a GITHUB_SERVER_URL server\'s token as available for github.com without gh', async () => {
+    process.env.GITHUB_TOKEN = 'ghp_xxx';
+    await expect(ensureGhAvailable()).resolves.toBeUndefined();
+
+    process.env.GITHUB_SERVER_URL = 'https://ghe.example.com';
+    await expect(ensureGhAvailable()).rejects.toThrow('GitHub authentication unavailable');
   });
 });
 

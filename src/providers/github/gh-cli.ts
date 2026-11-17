@@ -133,7 +133,7 @@ export async function ensureGhAvailable(): Promise<void> {
     return;
   }
 
-  if (getGitHubToken()) {
+  if (githubTokenFor('github.com')) {
     log.debug('GITHUB_TOKEN env var detected — will use REST API directly');
 
     return;

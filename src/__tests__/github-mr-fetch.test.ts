@@ -144,12 +144,13 @@ describe('GitHub PR REST fallback', () => {
   });
 
   it.each([
-    [undefined, 'https://github.com/team/repo/pull/42', 'ghe.example.com', '/api/v3', 'Bearer server-token'],
-    ['https://ghe.example.com', 'https://ghe.example.com/team/repo/pull/42', 'ghe.example.com', '/api/v3', 'Bearer server-token'],
-    ['https://ghe.example.com', 'https://github.com/team/repo/pull/42', 'api.github.com', '', undefined],
-  ])('with GITHUB_SERVER_URL=%s, requests every REST path of %s from %s', async (server, url, hostname, prefix, authorization) => {
+    [undefined, 'https://ghe.example.com/api/v3', 'https://github.com/team/repo/pull/42', 'ghe.example.com', '/api/v3', 'Bearer server-token'],
+    ['https://ghe.example.com', 'https://ghe.example.com/api/v3', 'https://ghe.example.com/team/repo/pull/42', 'ghe.example.com', '/api/v3', 'Bearer server-token'],
+    ['https://ghe.example.com', undefined, 'https://ghe.example.com/team/repo/pull/42', 'ghe.example.com', '/api/v3', 'Bearer server-token'],
+    ['https://ghe.example.com', 'https://ghe.example.com/api/v3', 'https://github.com/team/repo/pull/42', 'api.github.com', '', undefined],
+  ])('with GITHUB_SERVER_URL=%s and GITHUB_API_URL=%s, requests every REST path of %s from %s', async (server, api, url, hostname, prefix, authorization) => {
     vi.stubEnv('GITHUB_SERVER_URL', server);
-    vi.stubEnv('GITHUB_API_URL', 'https://ghe.example.com/api/v3');
+    vi.stubEnv('GITHUB_API_URL', api);
     vi.stubEnv('GITHUB_TOKEN', 'server-token');
     mockResponses();
     await expect(fetchGitHubPR(url)).resolves.toMatchObject({ title: 'Fix retries', url });

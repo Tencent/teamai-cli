@@ -1,19 +1,28 @@
-/**
- * The GitHub REST API root: `GITHUB_API_URL`, which GitHub Actions sets to the GitHub Enterprise server's API, else
- * github.com's.
- */
-function githubApiUrl(): string {
-  return (process.env['GITHUB_API_URL']?.trim() || 'https://api.github.com').replace(/\/+$/, '');
-}
-
-/** The host of `GITHUB_SERVER_URL`, which GitHub Actions sets beside `GITHUB_API_URL`, else github.com. */
-function githubServerHost(): string {
+/** `GITHUB_SERVER_URL`, which GitHub Actions sets beside `GITHUB_API_URL`, else github.com. */
+function githubServer(): URL {
   const server = process.env['GITHUB_SERVER_URL']?.trim();
 
-  return server && URL.canParse(server) ? new URL(server).host.toLowerCase() : 'github.com';
+  return new URL(server && URL.canParse(server) ? server : 'https://github.com');
 }
 
-/** The REST API root for a repository on `host`: `GITHUB_API_URL` for the server `GITHUB_SERVER_URL` names, else github.com's. */
+function githubServerHost(): string {
+  return githubServer().host.toLowerCase();
+}
+
+/**
+ * The REST API root of the `GITHUB_SERVER_URL` server: `GITHUB_API_URL`, which GitHub Actions sets, else where GitHub
+ * serves it, api.github.com for github.com and `/api/v3` on a GitHub Enterprise Server.
+ */
+function githubApiUrl(): string {
+  const api = process.env['GITHUB_API_URL']?.trim();
+
+  if (api) return api.replace(/\/+$/, '');
+  const server = githubServer();
+
+  return server.host.toLowerCase() === 'github.com' ? 'https://api.github.com' : `${server.origin}/api/v3`;
+}
+
+/** The REST API root for a repository on `host`: the `GITHUB_SERVER_URL` server's for that host, else github.com's. */
 export function githubApiUrlFor(host: string): string {
   return host.toLowerCase() === githubServerHost() ? githubApiUrl() : 'https://api.github.com';
 }
