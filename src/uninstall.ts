@@ -1598,6 +1598,17 @@ async function buildRemovalPlan(
   // The worktree's .teamai/delivered/ (#1787): the rule, agent and MCP folders of a project scope, and a self-mode scope's hook folders.
   const worktreeDelivered = DeliveredFolders.worktreeRoot(localConfig);
 
+  const seededSkillDirs = isSelfMode(localConfig) && localConfig.scope === 'project' && !agentFilter
+    ? toolsToMerge.flatMap((tool) => {
+        const skills = toolPaths[tool]?.skills;
+
+        if (!skills || !localConfig.enabledAgents?.includes(tool) || isAgentExcluded(localConfig, tool)) return [];
+        const dir = toolPathUnder(tool, baseDir, skills);
+
+        return dir !== baseDir && isWithin(dir, baseDir) ? [dir] : [];
+      })
+    : [];
+
   const plan: RemovalPlan = {
     sharedRetentionOnly: false,
     hookHandovers: [],
@@ -1626,7 +1637,10 @@ async function buildRemovalPlan(
     keptFiles: [],
     ruleDirs: [...new Set([...rulesDirsByTool.values()].flat())],
     agentDirs: [...new Set([...agentDirsByTool.values()].flat())],
-    seededDirs: isSelfMode(localConfig) ? [...new Set(toolsToMerge.flatMap((tool) => [...rulesDirsByTool.get(tool) ?? [], ...agentDirsByTool.get(tool) ?? []]))] : [],
+    seededDirs: isSelfMode(localConfig) ? [...new Set([
+      ...seededSkillDirs,
+      ...toolsToMerge.flatMap((tool) => [...rulesDirsByTool.get(tool) ?? [], ...agentDirsByTool.get(tool) ?? []]),
+    ])] : [],
     instanceFolders: instanceFoldersOf(toolsToMerge, toolPaths, baseDir),
     opencodeOwnedGlobs: [],
     agentFiles: [],
