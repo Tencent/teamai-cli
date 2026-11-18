@@ -472,6 +472,7 @@ export async function envAdd(
   const target = await envFileFromFlags(repoPath, options);
 
   if (!target) return;
+  await warnOtherKindDeclaration(repoPath, 'variable', target.namespace, key);
   const { filePath: envYamlPath, relativePath, where } = target;
 
   // The target env.yaml, or a new one when it does not exist.
@@ -557,6 +558,41 @@ export async function envAdd(
  * Declare a secret in env/secrets.yaml or env/<ns>/secrets.yaml, or update
  * the description and url of one already declared there.
  */
+/**
+ * Warn when `key` is also declared as the other kind in the same namespace: one key is one environment variable, and a
+ * declared secret is the one delivery uses, so the variable's value stops being delivered without a word otherwise.
+ */
+async function warnOtherKindDeclaration(
+  repoPath: string,
+  declaring: 'secret' | 'variable',
+  namespace: string | null,
+  key: string,
+): Promise<void> {
+  if (declaring === 'secret') {
+    const envFile = entryFileIn(repoPath, 'env', namespace);
+    const variables = await readEnvFileForEdit(envFile.filePath);
+
+    if (variables?.variables.some((variable) => sameEntryKey(variable.key, key))) {
+      log.warn(
+        `${envFile.relativePath} also declares ${key} as an env variable; a declared secret takes precedence, so that `
+          + `variable's value is not delivered. Run \`teamai env remove ${key}\` if the secret replaces it.`,
+      );
+    }
+
+    return;
+  }
+
+  const secretsFile = entryFileIn(repoPath, SECRETS_LAYOUT, namespace);
+  const secrets = await readSecretsFileForEdit(secretsFile);
+
+  if (secrets?.some((secret) => sameEntryKey(secret.key, key))) {
+    log.warn(
+      `${secretsFile.relativePath} declares ${key} as a secret; a declared secret takes precedence, so this value is not `
+        + `delivered. Run \`teamai env remove ${key} --secret\` if the variable replaces it.`,
+    );
+  }
+}
+
 async function declareSecret(
   repoPath: string,
   key: string,
@@ -565,6 +601,7 @@ async function declareSecret(
   const target = await envFileFromFlags(repoPath, options, SECRETS_LAYOUT);
 
   if (!target) return;
+  await warnOtherKindDeclaration(repoPath, 'secret', target.namespace, key);
   const secrets = await readSecretsFileForEdit(target);
 
   if (!secrets) return;

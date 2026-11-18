@@ -901,6 +901,23 @@ scope: 'user',
       expect(log.success).not.toHaveBeenCalled();
     });
 
+    it('warns when declaring a secret over an env variable of the same key', async () => {
+      await fse.outputFile(path.join(repoPath, 'env', 'env.yaml'), 'variables:\n  - key: FOO\n    value: bar\n');
+
+      await envAdd('FOO', undefined, { secret: true });
+
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('also declares FOO as an env variable'));
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('teamai env remove FOO'));
+    });
+
+    it('warns when adding an env variable a secret of the same key shadows', async () => {
+      await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: FOO\n    description: Token\n');
+
+      await envAdd('FOO', 'bar', {});
+
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('declares FOO as a secret'));
+    });
+
     it('should add a new variable locally and show push hint', async () => {
       await envAdd('NEW_VAR', 'new_value', {});
 
