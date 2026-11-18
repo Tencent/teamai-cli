@@ -1400,13 +1400,23 @@ export async function prepareExplicitBranch(localPath: string, branchName: strin
     }
 
     for (const { name, configPath, base } of editedFiles) {
-      if (!carried || !source || !carried.entries.some((entry) => entry.relative === configPath && entry.present)) continue;
+      const entry = carried?.entries.find((candidate) => candidate.relative === configPath);
+
+      if (!carried || !source || !entry) continue;
       const backup = path.join(carried.root, 'files', configPath);
 
       try {
         const destination = await readFileAtRev(localPath, 'HEAD', configPath);
         const baseText = 'text' in base ? base.text : null;
         const destinationText = 'text' in destination ? destination.text : null;
+
+        if (!entry.present) {
+          if (destinationText !== null && baseText !== destinationText) {
+            throw new Error('The destination changed the file you deleted.');
+          }
+
+          continue;
+        }
 
         if (baseText !== destinationText) {
           const file = await fse.lstat(destinationText === null ? backup : path.join(localPath, ...name.split('/')));

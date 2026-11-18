@@ -512,6 +512,58 @@ describe('pushRepoBranch explicit destination', () => {
     expect((await git.branchLocal()).current).toBe('main');
   });
 
+  it.each(['staged', 'unstaged'])('refuses a %s env deletion when the destination added a key', async (mode) => {
+    const { localPath, git } = await fixture(`explicit-env-deletion-${mode}`);
+    const envFile = path.join(localPath, 'env', 'env.yaml');
+    await fs.mkdir(path.dirname(envFile));
+    await fs.writeFile(envFile, 'variables:\n  - key: BASE_KEY\n    value: base\n');
+    await git.add('.');
+    await git.commit('base env');
+    await git.push(['origin', 'main']);
+    await git.checkoutLocalBranch('review/delete-env');
+    const destination = 'variables:\n  - key: BASE_KEY\n    value: base\n  - key: COLLEAGUE_KEY\n    value: colleague\n';
+    await fs.writeFile(envFile, destination);
+    await git.add('.');
+    await git.commit('destination env');
+    await git.push(['-u', 'origin', 'review/delete-env']);
+    await git.checkout('main');
+    await git.raw(['branch', '-D', 'review/delete-env']);
+    if (mode === 'staged') await git.rm(['env/env.yaml']);
+    else await fs.unlink(envFile);
+
+    const remoteHead = await git.revparse(['origin/review/delete-env']);
+    await expect(prepareExplicitBranch(localPath, 'review/delete-env'))
+      .rejects.toThrow('Cannot apply env/env.yaml to review/delete-env');
+    expect((await git.branchLocal()).current).toBe('main');
+    expect(await fs.access(envFile).then(() => true, () => false)).toBe(false);
+    expect(await git.revparse(['origin/review/delete-env'])).toBe(remoteHead);
+    expect(await git.show(['origin/review/delete-env:env/env.yaml'])).toBe(destination);
+  });
+
+  it.each(['unchanged', 'deleted'])('carries an env deletion when the destination is %s', async (state) => {
+    const { localPath, git } = await fixture(`explicit-env-safe-delete-${state}`);
+    const envFile = path.join(localPath, 'env', 'env.yaml');
+    await fs.mkdir(path.dirname(envFile));
+    await fs.writeFile(envFile, 'variables: []\n');
+    await git.add('.');
+    await git.commit('base env');
+    await git.push(['origin', 'main']);
+    await git.checkoutLocalBranch('review/safe-delete');
+    if (state === 'deleted') {
+      await git.rm(['env/env.yaml']);
+      await git.commit('destination deletion');
+    }
+    await git.push(['-u', 'origin', 'review/safe-delete']);
+    await git.checkout('main');
+    await git.raw(['branch', '-D', 'review/safe-delete']);
+    await git.rm(['env/env.yaml']);
+
+    await prepareExplicitBranch(localPath, 'review/safe-delete');
+
+    expect((await git.branchLocal()).current).toBe('review/safe-delete');
+    expect(await fs.access(envFile).then(() => true, () => false)).toBe(false);
+  });
+
   it('carries an env edit onto a destination that left the env file alone', async () => {
     const { localPath, git } = await fixture('explicit-env-carry');
     const envFile = path.join(localPath, 'env', 'env.yaml');
