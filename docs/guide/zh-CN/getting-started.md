@@ -10,7 +10,7 @@
 
 ### 搭建团队
 
-1. 在 GitHub、GitLab、GitCode、CNB、工蜂或私有 Git 上建一个空仓库。名字用 `<团队名>-teamai` 比较好认。给同事分支写权限，主干保持保护。还没有仓库？到 [teamai-hub](https://github.com/teamai-hub) Fork 一个。
+1. 在 GitHub、GitLab、GitCode、Codeup、CNB、工蜂或私有 Git 上建一个空仓库。名字用 `<团队名>-teamai` 比较好认。给同事分支写权限，主干保持保护。还没有仓库？到 [teamai-hub](https://github.com/teamai-hub) Fork 一个。
 2. 在你使用 AI 工具的项目里初始化。
 
    在 AI 工具里：

@@ -1,0 +1,281 @@
+import type { GitProvider, PrCreateOptions, PullRequestLookup, RepoInfo } from '../types.js';
+import { RepoNotFoundError } from '../types.js';
+import {
+  codeupApiBase,
+  codeupIsAuthenticated,
+  codeupWhoami,
+  codeupRepoClone,
+  codeupMrCreate,
+  codeupFindOpenMr,
+  codeupMrHistory,
+  writeNetrcToken,
+  readNetrcUsername,
+  probeCodeupToken,
+  isRegionEdition,
+  configuredOrganizationId,
+  configuredUsername,
+  saveCodeupSettings,
+  CodeupRepoNotFoundError,
+} from './codeup-api.js';
+import { parseCodeupRepoInput, codeupInputTransport, type CodeupTransport, CODEUP_HOST } from './repo-url.js';
+import { log } from '@teamai/shared/log';
+import { askQuestion, isInteractive } from '../../utils/prompt.js';
+
+const ORG_ID_QUESTION = 'Your Codeup organizationId (the numeric organization ID from the Yunxiao console, Organization Management → Basic Information): ';
+const USERNAME_QUESTION = 'Your Codeup username (login name): ';
+
+/** The error an unreachable OpenAPI answers with — a network failure is not a rejected token. */
+function apiUnreachableError(retryHint: string): Error {
+  return new Error(
+    `Could not reach the Codeup API at ${codeupApiBase()}. Check the network connection${retryHint}, `
+      + 'or CODEUP_API_BASE_URL / YUNXIAO_EDITION if this deployment is a Region-edition Yunxiao.',
+  );
+}
+
+/**
+ * Codeup (Aliyun Yunxiao code management, codeup.aliyun.com) provider.
+ *
+ * Uses the Yunxiao OpenAPI directly — no external CLI is required, only a
+ * Personal Access Token. See codeup-api.ts for the token resolution order
+ * (CODEUP_TOKEN / YUNXIAO_TOKEN / ~/.netrc) and the dialect notes that
+ * distinguish it from the GitLab provider it is structurally modelled on.
+ *
+ * Git transport follows the URL the member typed: an https:// URL clones over
+ * HTTPS — the PAT injected per-run as an http.extraHeader Basic credential,
+ * never into the URL or the clone's .git/config — and an SSH URL or the bare
+ * `org/group/repo` form clones over SSH, the SSH key on the machine
+ * authenticating exactly as the generic `git` provider does.
+ * CODEUP_TRANSPORT=https|ssh overrides (see codeup-api.ts codeupCloneArgs).
+ */
+export class CodeupProvider implements GitProvider {
+  readonly name = 'codeup';
+  readonly pullRequests: PullRequestLookup = { findOpen: codeupFindOpenMr, history: codeupMrHistory };
+
+  /**
+   * Transport of the URL parseRepoInput last saw. cloneRepo is handed only
+   * `org/group/repo` — the scheme is lost — and init/source always parse
+   * before cloning, on the same instance.
+   */
+  private inputTransport: CodeupTransport | null = null;
+
+  parseRepoInput(input: string): RepoInfo {
+    const info = parseCodeupRepoInput(input);
+    this.inputTransport = codeupInputTransport(input);
+
+    return info;
+  }
+
+  isAuthenticated(): boolean {
+    return codeupIsAuthenticated();
+  }
+
+  /**
+   * Ensure the user is authenticated and return the login name.
+   *
+   * A PAT with platform scope answers `GET /oapi/v1/platform/user` with the
+   * username directly. A PAT with only codeup scope (the common case — the
+   * platform endpoint answers 403 for it) cannot: the token is then validated
+   * with a codeup-scoped probe (the org repository list), and the username
+   * comes from CODEUP_USERNAME or ~/.teamai/codeup.json. Interactive init
+   * asks for the missing pieces and persists them; a Region-edition deployment
+   * needs no organizationId at all.
+   */
+  async authenticate(): Promise<string> {
+    // 1. A PAT with platform scope answers whoami directly.
+    const { username: whoamiName } = await codeupWhoami();
+
+    if (whoamiName) return whoamiName;
+
+    // 2. No token configured: interactive paste, or a clear headless error.
+    if (!this.isAuthenticated()) return this.authenticateByPaste();
+
+    // 3. A configured token without platform scope: validate it with a
+    //    codeup-scoped probe and take the username from the configuration.
+    let orgId = configuredOrganizationId();
+    let promptedOrgId: string | null = null;
+
+    if (!orgId && !isRegionEdition()) {
+      promptedOrgId = await this.askOrganizationId();
+      orgId = promptedOrgId;
+    }
+
+    const probe = await probeCodeupToken(orgId ?? '');
+
+    if (!probe.ok) {
+      if (probe.status === undefined) throw apiUnreachableError('');
+
+      throw new Error(
+        `Codeup token is set but was rejected by the API (HTTP ${probe.status}). Check `
+          + 'CODEUP_TOKEN / YUNXIAO_TOKEN and CODEUP_ORG_ID — a wrong organization id '
+          + 'answers the same way — or generate a new Personal Access Token at '
+          + `https://${CODEUP_HOST} (Personal Settings → Access Tokens).`,
+      );
+    }
+
+    // Persist a prompted id only after the probe accepted it: a mistyped id
+    // must not stay saved and silence the next prompt.
+    if (promptedOrgId) saveCodeupSettings({ organizationId: promptedOrgId });
+
+    // The netrc login is the member's Codeup account name, so it identifies
+    // the member here too when nothing else carries the name.
+    const configuredName = configuredUsername() ?? readNetrcUsername();
+
+    if (configuredName) return configuredName;
+
+    if (!isInteractive()) {
+      throw new Error(
+        'Codeup token is valid but the username is unknown: the PAT has no platform scope, '
+          + 'so no user endpoint answers. Set CODEUP_USERNAME (your Codeup login name), or run '
+          + '`teamai init` interactively to save it.',
+      );
+    }
+
+    const username = (await askQuestion(USERNAME_QUESTION)).trim();
+
+    if (!username) {
+      throw new Error('No username provided. Codeup authentication cancelled.');
+    }
+
+    saveCodeupSettings({ username });
+
+    return username;
+  }
+
+  /** The organizationId a codeup-scope-only PAT cannot discover: asked interactively, an error headless. The caller saves it once the probe accepts it. */
+  private async askOrganizationId(): Promise<string> {
+    if (!isInteractive()) {
+      throw new Error(
+        'Codeup token is set, but the organizationId is not. A PAT with only codeup '
+          + 'scope cannot discover it. Set CODEUP_ORG_ID (the numeric organization ID '
+          + 'from the Yunxiao console under Organization Management → Basic Information), '
+          + 'or run `teamai init` interactively to save it.',
+      );
+    }
+
+    const orgId = (await askQuestion(ORG_ID_QUESTION)).trim();
+
+    if (!orgId) {
+      throw new Error('No organizationId provided. Codeup authentication cancelled.');
+    }
+
+    return orgId;
+  }
+
+  /** Interactive token paste: validate before persisting to ~/.netrc and ~/.teamai/codeup.json. */
+  private async authenticateByPaste(): Promise<string> {
+    if (!isInteractive()) {
+      throw new Error(
+        'Codeup authentication unavailable. Set the CODEUP_TOKEN environment variable '
+          + '(a Yunxiao/Codeup Personal Access Token). YUNXIAO_TOKEN is accepted as an alias.',
+      );
+    }
+
+    log.info(
+      `Not logged in to Codeup. Create a Personal Access Token at https://${CODEUP_HOST} ` +
+        '(Personal Settings → Access Tokens), then paste it below.',
+    );
+    const token = (await askQuestion('Paste your Codeup Personal Access Token: ')).trim();
+
+    if (!token) {
+      throw new Error('No token provided. Codeup authentication cancelled.');
+    }
+
+    // Make the just-pasted token visible to the verification calls (and to the
+    // rest of this process, so subsequent OpenAPI calls in the same `init`
+    // run use it) before persisting.
+    process.env.CODEUP_TOKEN = token;
+    const { username: pastedName } = await codeupWhoami();
+
+    if (pastedName) {
+      writeNetrcToken(token, pastedName);
+      log.success('Saved Codeup credentials to ~/.netrc');
+
+      return pastedName;
+    }
+
+    // The token has no platform scope: ask for the org id (the Region edition
+    // needs none) and the username, then validate with the codeup-scoped probe
+    // before persisting.
+    let orgId = configuredOrganizationId();
+
+    if (!orgId && !isRegionEdition()) {
+      orgId = (await askQuestion(ORG_ID_QUESTION)).trim();
+
+      if (!orgId) {
+        delete process.env.CODEUP_TOKEN;
+        throw new Error('No organizationId provided. Codeup authentication cancelled.');
+      }
+    }
+
+    const probe = await probeCodeupToken(orgId ?? '');
+
+    if (!probe.ok) {
+      delete process.env.CODEUP_TOKEN;
+
+      if (probe.status === undefined) throw apiUnreachableError(' and try again');
+
+      throw new Error('Codeup authentication failed: the pasted token or the organizationId was rejected. Please try again.');
+    }
+
+    let username = configuredUsername();
+
+    if (!username) {
+      username = (await askQuestion(USERNAME_QUESTION)).trim();
+    }
+
+    if (!username) {
+      delete process.env.CODEUP_TOKEN;
+      throw new Error('No username provided. Codeup authentication cancelled.');
+    }
+
+    writeNetrcToken(token, username);
+
+    if (orgId) saveCodeupSettings({ organizationId: orgId });
+
+    saveCodeupSettings({ username });
+    log.success('Saved Codeup credentials to ~/.netrc and ~/.teamai/codeup.json');
+
+    return username;
+  }
+
+  async ensureInstalled(): Promise<void> {
+    // No external CLI — a token is all that's needed, checked in authenticate().
+  }
+
+  cloneRepo(repo: string, localPath: string): void {
+    try {
+      codeupRepoClone(repo, localPath, this.inputTransport);
+    } catch (e) {
+      if (e instanceof CodeupRepoNotFoundError) {
+        throw new RepoNotFoundError(repo);
+      }
+
+      throw e;
+    }
+  }
+
+  async createRepo(_owner: string, _repo: string): Promise<void> {
+    throw new Error(
+      'Automatic repository creation is not supported for Codeup. Create the repository '
+        + `first at https://${CODEUP_HOST}.`,
+    );
+  }
+
+  async createPullRequest(opts: PrCreateOptions): Promise<string> {
+    return codeupMrCreate({
+      repo: opts.repo,
+      source: opts.source,
+      target: opts.target,
+      title: opts.title,
+      description: opts.description,
+      cwd: opts.cwd,
+      spawnTimeoutMs: opts.spawnTimeoutMs,
+    });
+  }
+
+  getDefaultEmailDomain(): string | null {
+    return null;
+  }
+}
+
+export { codeupIsAuthenticated, getCodeupToken } from './codeup-api.js';
