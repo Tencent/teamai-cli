@@ -2730,6 +2730,8 @@ export interface SearchIndexFileCache {
 
 /** Shape of the search-index.json file. */
 export interface SearchIndex {
+  /** Git inputs observed at build time, not the checkout's revision at query time. */
+  provenance?: import('./recall-provenance.js').IndexProvenance;
   fileCache?: SearchIndexFileCache;
   /** Schema version. Phase 1 introduces v2 (multi-category index). */
   version?: number;
