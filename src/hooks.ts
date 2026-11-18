@@ -1888,8 +1888,8 @@ async function reconcileSelfLocalTeamHooks(
     : { manifestPath, removeAll: opts.removeAll, builtinOverride: opts.builtinOverride, teamHookHistory: opts.teamHookHistory, heldTeamHookIds: opts.heldTeamHookIds, codexTrust: opts.codexTrust });
 }
 
-/** Delete an untracked hook file that holds nothing but empty hook lists. */
-async function removeEmptyHookFile(file: string): Promise<void> {
+/** Delete a hook file no commit can take that holds nothing but empty hook lists. */
+export async function removeEmptyHookFile(file: string): Promise<void> {
   const json = await readJson<JsonValue>(file);
 
   if (!isJsonObject(json)) return;
@@ -1900,9 +1900,9 @@ async function removeEmptyHookFile(file: string): Promise<void> {
       && Object.values(hooks).every((entries) => Array.isArray(entries) && entries.length === 0)));
 
   if (!empty) return;
-  const { gitTracks } = await import('./git-exclude.js');
+  const { gitUntracked } = await import('./git-exclude.js');
 
-  if ((await gitTracks(file, 'entry')).kind === 'untracked') await rm(file, { force: true });
+  if (await gitUntracked(file, 'entry')) await rm(file, { force: true });
 }
 
 /**

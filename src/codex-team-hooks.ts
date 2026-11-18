@@ -216,7 +216,7 @@ export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: C
   }
 
   if (timeouts.size === 0 && (await readJsonObject(hooksFile)).kind === 'missing') return;
-  const { codexGroupCommand, editCodexHookFile } = await import('./hooks.js');
+  const { codexGroupCommand, editCodexHookFile, removeEmptyHookFile } = await import('./hooks.js');
   const isDispatcher = (group: JsonValue) => isCodexTeamHookDispatcher(codexGroupCommand(group));
 
   const written = await editCodexHookFile(hooksFile, CODEX_TOOL_ID, (all) => Object.fromEntries(
@@ -251,7 +251,11 @@ export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: C
       return [event, slots.length === 0 && existing.length > 0 ? null : slots];
     })), codexTrust);
 
-  if (written) log.debug(`Updated the Codex team-hook dispatchers in ${hooksFile}`);
+  if (!written) return;
+  log.debug(`Updated the Codex team-hook dispatchers in ${hooksFile}`);
+
+  // The last dispatcher gone leaves `{"hooks":{}}` behind; the file goes with it.
+  if (timeouts.size === 0) await removeEmptyHookFile(hooksFile);
 }
 
 /** The payload field Codex tests an event's matcher against; events without one ignore it. */
