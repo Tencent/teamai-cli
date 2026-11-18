@@ -901,6 +901,13 @@ scope: 'user',
       expect(log.success).not.toHaveBeenCalled();
     });
 
+    it('warns that a reserved name reaches nobody, as env set does', async () => {
+      await envAdd('HOME', '/x', {});
+
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('HOME is reserved for TeamAI shell routing'));
+      expect(log.success).toHaveBeenCalledWith(expect.stringContaining('HOME=/x'));
+    });
+
     it('should add a new variable locally and show push hint', async () => {
       await envAdd('NEW_VAR', 'new_value', {});
 
