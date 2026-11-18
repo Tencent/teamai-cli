@@ -266,7 +266,7 @@ it('check pulls an unnamed workflow fragment on a page that is not a workflow pa
 it('check rejects a driver definition example whose runtime options teamai refuses, naming its page and line', () => {
   const root = checkout();
   const page = path.join(root, 'docs/guide/workflow-advanced.md');
-  const before = fs.readFileSync(page, 'utf8');
+  const before = fs.readFileSync(page, 'utf8').replace(/\r\n/g, '\n');
   const kept = '      max_parallel: 2\n';
   expect(before).toContain(kept);
   fs.writeFileSync(page, before.replace(kept, `${kept}      credentials: { claude: login }\n`));
@@ -332,7 +332,7 @@ it.each([
   fs.appendFileSync(path.join(root, 'skills/teamai/SKILL.md'), `\n\`${invocation}\`\n`);
   const checked = run(root, '--only=skill-commands-exist');
   expect(checked.status).toBe(1);
-  expect(checked.output).toContain('skills/teamai/SKILL.md');
+  expect(checked.output).toContain(path.join('skills', 'teamai', 'SKILL.md'));
   expect(checked.output).toContain(diagnostic);
 });
 
@@ -418,7 +418,7 @@ it('check finds a quoted Chinese glossary Avoid spelling without ASCII word boun
 it('check refuses a DriverCan key the workflow engine page does not name', () => {
   const root = checkout();
   const source = path.join(root, DRIVER_CAN);
-  const text = fs.readFileSync(source, 'utf8');
+  const text = fs.readFileSync(source, 'utf8').replace(/\r\n/g, '\n');
   const keys = 'workflow?: true;\n};';
   expect(text).toContain(keys);
   fs.writeFileSync(source, text.replace(keys, 'workflow?: true; queue?: true;\n};'));
@@ -430,7 +430,7 @@ it('check refuses a DriverCan key the workflow engine page does not name', () =>
 it('check refuses a DriverCan key the workflow engine page does not name, written after a comma', () => {
   const root = checkout();
   const source = path.join(root, DRIVER_CAN);
-  const text = fs.readFileSync(source, 'utf8');
+  const text = fs.readFileSync(source, 'utf8').replace(/\r\n/g, '\n');
   const keys = 'workflow?: true;\n};';
   expect(text).toContain(keys);
   fs.writeFileSync(source, text.replace(keys, 'workflow?: true, queue?: true;\n};'));
