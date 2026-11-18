@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { managedMcpWorkspaceId } from '../../types.js';
+import { findGitBashWindows } from '../../bundled-runtime.js';
 import { claudeHookOtherHostSkip } from '../../hooks.js';
 import { projectSlug } from '../../utils/partition.js';
 import { encodeCodebuddyProjectGate } from '../../codebuddy-team-hooks.js';
@@ -209,6 +210,9 @@ describe('issue #373 project hook isolation (real CLI)', () => {
   });
 
   it('shares one ungated Claude/Codex team-hook file in the main checkout with a linked worktree', async () => {
+    const shell = process.platform === 'win32' ? findGitBashWindows() : 'sh';
+
+    if (shell === null) throw new Error('Git Bash is not installed on this runner');
     installWorktreeConfig();
     const main = await runCLI(projectA, home);
     expect(main.code, main.output).toBe(0);
@@ -222,16 +226,16 @@ describe('issue #373 project hook isolation (real CLI)', () => {
       const [command] = readSettings(file).hooks.Stop.map((entry) => entry.hooks[0].command);
       expect(command).toBe(expectedCommand(file, 'echo A'));
       expect(command).not.toContain('$PWD');
-      expect(execFileSync('sh', ['-c', command], { cwd: worktreeA, encoding: 'utf8' })).toBe('A\n');
+      expect(execFileSync(shell, ['-c', command], { cwd: worktreeA, encoding: 'utf8' })).toBe('A\n');
       if (file.includes('.claude')) {
         // The main-checkout layout preserves #950's other-host check without a cwd gate.
         const cursorFile = path.join(home, '.cursor', 'hooks.json');
         const env = { ...process.env, HOME: home, CURSOR_VERSION: 'test', CURSOR_PROJECT_DIR: '', COPILOT_PROJECT_DIR: '' };
         fs.mkdirSync(path.dirname(cursorFile), { recursive: true });
         fs.writeFileSync(cursorFile, JSON.stringify({ hooks: { stop: [{ command: 'teamai hook-dispatch stop --tool cursor' }] } }));
-        expect(execFileSync('sh', ['-c', command], { cwd: worktreeA, env, encoding: 'utf8' })).toBe('');
+        expect(execFileSync(shell, ['-c', command], { cwd: worktreeA, env, encoding: 'utf8' })).toBe('');
         fs.rmSync(cursorFile);
-        expect(execFileSync('sh', ['-c', command], { cwd: worktreeA, env, encoding: 'utf8' })).toBe('A\n');
+        expect(execFileSync(shell, ['-c', command], { cwd: worktreeA, env, encoding: 'utf8' })).toBe('A\n');
       }
     }
   });
