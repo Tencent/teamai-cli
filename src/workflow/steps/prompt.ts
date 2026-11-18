@@ -33,7 +33,7 @@ import { endLogin, ensureLogin, holdLogin, loginWaitFile, type LoginTool } from 
 import { credentialsForTool, toolsLaunchDeps, type OpenedRuntime } from '../runtimes/sources.js';
 import { withRetry } from '../runtimes/retry-command.js';
 import { storeDirOf } from '../../session-flow/adapters/index.js';
-import { attemptDir, attemptResultPath, type RunLock } from '../store.js';
+import { attemptDir, attemptResultPath, runScratchDir, type RunLock } from '../store.js';
 import { abandonPlace, cloneDelivery, cloneHead, preparedClone, cloneRoleProblem, roleNotDeliveredFailure, runPlaceSetup, worktreeRoleProblem, type StepEnd } from '../place/place.js';
 import { memberTools, type MemberTool } from '../member-tools.js';
 import { acceptToolCommand } from '../../tool-instances.js';
@@ -42,6 +42,7 @@ import { LAUNCH_ORDER, LAUNCH_TOOLS, launchAdapterIdOf, launchTargetOf, toolComm
 import { chooseStepModel, loadDeployedAgent, type StepModel } from '../step-model.js';
 import type { DriverIdentity, WorkflowFailure, WorkflowStep } from '../types.js';
 import { contractClone, type SessionRef } from '../workspace.js';
+import { readRecallObservation, RECALL_TRACE_ENV } from '../../recall-provenance.js';
 
 
 /** Puts a prompt step's own question to the person at the terminal: their line, or none once `signal` aborts it. */
@@ -501,6 +502,7 @@ export async function runPromptStep({ config, lock, driver, lease, adapter = ste
   // that runs the tool on the attempt's tool home launches it as teamai does, so it holds Claude and OpenCode to it.
   const budget = limits?.budget !== undefined && !launchesOwnWay && (family === 'claude' || family === 'opencode') ? limits.budget.tokens : undefined;
   const launchedAt = Date.now();
+  const traceRecall = prepared?.install?.recallEnabled === true;
 
   if (lease.interactive && !onRuntime) log.info(`Step "${lease.step}" opens ${launched} here for interactive work.`);
 
@@ -548,6 +550,8 @@ export async function runPromptStep({ config, lock, driver, lease, adapter = ste
     // Started here, the tool reads the delivered home; delivery skips a tool whose recorded home is gone, and so does its step.
     return giveUp({ code: 'tool_unavailable', message: delivered.message }, launched);
   }
+
+  if (traceRecall) input.env = { ...input.env, [RECALL_TRACE_ENV]: '1' };
 
   if (launch) input.launchEnv = launchEnv(launch);
 
@@ -648,6 +652,12 @@ export async function runPromptStep({ config, lock, driver, lease, adapter = ste
 
   // How the definition was handed over is known only once the launch resolved its tool: OpenCode's depends on its major.
   if (ran) body.agent = ran.applied ? { ...observed, definition: { applied: ran.applied } } : observed;
+
+  if (ran && body.agent && traceRecall) {
+    const recall = await readRecallObservation(runScratchDir(config, lock.run), lease.attempt).catch(() => undefined);
+
+    if (recall) body.agent.recall = recall;
+  }
 
   if (used) body.used = used;
 

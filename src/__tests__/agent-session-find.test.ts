@@ -40,7 +40,6 @@ import {
   opencodeExportFixture,
   plantOpencodeSession,
   setFakeOpencodeExportError,
-  setFakeOpencodeVersion,
 } from '@teamai/tool-opencode/testing';
 import { WRITABLE } from './helpers/writable-platforms.js';
 
@@ -426,7 +425,7 @@ describe('AgentSession.find on OpenCode', () => {
   // A build that prints no version number, such as one from source, is taken as OpenCode V2, as pull and doctor take it.
   it('finds a session through an OpenCode that prints no version number', async () => {
     const sessionId = plantOpencode(workspace('ws'));
-    setFakeOpencodeVersion(dataHome, 'opencode local');
+    vi.stubEnv('PATH', installFakeOpencode({ version: 'opencode local' }));
 
     const found = await AgentSession.find({ platform: 'opencode', sessionId });
 
@@ -436,7 +435,7 @@ describe('AgentSession.find on OpenCode', () => {
   // OpenCode 1 has no `opencode session export`.
   it('fails with tool_unavailable on OpenCode 1', async () => {
     plantOpencode(workspace('ws'));
-    setFakeOpencodeVersion(dataHome, '1.18.23');
+    vi.stubEnv('PATH', installFakeOpencode({ version: '1.18.23' }));
 
     const found = await AgentSession.find({ platform: 'opencode', sessionId: 'ses_ec4a5b73fffeRP6bDXlApNBFvY' });
 

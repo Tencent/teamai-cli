@@ -476,7 +476,7 @@ export class OpencodeAdapter extends AgentAdapter {
     let found: string | undefined;
 
     for (const executable of this.host.executablesOf('opencode')) {
-      const version = await this.host.processes.probe(executable);
+      const version = await this.host.processes.probeVersion(executable);
 
       if (version && opencodeMajorOf(version) >= 2) return executable;
       found ??= version || undefined;

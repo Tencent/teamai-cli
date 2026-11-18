@@ -11,6 +11,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { AgentObservationSchema } from '../agent-observation.js';
+import { mergeRecallObservations, RecallObservation } from '../recall-provenance.js';
 import { RunOriginSchema } from '../default-workflows.js';
 import type { ArchivedPass, StepPass, StepState } from '../workflow/step-state.js';
 import { stepDefinitions } from '../workflow/scope.js';
@@ -120,6 +121,7 @@ export const BenchmarkRecordSchema = z.object({
     cost: z.object({ amount: z.number().nonnegative(), unit: z.string().min(1), complete: z.boolean() }).optional(),
     /** What the trial's prompt ran as, as teamai observed it; absent for a prompt that never reported. */
     agent: AgentObservationSchema.optional(),
+    recallProvenance: RecallObservation.optional(),
     /** The team skills the trial loaded, each `loaded`, or `unknown` when a pass that did not load it went unobserved. */
     used: z.record(z.string().min(1), z.enum(['loaded', 'unknown'])).optional(),
     /**
@@ -245,7 +247,7 @@ export function benchmarkRecord(run: RunState, { plan, prefix }: RunPlan, verdic
 /** What one prompt pass reported, as a step keeps it. */
 type PromptPass = Pick<StepPass, 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'agent' | 'used'>;
 
-type TrialEntry = Pick<BenchmarkRecord['trials'][number], 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'agent' | 'used' | 'routing'>;
+type TrialEntry = Pick<BenchmarkRecord['trials'][number], 'limit' | 'unenforced' | 'durationMs' | 'tokens' | 'cost' | 'agent' | 'used' | 'routing' | 'recallProvenance'>;
 
 
 /** What `state` reported of its current pass, or nothing when that pass settled no report. */
@@ -320,6 +322,10 @@ function projectionOf(passes: readonly PromptPass[], { arm, watched, routingSkil
   if (costed) entry.cost = { amount: inUnit.reduce((total, cost) => total + cost.amount, 0), unit: costed.unit, complete: inUnit.length === passes.length };
 
   if (agent) entry.agent = agent;
+
+  if (arm?.recall) {
+    entry.recallProvenance = mergeRecallObservations(passes.map((pass) => pass.agent?.recall ?? { queried: null, unavailable: true, indexes: [] }));
+  }
 
   if (observed.length > 0) entry.used = usedOf(observed.flatMap(({ skills }) => skills), observed.length < passes.length ? watched : []);
 

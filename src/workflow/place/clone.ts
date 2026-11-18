@@ -21,6 +21,7 @@ import { readRegularFile } from '@teamai/shared/regular-file';
 import { z } from 'zod';
 import { observeCheckout, PreparedAgentSchema, type PreparedAgent } from '../../agent-observation.js';
 import { resolveCliEntry } from '../../builtin-hooks.js';
+import { RECALL_TRACE_ENV } from '../../recall-provenance.js';
 import { recordCheckoutRole, withCheckoutRole } from '../../checkout-roles.js';
 import { loadTeamConfig, refreshRoleAssignment, saveLocalConfigForScope } from '../../config.js';
 import { stepEnvironment } from '../../env-exec.js';
@@ -690,6 +691,8 @@ async function installTeam(input: {
 
   // The clone's own pull must not follow a variable that moves a tool's home away from HOME.
   for (const name of toolHomeVariableNames()) delete env[name];
+
+  if (team.recall === true) env[RECALL_TRACE_ENV] = '1';
   // The lease's deadline bounds the pull too, so a slow one does not hold the run past its timeout.
   const timeoutMs = lease.expiresAt === undefined ? PULL_TIMEOUT_MS : Math.max(0, Math.min(PULL_TIMEOUT_MS, Date.parse(lease.expiresAt) - Date.now()));
 

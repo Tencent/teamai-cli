@@ -318,13 +318,27 @@ export async function resolveActiveLearningsNamespaces(
 }
 
 /**
- * Merge role and project namespaces into the final active set. knowledge/skills
- * are the deduped union of both dimensions; learnings comes from projects only.
- * There is deliberately no priority override — see the module-level note.
+ * Merge role and project namespaces into the final active set.
+ *
+ * `union` (the default): both dimensions contribute additively; there is
+ * deliberately no priority override — see the module-level note.
+ *
+ * `intersect` (opt in with `sharing.namespaceMerge: intersect` in teamai.yaml):
+ * the role namespaces are the reviewed ceiling of what a member may see, and
+ * the active projects scope what the current directory delivers. An axis where
+ * either side is empty falls back to the other side: a member with no role
+ * keeps whatever their projects select (unchanged), and a directory with no
+ * active project keeps whatever the roles select (unchanged), so the mode only
+ * narrows members who have both. `learnings` always stays on the deduped-union
+ * path, as under `union`, so pull activation and contribution routing
+ * (`resolveActiveLearningsNamespaces`) agree in both modes.
  */
+export type NamespaceMergeMode = 'union' | 'intersect';
+
 export function mergeNamespaces(
   roleNamespaces: ResourceNamespaces,
   projectNamespaces: ResourceNamespaces,
+  mode: NamespaceMergeMode = 'union',
 ): ResourceNamespaces {
   const dedupe = (a: string[], b: string[]): string[] => {
     const seen = new Set<string>();
@@ -339,15 +353,27 @@ export function mergeNamespaces(
     return out;
   };
 
+  const combine = (role: string[], project: string[]): string[] => {
+    if (mode === 'intersect' && role.length > 0 && project.length > 0) {
+      const ceiling = new Set(role);
+
+      return project.filter((ns) => ceiling.has(ns));
+    }
+
+    return dedupe(role, project);
+  };
+
   const merged: ResourceNamespaces = {
-    knowledge: dedupe(roleNamespaces.knowledge, projectNamespaces.knowledge),
-    skills: dedupe(roleNamespaces.skills, projectNamespaces.skills),
+    knowledge: combine(roleNamespaces.knowledge, projectNamespaces.knowledge),
+    skills: combine(roleNamespaces.skills, projectNamespaces.skills),
+    // learnings stays a union in both modes: resolveActiveLearningsNamespaces
+    // (contribution routing) unions them, so intersecting here would disagree.
     learnings: dedupe(roleNamespaces.learnings, projectNamespaces.learnings),
-    agents: dedupe(roleNamespaces.agents, projectNamespaces.agents),
+    agents: combine(roleNamespaces.agents, projectNamespaces.agents),
   };
 
   for (const type of HAND_DECLARED_RESOURCE_TYPES) {
-    const namespaces = dedupe(roleNamespaces[type] ?? [], projectNamespaces[type] ?? []);
+    const namespaces = combine(roleNamespaces[type] ?? [], projectNamespaces[type] ?? []);
 
     if (namespaces.length > 0) merged[type] = namespaces;
   }

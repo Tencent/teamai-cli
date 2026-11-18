@@ -39,6 +39,12 @@ const DEFINITIONS = 'tool-definitions';
 /** The conformance kit families test with. */
 const TEST_KIT = 'tool-testing';
 
+/** The one package that imports concrete source-control providers. */
+const PROVIDER_DEFINITIONS = 'provider-definitions';
+
+/** A concrete provider package; core, definitions and testing are infrastructure. */
+const PROVIDER = /^provider-(?!core$|definitions$|testing$)/;
+
 /** The launch library: it runs a tool's launch over a process port it is given, so it starts no process and knows no runtime. */
 const LAUNCH_LIBRARY = 'tool-launch';
 
@@ -170,6 +176,14 @@ export default defineRule({
 
           if (FAMILY.test(folder) && own !== DEFINITIONS && own !== folder && !(familyTesting && isTest && !FAMILY.test(own ?? ''))) {
             context.report({ node, message: `Only @teamai/tool-definitions imports a tool family: the app reads tools through it, and a family depends on tool-core alone. ${from} -> ${specifier}.` });
+          }
+
+          if (PROVIDER.test(folder) && own !== PROVIDER_DEFINITIONS && own !== folder) {
+            context.report({ node, message: `Only @teamai/provider-definitions imports a provider package: the app reads providers through it, and a provider depends on provider-core alone. ${from} -> ${specifier}.` });
+          }
+
+          if (PROVIDER.test(own ?? '') && folder !== own && folder !== 'provider-core' && folder !== 'shared') {
+            context.report({ node, message: `A provider package imports only @teamai/provider-core and @teamai/shared from the workspace, never another provider or app package. ${from} -> ${specifier}.` });
           }
 
           if (folder === TEST_KIT && !isTest) {

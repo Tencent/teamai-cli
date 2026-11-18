@@ -247,7 +247,7 @@ export function fixTask(startingCommit: string, prompt = 'Make node test.js pass
   return `schemaVersion: v1alpha1
 title: Fix the answer
 prompt: ${prompt}
-startingCommit: ${startingCommit}
+startingCommit: ${JSON.stringify(startingCommit)}
 check:
   run: node test.js
   protect: [test.js]
@@ -365,6 +365,8 @@ export interface BenchmarkFixtureOptions {
   teamChange?: Record<string, string>;
   /** Each launch of a fake tool also writes what `sh -c env` prints to tool.env in the fixture's root. */
   printsEnv?: boolean;
+  /** Query recall in the trial's clone using this fake-tool script. */
+  recallProbe?: string;
   /** How the fake `claude` judges; `first-label` by default. */
   judge?: FakeJudge;
   /** The member's `workflows.max_parallel`; unset by default, which the local driver reads as 1. */
@@ -481,6 +483,7 @@ fs.appendFileSync(${JSON.stringify(toolLog)}, JSON.stringify({
 }) + '\\n');
 ${options.printsEnv ? `fs.writeFileSync(${JSON.stringify(path.join(root, 'tool.env'))}, execFileSync('sh', ['-c', 'env'], { encoding: 'utf8' }));` : ''}
 ${options.firstLaunch ? firstLaunch[options.firstLaunch] : ''}
+${options.recallProbe === undefined ? '' : `const recallCli = ${JSON.stringify(CLI)};\n${options.recallProbe}`}
 ${tool === 'claude' && options.loadsSkill !== undefined ? loadsSkill(options.loadsSkill) : ''}
 if (fs.existsSync(${JSON.stringify(probeRun)})) {
   const run = fs.readFileSync(${JSON.stringify(probeRun)}, 'utf8');

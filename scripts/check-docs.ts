@@ -8,7 +8,7 @@ import { COMMANDS_REFERENCE_PATH, renderCommandsReference } from './commands-ref
 import { TOOL_ORDER } from '../src/tool-registry.js';
 
 const root = process.cwd();
-const CHECKS = ['readme-matrix', 'skill-commands-exist', 'team-wiki-codebase-skill', 'skill-content', 'workflow-docs-examples', 'glossary-terms', 'driver-can', 'lint-rules-readme', 'double-encoded-utf8'] as const;
+const CHECKS = ['readme-matrix', 'skill-commands-exist', 'team-wiki-codebase-skill', 'skill-content', 'workflow-docs-examples', 'glossary-terms', 'driver-can', 'lint-rules-readme', 'double-encoded-utf8', 'anchors'] as const;
 const USAGE = `Usage: node scripts/check-docs.mjs [--write] [--only=<check>]\n<check> is one of: ${CHECKS.join(', ')}`;
 
 let write = false;

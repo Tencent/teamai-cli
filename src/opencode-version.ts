@@ -2,7 +2,7 @@
  * The OpenCode version a member runs, which decides how teamai delivers to it and launches it. In a module of its own,
  * so a test mocks it where every caller reads it.
  */
-import { probeBinary } from '@teamai/shared/exec';
+import { probeVersion } from '@teamai/shared/exec';
 import { opencodeMajorOf } from '@teamai/tool-core/launch';
 
 const majorVersions = new Map<string, Promise<number>>();
@@ -17,7 +17,7 @@ export function opencodeMajorVersion(binary = 'opencode'): Promise<number> {
   let version = majorVersions.get(binary);
 
   if (!version) {
-    version = probeBinary(binary).then(opencodeMajorOf);
+    version = probeVersion(binary).then(opencodeMajorOf);
     majorVersions.set(binary, version);
   }
 

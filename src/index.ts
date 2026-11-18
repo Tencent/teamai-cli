@@ -131,6 +131,12 @@ for (const [flags, description] of GLOBAL_OPTIONS) program.option(flags, descrip
 
 program
   .hook('preAction', async (thisCommand, actionCommand) => {
+    // stdout is the JSON for every `--json` command, and loading the team config
+    // can warn (a roles manifest that does not parse) before the command runs
+    // (#1885). First, so the migration below and every later log line go to
+    // stderr. `--json <payload>` takes a string, not `true`, so it is untouched.
+    if (actionCommand.opts().json === true) setStderrOnly(true);
+
     // A command a step starts in its clone reads and writes under that clone's own install, as the install's pull did,
     // so nothing it writes reaches the member's home. First, so every path resolved below is the install's.
     if (attemptMarker(process.env) !== undefined) {
@@ -753,6 +759,7 @@ program
   .command('uninstall')
   .description('Remove all teamai-managed resources and hooks from this machine')
   .option('--force', 'Skip confirmation prompt')
+  .option('--keep-shared-hooks', 'Keep machine-wide hooks during workspace uninstall, for legacy workspaces not registered in this home')
   .option('--agent <name>', 'Only uninstall this agent\'s resources in this checkout; shared resources, and the project\'s other checkouts, go only if it is the last tool')
   .action(async (cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();

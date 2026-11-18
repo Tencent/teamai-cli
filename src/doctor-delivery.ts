@@ -284,7 +284,7 @@ export async function readGateChecks(gates: readonly ReadGate[], held: Held): Pr
  * reason, and the command whose job is explaining bad state must report it,
  * not stack-trace on it.
  */
-function unresolvableCheck(type: 'skills' | 'agents' | 'docs', reason: string): Check[] {
+function unresolvableCheck(type: 'skills' | 'rules' | 'agents' | 'instructions' | 'docs', reason: string): Check[] {
   const noun = type[0].toUpperCase() + type.slice(1);
 
   return [{
@@ -757,8 +757,14 @@ export async function buildRulesDeliveryChecks(ctx: DoctorContext): Promise<Chec
   const { buildRolePullContext, resolveDesiredRules } = await import('./resources/desired.js');
   const { getHandler } = await import('./resources/index.js');
 
-  const roleContext = await buildRolePullContext(localConfig);
-  const { items } = await resolveDesiredRules(teamConfig, localConfig, roleContext);
+  let items: ResourceItem[];
+
+  try {
+    ({ items } = await resolveDesiredRules(teamConfig, localConfig, await buildRolePullContext(localConfig)));
+  } catch (e) {
+    return unresolvableCheck('rules', e instanceof Error ? e.message : String(e));
+  }
+
   const activation = await buildRulesActivationChecks(ctx, items);
 
   if (items.length === 0) {
@@ -2980,7 +2986,14 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
   const { resolveInstructionBlocks } = await import('./pull.js');
   const { buildRolePullContext } = await import('./resources/desired.js');
   const { opencodeContextReference, readOpencodeInstructionList } = await import('./resources/opencode-config.js');
-  const { blocks } = await resolveInstructionBlocks(teamConfig, localConfig, await buildRolePullContext(localConfig));
+  let blocks: Awaited<ReturnType<typeof resolveInstructionBlocks>>['blocks'];
+
+  try {
+    ({ blocks } = await resolveInstructionBlocks(teamConfig, localConfig, await buildRolePullContext(localConfig)));
+  } catch (e) {
+    return unresolvableCheck('instructions', e instanceof Error ? e.message : String(e));
+  }
+
   const { targets, hooks, stale, opencodeFallback } = await resolveInstructionTargets(teamConfig, localConfig);
   const pullNow = 'Run `teamai pull`.';
   const checks: Check[] = [];

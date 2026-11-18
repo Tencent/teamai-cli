@@ -488,3 +488,17 @@ describe('the home an instance\'s own variable moves', () => {
     expect(toolHomeOf('acme-codex', recorded({}))?.dir).toBe('/home/m/.acme-codex');
   });
 });
+
+describe('a recorded Codex root keeps the shared skills directory among its reads (#1886)', () => {
+  const host = linuxHost({}, ['/home/m/.codex-work']);
+  const install: Install = { toolPaths: DEFAULT_TOOL_PATHS, agents: {}, toolRoots: { codex: '/home/m/.codex-work' }, gitExclude: false, scope: 'user' };
+
+  it('reads the recorded skills directory and the shared one', async () => {
+    const skills = await locate('codex', 'skills', install, host);
+    const reads = skills.reads === 'unknown' ? [] : skills.reads.map((read) => read.path);
+
+    expect(reads).toEqual(['/home/m/.codex-work/skills', '/home/m/.agents/skills']);
+    expect(skills.shared?.path).toBe('/home/m/.agents/skills');
+    expect(unreadWrites(skills, host)).toEqual([]);
+  });
+});
