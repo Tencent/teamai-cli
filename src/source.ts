@@ -1824,9 +1824,16 @@ async function legacyCopyKeeper(
     if (legacy !== ownOf(await locate(tool, 'skills', install))?.path) legacyRoots.push(legacy);
   }
 
+  const missing = !await pathExists(repoDir);
   const history = await pathExists(path.join(repoDir, '.git'));
 
   return (skillName, sourcePath) => async (skillDir) => {
+    if (missing && !sourcePath) {
+      log.warn(`Kept ${skillDir}: the source cache for ${sourceName} is missing, so teamai could not check for local edits. Delete it when you no longer need it.`);
+
+      return true;
+    }
+
     if (!legacyRoots.some((root) => skillDir.startsWith(root + path.sep))) {
       // A file the member added or changed goes with the directory: keep it all (#993). A file is
       // the source's only by its bytes, today's or a version from the history. Without history and
