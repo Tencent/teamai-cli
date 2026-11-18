@@ -125,7 +125,9 @@ for (const file of files) {
       // Leave an invalid path encoded so it cannot resolve to an unrelated file.
     }
 
-    const target = path.resolve(path.dirname(file), relative || path.basename(file));
+    const target = relative.startsWith('/')
+      ? path.join(root, path.posix.normalize(relative))
+      : path.resolve(path.dirname(file), relative || path.basename(file));
 
     if (!target.endsWith('.md') || !fs.existsSync(target)) continue;
 
