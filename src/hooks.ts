@@ -1626,7 +1626,7 @@ export async function stopCodexTeamHookDispatch(
   if (!homeFile) return null;
 
   try {
-    await reconcileCodexDispatchers(homeFile, codexTrustPolicy(localConfig));
+    await reconcileCodexDispatchers(homeFile, codexTrustPolicy(localConfig), { withdrawsDroppedTrust: true });
 
     return null;
   } catch (e) {
