@@ -6,6 +6,7 @@ vi.mock('node:child_process', () => ({
 
 import { spawnSync } from 'node:child_process';
 import { GenericGitProvider, normalizeGitIdentity } from '../providers/git/index.js';
+import { longPathArgs } from '../utils/git.js';
 import { parseGenericGitExistingRemote, parseGenericGitRepoInput } from '../providers/git/repo-url.js';
 import { detectProvider, getProvider } from '../providers/registry.js';
 
@@ -180,7 +181,7 @@ describe('GenericGitProvider transport', () => {
 
     expect(mockedSpawnSync).toHaveBeenCalledWith(
       'git',
-      ['clone', '--', 'git@code.qschou.com:Enterprise/arb-workflow-kit.git', '/tmp/team-repo'],
+      [...longPathArgs(), 'clone', '--', 'git@code.qschou.com:Enterprise/arb-workflow-kit.git', '/tmp/team-repo'],
       expect.objectContaining({ timeout: 180_000 }),
     );
   });
@@ -194,9 +195,23 @@ describe('GenericGitProvider transport', () => {
     new GenericGitProvider().cloneRepo(input, '/tmp/team-repo');
     expect(mockedSpawnSync).toHaveBeenCalledWith(
       'git',
-      ['clone', '--', input, '/tmp/team-repo'],
+      [...longPathArgs(), 'clone', '--', input, '/tmp/team-repo'],
       expect.objectContaining({ timeout: 180_000, windowsHide: true }),
     );
+  });
+
+  it('lets the clone check out a long path on Windows', () => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    mockedSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+
+    try {
+      new GenericGitProvider().cloneRepo('https://code.qschou.com/Enterprise/arb-workflow-kit.git', '/tmp/team-repo');
+    } finally {
+      platformSpy.mockRestore();
+    }
+
+    const [, args] = mockedSpawnSync.mock.calls.at(-1) as [string, string[]];
+    expect(args.slice(0, 2)).toEqual(['-c', 'core.longpaths=true']);
   });
 
   it('checks that git is installed before transport operations', async () => {

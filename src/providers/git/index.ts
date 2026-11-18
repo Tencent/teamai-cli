@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import type { GitProvider, PrCreateOptions, RepoInfo } from '../types.js';
 import { sanitizeGitUrl } from '@teamai/shared/redact';
 import { parseGenericGitRepoInput } from './repo-url.js';
+import { longPathArgs } from '../../utils/git.js';
 
 const WINDOWS_RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 
@@ -96,7 +97,7 @@ export class GenericGitProvider implements GitProvider {
   cloneRepo(repo: string, localPath: string): void {
     const remoteUrl = parseGenericGitRepoInput(repo).httpsUrl;
 
-    const result = spawnSync('git', ['clone', '--', remoteUrl, localPath], {
+    const result = spawnSync('git', [...longPathArgs(), 'clone', '--', remoteUrl, localPath], {
       encoding: 'utf-8',
       stdio: ['inherit', 'pipe', 'pipe'],
       // Match the 180s default used by the shallow-clone path in clone.ts:

@@ -92,6 +92,42 @@ describe('shallowClone — windowsHide', () => {
   });
 });
 
+describe('shallowClone — long paths', () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-clone-'));
+    vi.stubEnv('TEAMAI_CACHE_DIR', tmp);
+    vi.spyOn(log, 'debug').mockImplementation(() => {});
+    vi.mocked(spawn).mockReset();
+    vi.mocked(spawn).mockImplementation(() => makeSilentProcess());
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it.each(['win32', 'linux', 'darwin'])('lets the clone check out a long path on %s', async (platform) => {
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue(platform as NodeJS.Platform);
+
+    try {
+      await shallowClone('https://example.com/org/repo.git', path.join(tmp, 'repo'), 'git');
+    } finally {
+      platformSpy.mockRestore();
+    }
+
+    const clone = vi.mocked(spawn).mock.calls.find(([, args]) => (args as string[]).includes('clone'));
+    expect(clone).toBeDefined();
+    const args = clone![1] as string[];
+    expect(args.includes('core.longpaths=true')).toBe(platform === 'win32');
+
+    // A git-level option: it has to stay ahead of the subcommand.
+    if (platform === 'win32') expect(args.slice(0, 2)).toEqual(['-c', 'core.longpaths=true']);
+  });
+});
+
 describe('shallowClone — split UTF-8 output', () => {
   let tmp: string;
 

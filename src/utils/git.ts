@@ -200,6 +200,21 @@ export function gitBlockTimeoutMs(): number {
 }
 
 /**
+ * Git config that lets a checkout hold a path longer than Windows' `MAX_PATH`.
+ * Git reads `core.longpaths` per process, so every command teamai starts
+ * carries it: the shared clients as config, and a clone started without
+ * simple-git as `-c` arguments ({@link longPathArgs}).
+ */
+export function longPathConfig(platform: NodeJS.Platform = process.platform): string[] {
+  return platform === 'win32' ? ['core.longpaths=true'] : [];
+}
+
+/** {@link longPathConfig} as command-line arguments, for a `git` started without simple-git. */
+export function longPathArgs(platform: NodeJS.Platform = process.platform): string[] {
+  return longPathConfig(platform).flatMap((entry) => ['-c', entry]);
+}
+
+/**
  * Create a SimpleGit instance for a given base path.
  *
  * Authentication is handled by the provider's remote URL or by normal Git
@@ -212,7 +227,7 @@ export function gitBlockTimeoutMs(): number {
 export function createGit(basePath?: string, abort?: AbortSignal): SimpleGit {
   // Role filtering happens after checkout: an inactive skill's long path can
   // otherwise block the whole pull. Keep this override in the Git process.
-  const config = process.platform === 'win32' ? ['core.longpaths=true'] : [];
+  const config = longPathConfig();
 
   const options: Partial<SimpleGitOptions> = {
     binary: gitBinary(),
@@ -300,7 +315,7 @@ export function createGitWithBlockTimeout(basePath?: string, abort?: AbortSignal
   // with it, until the server dropped it. curl's own stall limit ends the
   // helper, a second after the kill so the kill still decides how the command fails.
   const config = [
-    ...(process.platform === 'win32' ? ['core.longpaths=true'] : []),
+    ...longPathConfig(),
     'http.lowSpeedLimit=1', `http.lowSpeedTime=${Math.ceil(block / 1000) + 1}`,
   ];
 
