@@ -7,7 +7,7 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 import { z } from 'zod';
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const OXLINT = path.join(PLUGIN_ROOT, '..', 'node_modules', '.bin', process.platform === 'win32' ? 'oxlint.cmd' : 'oxlint');
+const OXLINT = fileURLToPath(new URL('./bin/oxlint', import.meta.resolve('oxlint/package.json')));
 
 interface RuleHarness {
   /** The source lints clean with only this rule on. */
@@ -49,8 +49,8 @@ export function ruleHarness(rule: `teamai/${string}`, defaults: { filename: stri
   };
 
   beforeAll(() => {
-    const lint = spawnSync(OXLINT, ['-c', config, '--format', 'json', ...fixtures], {
-      encoding: 'utf8', shell: process.platform === 'win32', maxBuffer: 10 * 1024 * 1024,
+    const lint = spawnSync(process.execPath, [OXLINT, '-c', config, '--format', 'json', ...fixtures], {
+      encoding: 'utf8', maxBuffer: 10 * 1024 * 1024,
     });
     expect(lint.error, lint.stderr).toBeUndefined();
     expect([0, 1], lint.stdout + lint.stderr).toContain(lint.status);
@@ -103,7 +103,7 @@ export function lintWithOptions(rule: `teamai/${string}`, options: readonly obje
     const file = path.join(dir, 'src', 'x.ts');
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, 'export const x = 1;\n');
-    const lint = spawnSync(OXLINT, ['-c', config, '--format', 'json', file], { encoding: 'utf8', shell: process.platform === 'win32' });
+    const lint = spawnSync(process.execPath, [OXLINT, '-c', config, '--format', 'json', file], { encoding: 'utf8' });
     return { status: lint.status, output: lint.stdout + lint.stderr };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
