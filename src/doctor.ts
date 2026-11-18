@@ -15,7 +15,7 @@ import { hookSourceMatches } from './utils/hook-source.js';
 import { resolveCliEntry, teamaiWrapperPath, teamaiWrapperSource } from './builtin-hooks.js';
 import { LOGIN_DEFERRED_ENV } from './hook-fast-path.js';
 import { getUserHome } from '@teamai/shared/home';
-import { log, setStderrOnly } from '@teamai/shared/log';
+import { log } from '@teamai/shared/log';
 import type { GlobalOptions } from './types.js';
 import {
   COPILOT_TOOL_ID,
@@ -1186,10 +1186,6 @@ function renderResult(result: CheckResult): void {
 
 export async function doctor(options: DoctorOptions): Promise<boolean> {
   const jsonMode = options.json === true;
-
-  // In JSON mode stdout is a data channel: route every log line to stderr so a
-  // consumer can parse stdout whole (same trick as hook-dispatch commands).
-  if (jsonMode) setStderrOnly(true);
 
   log.info('Running diagnostics...\n');
   // Information, not a check: an unknown TEAMAI_MODE fails nothing.

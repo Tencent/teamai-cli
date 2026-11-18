@@ -102,12 +102,15 @@ function utf8(bytes: Buffer): string | undefined {
   }
 }
 
-/** The sourceHash of a folder: every file's path, mode and content, in path order. */
+/**
+ * The sourceHash of a folder: every file's path, mode and content, in path order. Each file starts with a line that
+ * holds its content's length, so no content, which may hold any character, can spell where the next file begins.
+ */
 function hash(files: readonly WorkflowFolderFile[]): string {
   const digest = createHash('sha256');
 
   for (const file of [...files].sort((a, b) => (a.path < b.path ? -1 : 1))) {
-    digest.update(file.path).update('\0').update(file.executable ? '100755' : '100644').update('\0').update(file.content).update('\0');
+    digest.update(`${JSON.stringify([file.path, file.executable ? '100755' : '100644', Buffer.byteLength(file.content)])}\n`).update(file.content);
   }
 
   return digest.digest('hex');

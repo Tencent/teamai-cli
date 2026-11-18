@@ -1,0 +1,10 @@
+{
+  "name": "@teamai/provider-core",
+  "private": true,
+  "type": "module",
+  "description": "The source-control provider contract and registry; bundled into teamai-cli.",
+  "exports": {
+    "./contract": "./src/contract.ts",
+    "./registry": "./src/registry.ts"
+  }
+}

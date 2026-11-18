@@ -105,6 +105,121 @@ it('check rejects a README matrix that disagrees with the tool descriptor', () =
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('Documentation check failed: lists every tool but the internal builds');
 });
+it('check validates GitHub-style heading and explicit Markdown anchors in every documentation surface', () => {
+  const root = checkout();
+  const target = path.join(root, 'docs/anchor-target.md');
+  fs.writeFileSync(target, [
+    '# Name_with underscore',
+    '## 重复',
+    '## 重复',
+    '## `code` and <tool>',
+    '<a id="explicit-id"></a>',
+    "<a name='explicit-name'></a>",
+  ].join('\n'));
+  fs.appendFileSync(path.join(root, 'README.md'), '\n[underscore](docs/anchor-target.md#name_with-underscore)\n[duplicate](docs/anchor-target.md#重复-1)\n');
+  const skill = path.join(root, 'skill-data/core/SKILL.md');
+  fs.appendFileSync(skill, '\n[code and tool](../../docs/anchor-target.md#code-and-tool)\n[id](../../docs/anchor-target.md#explicit-id)\n[name](../../docs/anchor-target.md#explicit-name)\n');
+  expect(run(root, '--only=anchors')).toMatchObject({ status: 0 });
+
+  fs.appendFileSync(path.join(root, 'README.md'), '\n[missing](docs/anchor-target.md#missing-readme-anchor)\n');
+  fs.appendFileSync(skill, '\n[missing](../../docs/anchor-target.md#missing-skill-anchor)\n');
+  const page = path.join(root, 'docs/guide/zh-CN/benchmarks.md');
+  fs.writeFileSync(page, fs.readFileSync(page, 'utf8').replace('dashboard.md#基准测试benchmarks', 'dashboard.md#benchmarks'));
+  const checked = run(root, '--only=anchors');
+  expect(checked.status).toBe(1);
+  expect(checked.output).toMatch(/README\.md:\d+ links docs\/anchor-target\.md#missing-readme-anchor, which has no heading for it\./u);
+  expect(checked.output).toMatch(/skill-data\/core\/SKILL\.md:\d+ links \.\.\/\.\.\/docs\/anchor-target\.md#missing-skill-anchor, which has no heading for it\./u);
+  expect(checked.output).toMatch(/docs\/guide\/zh-CN\/benchmarks\.md:\d+ links dashboard\.md#benchmarks, which has no heading for it\./u);
+});
+it('checks rendered headings and titled and reference links, ignoring code examples', () => {
+  const root = checkout();
+  fs.writeFileSync(path.join(root, 'docs/anchor-edge.md'), [
+    '## [Usage](guide.md)',
+    '## <em>Emphasis</em>',
+    '## 🚀 Launch',
+    '## Setup<br>',
+    '## परिचय',
+    '<!-- <a id="hidden"></a> -->',
+    '<a id="Release"></a>',
+    '<a id="first" name="second"></a>',
+    '<a data-id="hidden-data"></a>',
+    '<a title="a > b" id="valid"></a>',
+    '<a id="a&amp;b"></a>',
+    '<a title=\'example id="quoted-hidden"\'></a>',
+    '',
+    'Setext heading',
+    '--------------',
+    '',
+    '   ## Indented heading',
+    '',
+    '## Foo',
+    '## Foo',
+    '## Foo-1',
+    '## Foo',
+    '',
+    '~~~md',
+    '## Example heading',
+    '<a id="example-id"></a>',
+    '~~~',
+  ].join('\n'));
+  fs.writeFileSync(path.join(root, 'docs/my guide.md'), '# Existing anchor\n');
+  const readme = path.join(root, 'README.md');
+  fs.appendFileSync(readme, [
+    '',
+    '[Linked heading](docs/anchor-edge.md#usage)',
+    '[Formatted heading](docs/anchor-edge.md#emphasis)',
+    '[Emoji prefix](docs/anchor-edge.md#-launch)',
+    '[HTML line break](docs/anchor-edge.md#setup)',
+    '[Combining marks](docs/anchor-edge.md#परिचय)',
+    '[Setext](docs/anchor-edge.md#setext-heading)',
+    '[Indented](docs/anchor-edge.md#indented-heading)',
+    '[Collision](docs/anchor-edge.md#foo-1-1)',
+    '[Next duplicate](docs/anchor-edge.md#foo-2)',
+    '',
+    '~~~markdown',
+    '[Example link](docs/anchor-edge.md#example-missing)',
+    '~~~',
+    '',
+    '[Explicit ID](docs/anchor-edge.md#Release)',
+    '[First explicit anchor](docs/anchor-edge.md#first)',
+    '[Second explicit anchor](docs/anchor-edge.md#second)',
+    '[Commented-out anchor](docs/anchor-edge.md#hidden)',
+    '[Wrong explicit ID case](docs/anchor-edge.md#release)',
+    '[Data attribute](docs/anchor-edge.md#hidden-data)',
+    '[Greater-than in quoted attribute](docs/anchor-edge.md#valid)',
+    '[Entity-decoded ID](docs/anchor-edge.md#a%26b)',
+    '[Attribute-like quoted text](docs/anchor-edge.md#quoted-hidden)',
+    '[Wrong heading case](docs/anchor-edge.md#Usage)',
+    '[Titled](docs/anchor-edge.md#bad-title "Details")',
+    '[Missing leading hyphen](docs/anchor-edge.md#launch)',
+    '[Tag name in fragment](docs/anchor-edge.md#setupbr)',
+    '[Reference][missing-ref]',
+    '[missing-ref][]',
+    '[missing-ref]',
+    '[Code heading](docs/anchor-edge.md#example-heading)',
+    '[Code id](docs/anchor-edge.md#example-id)',
+    '[Encoded target path](docs/my%20guide.md#missing-encoded-path)',
+    '',
+    '[missing-ref]: docs/anchor-edge.md#bad-ref "Details"',
+    '',
+  ].join('\n'));
+  const checked = run(root, '--only=anchors');
+  expect(checked.status).toBe(1);
+  expect(checked.output.split(/\r?\n/).filter((line) => line.includes('links docs/anchor-edge.md'))).toEqual([
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#hidden,/u),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#release,/u),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#hidden-data,/u),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#quoted-hidden,/u),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#Usage,/u),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#bad-title,/u),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#launch,/u),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#setupbr,/u),
+    ...Array.from({ length: 3 }, () => expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#bad-ref,/u)),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#example-heading,/u),
+    expect.stringMatching(/README\.md:\d+ links docs\/anchor-edge\.md#example-id,/u),
+  ]);
+  expect(checked.output).toMatch(/README\.md:\d+ links docs\/my%20guide\.md#missing-encoded-path,/u);
+});
 it('check rejects a lint rule with no row in the plugin README, and a row with no rule', () => {
   const root = checkout();
   const readme = path.join(root, LINT_README);
@@ -284,6 +399,20 @@ it('check refuses a quoted glossary Avoid spelling in prose and ignores it in co
   const checked = run(root, '--only=glossary-terms');
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('docs/guide/workflow.md uses "folder resource" 1 times.');
+  expect(checked.output).not.toContain('docs/guide/sharing.md');
+});
+it('check finds a quoted Chinese glossary Avoid spelling without ASCII word boundaries', () => {
+  const root = checkout();
+  fs.appendFileSync(path.join(root, 'docs/dev/glossary.md'), '\n_Avoid_: "资产", "AI 助手", "助手 AI"\n');
+  fs.appendFileSync(path.join(root, 'docs/guide/workflow.md'), '\n这是资产。资产管理也使用了该词。AI 助手和助手 AI均为禁用写法。\n');
+  fs.appendFileSync(path.join(root, 'docs/guide/sharing.md'), '\n`资产`, `AI 助手`, `助手 AI`, <img alt="资产">, [x](资产.md)\n');
+
+  const checked = run(root, '--only=glossary-terms');
+
+  expect(checked.status).toBe(1);
+  expect(checked.output).toContain('docs/guide/workflow.md uses "资产" 2 times.');
+  expect(checked.output).toContain('docs/guide/workflow.md uses "AI 助手" 1 times.');
+  expect(checked.output).toContain('docs/guide/workflow.md uses "助手 AI" 1 times.');
   expect(checked.output).not.toContain('docs/guide/sharing.md');
 });
 it('check refuses a DriverCan key the workflow engine page does not name', () => {

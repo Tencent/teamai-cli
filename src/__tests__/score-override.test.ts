@@ -27,7 +27,12 @@ function teamWith(files: Record<string, string>, scorers: Record<string, string>
   const knowledge = path.join(root, 'knowledge');
   fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
   fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
-  for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), body);
+  // A name with a slash is a file in a workflow folder.
+  for (const [name, body] of Object.entries(files)) {
+    const file = path.join(knowledge, 'workflows', name.includes('/') ? name : `${name}.yaml`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body);
+  }
   for (const [name, body] of Object.entries(scorers)) fs.writeFileSync(path.join(knowledge, 'scorers', `${name}.md`), body);
   return { repo: { localPath: knowledge, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
 }
@@ -156,9 +161,11 @@ steps:
 `;
 
     expect((await pulled({ 'score-this': wrapper })).warned).toContain('[workflows] workflows/score-this.yaml: step "score" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.');
+    const finished = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'workflows', 'teamai-finished-sessions', 'WORKFLOW.yaml'), 'utf8');
+    expect((await pulled({ 'teamai-finished-sessions/WORKFLOW.yaml': finished, 'teamai-finished-sessions/params.yaml': 'idle: 2h\n' })).warned).toContain('[workflows] workflows/teamai-finished-sessions/WORKFLOW.yaml: step "rescore" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.');
   });
 
-  it('does not warn on a step that runs teamai-score with a timeout, or on one that runs another workflow', async () => {
+  it('does not warn on a step that runs teamai-score with a timeout, on one that runs another workflow, or on a step of teamai\'s that a team folder holding only params.yaml inherits', async () => {
     const wrapper = (step: string) => `schemaVersion: v1alpha1
 name: score-this
 description: Score a session.
@@ -169,6 +176,7 @@ ${step}`;
     const other = '  - id: share\n    workflow: teamai-share-session\n    with: { session: "{{ inputs.subject }}", source: claude-code, publish: false, scorers: [], demand: named }\n';
 
     for (const step of [timed, other]) expect((await pulled({ 'score-this': wrapper(step) })).warned.filter((line) => line.includes('no timeout'))).toEqual([]);
+    expect((await pulled({ 'teamai-finished-sessions/params.yaml': 'idle: 2h\n' })).warned.filter((line) => line.includes('no timeout'))).toEqual([]);
   });
 });
 

@@ -429,6 +429,20 @@ describe('running a workflow folder', () => {
     expect(await readRun(config, String(started.data.run))).toMatchObject({ steps: [{ id: 'plan', outputs: { text: 'as started' } }] });
   });
 
+  it('runs a changed folder with its own files, though a file of the earlier version spelled the next file\'s path, mode and text', async () => {
+    const { config, workspace } = await runScope({
+      'workflows/release/WORKFLOW.yaml': `schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n  - id: plan\n    command: ${printsFolder('plan.txt')}\n    output: json\n`,
+      'workflows/release/notes.txt': 'draft\x00plan.txt\x00100644\x00ship it',
+    });
+    expect(await runToEnd(config, workspace, 'release')).toMatchObject({ plan: { text: null } });
+    const folder = path.join(config.repo.localPath, 'workflows', 'release');
+    fs.writeFileSync(path.join(folder, 'notes.txt'), 'draft');
+    fs.writeFileSync(path.join(folder, 'plan.txt'), 'ship it');
+    await syncScorersThenWorkflows(config);
+
+    expect(await runToEnd(config, workspace, 'release')).toMatchObject({ plan: { text: 'ship it' } });
+  });
+
   it('removes on doctor --fix a stored folder that no run record and no cached workflow references, once an hour old', async () => {
     const { config, workspace } = await runScope({
       'workflows/release/WORKFLOW.yaml': `schemaVersion: v1alpha1\nname: release\ndescription: Release.\nsteps:\n  - id: plan\n    command: ${printsFolder('plan.txt')}\n    output: json\n`,

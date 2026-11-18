@@ -47,7 +47,7 @@ describe('benchmark suites at pull', () => {
       'benchmarks/tasks/tasks/fix.yaml': task,
       'benchmarks/tasks/tasks/unjudged.yaml': task.replace(/check:\n[\s\S]*$/, ''),
       'benchmarks/tasks/tasks/unprotected.yaml': task.replace('protect: [test.js]', 'protect: []'),
-      'benchmarks/tasks/tasks/short-commit.yaml': task.replace(fixture.startingCommit, fixture.startingCommit.slice(0, 7)),
+      'benchmarks/tasks/tasks/short-commit.yaml': fixTask('1234567'),
     });
 
     const pulled = await fixture.teamai(['pull']);

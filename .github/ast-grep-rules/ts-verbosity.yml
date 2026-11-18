@@ -81,3 +81,6 @@ severity: hint
 message: "self-assignment has no effect"
 rule:
   pattern: "$X = $X;"
+  # tree-sitter reads `let d: import('m').T[] = [];` as a declaration cut short before an empty `[] = [];`.
+  not:
+    regex: '^\[\s*\]\s*='

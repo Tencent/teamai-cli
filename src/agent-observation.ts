@@ -14,6 +14,7 @@
 import crypto from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
+import { RecallObservation } from './recall-provenance.js';
 import { getAgentVersion } from './agent-version.js';
 import { getCurrentVersion } from './package-info.js';
 import { recordedUnchanged } from './resources/delivered-copies.js';
@@ -68,6 +69,7 @@ export const AgentObservationSchema = z.object({
   teamai: z.string(),
   driver: z.string(),
   fingerprint: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  recall: RecallObservation.optional(),
 });
 
 export type AgentObservation = z.infer<typeof AgentObservationSchema>;
@@ -84,6 +86,7 @@ export type Used = z.infer<typeof UsedSchema>;
  * the pass settles, not rejected.
  */
 export const ReportedAgentSchema = z.object({
+  recall: RecallObservation.optional(),
   definition: z.object({ applied: Applied.optional() }).optional(),
   tool: z.object({ name: z.string().optional(), version: z.string().optional() }).optional(),
   model: z.object({ requested: z.string().optional(), reported: z.string().optional(), alias: z.string().optional() }).optional(),
@@ -283,6 +286,8 @@ export function settleObservation(
 
   if (project) observed.project = project;
   const observation: AgentObservation = { ...head, tool: toolEntry, ...observed, teamai: getCurrentVersion(), driver: report.driver.kind };
+
+  if (reported.recall) observation.recall = reported.recall;
 
   const fingerprint = fingerprintOf(observation);
 
