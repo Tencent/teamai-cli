@@ -3586,6 +3586,7 @@ async function sweepCreatedLeftovers(plan: RemovalPlan, hooksLeft: ReadonlyArray
     bin,
     path.join(root, 'dashboard'),
     path.join(root, 'locks'),
+    bridgedTeamHookDir(),
   ];
 
   if (plan.projectRoot) dirs.push(path.join(plan.projectRoot, '.claude', 'skills'));
