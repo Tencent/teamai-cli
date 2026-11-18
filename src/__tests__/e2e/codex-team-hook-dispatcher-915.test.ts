@@ -401,7 +401,7 @@ describe('self mode', () => {
 
     // Uninstall takes the dispatcher entries with it.
     run(process.execPath, [CLI, 'uninstall', '--force'], realDir);
-    expect(dispatcherEvents(readJson(path.join(home, '.codex', 'hooks.json')))).toEqual([]);
+    expect(fs.existsSync(path.join(home, '.codex', 'hooks.json'))).toBe(false);
   });
 });
 

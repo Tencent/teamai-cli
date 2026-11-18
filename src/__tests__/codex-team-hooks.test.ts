@@ -129,4 +129,19 @@ describe('reconcileCodexDispatchers — the Windows override keeps the block con
     await reconcileCodexDispatchers(hooksFile, { kind: 'disabled' });
     expect(fs.readFileSync(hooksFile, 'utf-8')).toBe(first);
   });
+
+  it.each([false, true])('cleans up the last dispatcher (member hook: %s)', async (keepMember) => {
+    seed({ hooks: hook('echo team') });
+    const hooksFile = path.join(root, 'hooks.json');
+    const member = { hooks: [{ type: 'command', command: 'echo mine' }] };
+    if (keepMember) fs.writeFileSync(hooksFile, JSON.stringify({ hooks: { Stop: [member] } }));
+    await reconcileCodexDispatchers(hooksFile, { kind: 'disabled' });
+    expect(fs.existsSync(hooksFile)).toBe(true);
+
+    expect(await setCodexDispatcherHooks(project, null)).toBe(true);
+    await reconcileCodexDispatchers(hooksFile, { kind: 'disabled' });
+
+    expect(fs.existsSync(hooksFile)).toBe(keepMember);
+    if (keepMember) expect(JSON.parse(fs.readFileSync(hooksFile, 'utf8'))).toEqual({ hooks: { Stop: [member] } });
+  });
 });
