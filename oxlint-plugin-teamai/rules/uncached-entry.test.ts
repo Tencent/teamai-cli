@@ -24,7 +24,15 @@ describe('teamai/uncached-entry', () => {
   rule.invalid('rejects a workspace package subpath its exports map does not name', `import { home } from '@teamai/shared/home-extra';`, undefined, inWorkspace('src/hook-fast-path.ts'));
   rule.valid('allows node modules and the other uncached files', `import fs from 'node:fs'; import { writeToFile } from '@teamai/shared/debug-log'; import { getUserHome } from '@teamai/shared/home'; import { readStdin } from './utils/hook-stdin.js';`, inWorkspace('src/hook-fast-path.ts'));
   rule.valid('allows an uncached package file to import another by its relative path', `import { getUserHome } from './home.js';`, inWorkspace('packages/shared/src/debug-log.ts'));
-  rule.valid('allows a type-only import, which the build erases', `import type { HookEvent } from './hook-dispatch.js';`);
+  for (const source of [
+    `import type { HookEvent } from './hook-dispatch.js';`,
+    `import { type HookEvent, type HookContext } from './hook-dispatch.js';`,
+    `export { type HookEvent } from './hook-dispatch.js';`,
+  ]) {
+    rule.valid(`allows type-only syntax the build erases: ${source}`, source, inWorkspace('src/hook-fast-path.ts'));
+  }
+  rule.invalid('rejects an import with both type and runtime bindings', `import { type HookEvent, dispatch } from './hook-dispatch.js';`, undefined, inWorkspace('src/hook-fast-path.ts'));
+  rule.invalid('rejects a side-effect-only import', `import './hook-dispatch.js';`, undefined, inWorkspace('src/hook-fast-path.ts'));
   rule.valid('allows the entry to load the CLI by URL', `await import(new URL('./cli.js', import.meta.url).href);`, { filename: 'src/bin.ts' });
   rule.valid('leaves the bundle\'s own modules alone', `import { z } from 'zod';`, { filename: 'src/hook-dispatch-cli.ts' });
   rule.valid('leaves a package file named like an uncached src/ file alone', `import { z } from 'zod';`, inWorkspace('packages/tool-core/src/bin.ts'));
