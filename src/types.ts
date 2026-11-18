@@ -1878,9 +1878,9 @@ export interface GlobalOptions {
   verbose?: boolean;
   silent?: boolean;
   /**
-   * A human ran the command (the CLI sets it from !--silent): background work
-   * may attach to the user's terminal and run on unawaited. Absent = headless
-   * (hook) caller: everything must be waited out and captured instead.
+   * A human ran the command (the CLI sets it from !--silent): attached work may
+   * stream to the user's terminal. Absent = headless (hook) caller: everything
+   * must be captured instead.
    */
   interactive?: boolean;
   /**
