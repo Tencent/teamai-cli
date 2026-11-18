@@ -98,11 +98,14 @@ export function importVisitors(
     /** @param {ESTree.ImportDeclaration} node */
     ImportDeclaration(node) {
       const names = node.specifiers.map(importedName);
-      visit({ node, specifier: String(node.source.value), typeOnly: node.importKind === 'type', names });
+      const typeOnly = node.importKind === 'type' || (node.specifiers.length > 0 && node.specifiers.every((specifier) => specifier.type === 'ImportSpecifier' && specifier.importKind === 'type'));
+      visit({ node, specifier: String(node.source.value), typeOnly, names });
     },
     /** @param {ESTree.ExportNamedDeclaration} node */
     ExportNamedDeclaration(node) {
-      if (node.source) visit({ node, specifier: String(node.source.value), typeOnly: node.exportKind === 'type', names: node.specifiers.map(exportedName) });
+      const typeOnly = node.exportKind === 'type' || (node.specifiers.length > 0 && node.specifiers.every((specifier) => specifier.exportKind === 'type'));
+
+      if (node.source) visit({ node, specifier: String(node.source.value), typeOnly, names: node.specifiers.map(exportedName) });
     },
     /** @param {ESTree.ExportAllDeclaration} node */
     ExportAllDeclaration(node) {
@@ -161,7 +164,11 @@ function dynamicModule(node) {
 
 /** @param {import('@babel/types').Statement} statement @param {boolean} includeTypes */
 function staticModule(statement, includeTypes) {
-  if (statement.type === 'ImportDeclaration') return includeTypes || statement.importKind !== 'type' ? statement.source.value : undefined;
+  if (statement.type === 'ImportDeclaration') {
+    const typeOnly = statement.importKind === 'type' || (statement.specifiers.length > 0 && statement.specifiers.every((specifier) => specifier.type === 'ImportSpecifier' && specifier.importKind === 'type'));
+
+    return includeTypes || !typeOnly ? statement.source.value : undefined;
+  }
 
   if (statement.type === 'TSImportEqualsDeclaration') {
     const reference = statement.moduleReference;
@@ -170,8 +177,9 @@ function staticModule(statement, includeTypes) {
   }
 
   if (statement.type !== 'ExportNamedDeclaration' && statement.type !== 'ExportAllDeclaration') return undefined;
+  const typeOnly = statement.exportKind === 'type' || (statement.type === 'ExportNamedDeclaration' && statement.specifiers.length > 0 && statement.specifiers.every((specifier) => specifier.type === 'ExportSpecifier' && specifier.exportKind === 'type'));
 
-  return includeTypes || statement.exportKind !== 'type' ? statement.source?.value : undefined;
+  return includeTypes || !typeOnly ? statement.source?.value : undefined;
 }
 
 /**

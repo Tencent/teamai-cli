@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
@@ -44,9 +45,11 @@ export { ClaudeCodeAdapter } from './session-adapter.js';`, (output) => {
   expect(output).toContain('also exports ClaudeCodeAdapter');
 }, { filename: 'packages/tool-claude/src/index.ts', files: { 'packages/tool-claude/src/session-adapter.ts': 'export class ClaudeCodeAdapter {}' } });
 
-rule.valid('allows an index.ts that exports only family', `import { tools } from './definitions.js';
+for (const typeExport of [`export type { Family } from './definitions.js';`, `export { type Family } from './definitions.js';`]) {
+  rule.valid(`allows an index.ts that exports only family at runtime: ${typeExport}`, `import { tools } from './definitions.js';
 export const family = { tools } as const;
-export type { Family } from './definitions.js';`, { filename: 'packages/tool-claude/src/index.ts', files: { 'packages/tool-claude/src/definitions.ts': 'export const tools = {}; export type Family = 1;' } });
+${typeExport}`, { filename: 'packages/tool-claude/src/index.ts', files: { 'packages/tool-claude/src/definitions.ts': 'export const tools = {}; export type Family = 1;' } });
+}
 
 rule.invalid('covers a family package added later, in a folder of its own, with no rule edit', `import { execFile } from 'node:child_process';
 export const run = () => execFile('zzz');`, (output) => {
@@ -137,4 +140,22 @@ it('lists exactly the workspace modules that start a process, so a new wrapper i
   expect(starters).toContain('@teamai/shared/exec');
   expect(starters.filter((name) => !PROCESS_STARTERS.has(name))).toEqual([]);
   expect([...PROCESS_STARTERS].filter((name) => !NODE_STARTERS.has(name) && !starters.includes(name))).toEqual([]);
+});
+
+it('omits erased inline type edges when collecting runtime imports', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-runtime-imports-'));
+  try {
+    const file = path.join(dir, 'source.ts');
+    fs.writeFileSync(file, `import { type Input } from './input.js';
+export { type Output } from './output.js';
+import { type Context, spawn } from './mixed-import.js';
+export { type Event, run } from './mixed-export.js';
+import './side-effect.js';
+`);
+
+    expect(sourceModules(file, false)).toEqual(['./mixed-import.js', './mixed-export.js', './side-effect.js']);
+    expect(sourceModules(file, true)).toEqual(['./input.js', './output.js', './mixed-import.js', './mixed-export.js', './side-effect.js']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
