@@ -62,7 +62,7 @@ const packageRoots = new Map();
  */
 function packageRoot(dir) {
   if (packageRoots.has(dir)) return packageRoots.get(dir);
-  const parent = path.posix.dirname(dir);
+  const parent = path.dirname(dir).split('\\').join('/');
   const root = fs.existsSync(`${dir}/package.json`) ? dir : parent === dir ? undefined : packageRoot(parent);
   packageRoots.set(dir, root);
 
@@ -94,7 +94,7 @@ const roots = new Map();
  */
 export function workspaceRoot(dir) {
   if (roots.has(dir)) return roots.get(dir);
-  const parent = path.posix.dirname(dir);
+  const parent = path.dirname(dir).split('\\').join('/');
   const root = manifest(dir)?.workspaces !== undefined ? dir : parent === dir ? undefined : workspaceRoot(parent);
   roots.set(dir, root);
 
