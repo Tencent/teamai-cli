@@ -5,7 +5,16 @@
  */
 import { z } from 'zod';
 
-export const CommitSchema = z.string().regex(/^[0-9a-f]{40}$/, 'must be a full 40-character commit');
+/**
+ * A commit as the member wrote it. YAML reads a plain scalar of only digits, or of digits around one `e`
+ * (`1234567`, `12e4567`), as a number; its decimal text is still what was written, so a short commit is
+ * reported as short instead of as the wrong type. A number never satisfies the 40-character form (String of a
+ * number is at most 21 digits before exponent notation), so this only changes the message.
+ */
+export const CommitSchema = z.preprocess(
+  (value) => (Number.isFinite(value) ? String(value) : value),
+  z.string().regex(/^[0-9a-f]{40}$/, 'must be a full 40-character commit'),
+);
 
 /** The resource selection a team install delivers, as `LocalConfig` names it, frozen when the place was written. */
 export const TeamSelectionSchema = z.object({
