@@ -3447,19 +3447,24 @@ console.error('Could not remove podman image teamai-warm:fedcba9876543210: podma
     it('removes an unedited copy an older pull left in .workbuddy/rules, and names an edited one with why', async () => {
       const copy = await sharedFixture('workbuddy');
       const legacy = (file: string) => path.join(path.dirname(path.dirname(path.dirname(copy))), '.workbuddy', 'rules', file);
+      const edited = legacy('Codex.md');
       await fse.outputFile(legacy('team-rule.md'), '# Team Rule');
-      await fse.outputFile(path.join(tmpDir, 'team-repo', 'rules', 'other.md'), 'Other rule.\n');
-      await fse.outputFile(legacy('other.md'), 'Other rule.\nMy own note.\n');
+      await fse.outputFile(path.join(tmpDir, 'team-repo', 'rules', 'Codex.md'), 'Other rule.\n');
+      await fse.outputFile(edited, 'Other rule.\nMy own note.\n');
 
       await uninstall({ force: true, agent: 'workbuddy' });
 
       expect(await fse.pathExists(legacy('team-rule.md'))).toBe(false);
-      expect(await fse.readFile(legacy('other.md'), 'utf8')).toBe('Other rule.\nMy own note.\n');
+      expect(await fse.readFile(edited, 'utf8')).toBe('Other rule.\nMy own note.\n');
+
+      const prefix = `Kept ${edited}: `;
       const kept = vi.mocked(log.warn).mock.calls.map(([message]) => String(message))
-        .filter((message) => message.includes(legacy('other.md')));
+        .filter((message) => message.startsWith(prefix));
       expect(kept).toHaveLength(1);
-      expect(kept[0]).toContain('WorkBuddy reads a project\'s rules from .codebuddy/rules');
-      expect(kept[0]).not.toContain('Codex');
+
+      const advice = kept[0].slice(prefix.length);
+      expect(advice).toContain('WorkBuddy reads a project\'s rules from .codebuddy/rules');
+      expect(advice).not.toContain('Codex');
     });
 
     it('a full uninstall removes the copy, counted once', async () => {
