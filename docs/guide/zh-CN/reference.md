@@ -33,6 +33,7 @@ packages:
 sharing:
   rules:
     enforced: [code-review-guide]
+  # namespaceMerge: intersect   # 角色 = 上限，项目 = 目录范围；默认 union
   recall:
     enabled: false
   docs:
