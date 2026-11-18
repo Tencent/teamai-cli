@@ -59,7 +59,9 @@ export function findAvoidSpellings(root: string) {
   const files = proseFiles(root).map((file) => ({ file, text: prose(fs.readFileSync(path.join(root, file), 'utf8')) }));
 
   return avoidSpellings(root).flatMap((spelling) => {
-    const pattern = new RegExp(`\\b${escape(spelling).replace(/ /g, '[\\s-]+')}s?\\b`, 'gi');
+    const startsWithAsciiWord = /^[a-z0-9]/i.test(spelling);
+    const endsWithAsciiWord = /[a-z0-9]$/i.test(spelling);
+    const pattern = new RegExp(`${startsWithAsciiWord ? '\\b' : ''}${escape(spelling).replace(/ /g, '[\\s-]+')}${endsWithAsciiWord ? 's?\\b' : ''}`, endsWithAsciiWord || startsWithAsciiWord ? 'gi' : 'g');
 
     return files
       .map(({ file, text }) => ({ spelling, file, count: text.match(pattern)?.length ?? 0 }))
