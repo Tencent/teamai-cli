@@ -76,6 +76,20 @@ describe('roles commands with assigned roles', () => {
     process.exitCode = 0;
   });
 
+  it('names the invalid roles manifest instead of suggesting `roles init`', async () => {
+    writeFileSync(path.join(repoDir, 'manifest', 'roles.yaml'), 'version: 1\nroles:\n  - id: ""\n');
+    given(configWith({}));
+    const info = vi.spyOn(log, 'info').mockImplementation(() => {});
+    const error = vi.spyOn(log, 'error').mockImplementation(() => {});
+
+    await rolesSet('dev', {});
+
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('Invalid roles manifest'));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('Fix manifest/roles.yaml'));
+    expect(info).not.toHaveBeenCalledWith(expect.stringContaining('roles init'));
+    process.exitCode = 0;
+  });
+
   it('still sets a role when the team assigns none', async () => {
     given(configWith({}));
 
