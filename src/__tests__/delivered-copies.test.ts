@@ -5,7 +5,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 import { execFileSync } from 'node:child_process';
-import { classifyCopy, contentHash, openLedger, removeDelivered, describeKeptDir, isRecordedFromTeamSkill, judgeRemoval, keepsTrackedCopy, ownsSkillDir, type DeliveredFile } from '../resources/delivered-copies.js';
+import { classifyCopy, contentHash, openLedger, removeDelivered, describeKeptDir, isRecordedFromTeamSkill, judgeRemoval, keepsTrackedCopy, ownsSkillDir, reportKept, type DeliveredFile } from '../resources/delivered-copies.js';
+import { trySymlink } from './helpers/symlink.js';
 import { skillOrigin } from '../resources/skills.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 
@@ -155,7 +156,7 @@ describe('judgeRemoval', () => {
   it('keeps a link at the path, recorded or not, and never follows it', async () => {
     const target = path.join(root, 'elsewhere.md');
     fs.writeFileSync(target, 'team v1');
-    fs.symlinkSync(target, copy);
+    if (!trySymlink(target, copy)) return;
     expect(await judgeRemoval({}, copy, origin())).toBe('notTeamais');
     expect(await judgeRemoval({ [copy]: sha('team v1') }, copy, origin())).toBe('edited');
   });
@@ -165,7 +166,7 @@ describe('judgeRemoval', () => {
     fs.mkdirSync(skill);
     const target = path.join(root, 'elsewhere.md');
     fs.writeFileSync(target, 'team v1');
-    fs.symlinkSync(target, path.join(skill, 'SKILL.md'));
+    if (!trySymlink(target, path.join(skill, 'SKILL.md'))) return;
     expect(await judgeRemoval({ [path.join(skill, 'SKILL.md')]: sha('team v1') }, skill, origin())).toBe('edited');
   });
 
@@ -225,10 +226,11 @@ describe('describeKeptDir', () => {
     const target = path.join(root, 'target');
     fs.mkdirSync(target);
     const link = path.join(root, 'linked');
-    fs.symlinkSync(target, link);
     const holding = path.join(root, 'holding');
-    fs.mkdirSync(holding);
-    fs.symlinkSync(path.join(target, 'x'), path.join(holding, 'x'));
+    // Creating symlinks needs privileges on Windows; without one there is
+    // nothing to describe here.
+    if (!trySymlink(target, link) || !trySymlink(path.join(target, 'x'), path.join(holding, 'x'))) return;
+    fs.mkdirSync(holding, { recursive: true });
     const plain = path.join(root, 'plain');
     fs.mkdirSync(plain);
     expect(await describeKeptDir(link, 'skills/a', 'uninstall')).toBe(`Kept ${link}: it is a link of yours, so uninstall left it.`);
@@ -295,5 +297,66 @@ describe('removeDelivered', () => {
     const ledger = openLedger({ [dest]: 'old-hash' });
     await removeDelivered(ledger, dest);
     expect(ledger.hashes).toEqual({});
+  });
+});
+
+describe('reportKept words folder copies by where the edit goes', () => {
+  const ledgerWith = (kept: { dest: string; teamRelPath: string; teamChanged: boolean; editAt?: string }[]): Parameters<typeof reportKept>[0] =>
+    ({ previous: undefined, hashes: {}, kept, members: [] }) as unknown as Parameters<typeof reportKept>[0];
+
+  it('names the team folder for a rule folder copy, and does not say push takes it', () => {
+    const lines: string[] = [];
+    const capture = (message: unknown) => lines.push(String(message));
+    const originalLog = console.log;
+    const originalError = console.error;
+    console.log = capture;
+    console.error = capture;
+    try {
+      reportKept(ledgerWith([{ dest: 'api-style.md', teamRelPath: 'rules/api-style/RULE.md', teamChanged: false, editAt: 'rules/api-style/' }]), 'workspace');
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+
+    const printed = lines.join('\n');
+    expect(printed).toContain('make the change in rules/api-style/ in the team repo');
+    expect(printed).not.toContain('Share it with `teamai push`');
+  });
+
+  it('keeps the push wording for a copy push takes (a plain rule file)', () => {
+    const lines: string[] = [];
+    const capture = (message: unknown) => lines.push(String(message));
+    const originalLog = console.log;
+    const originalError = console.error;
+    console.log = capture;
+    console.error = capture;
+    try {
+      reportKept(ledgerWith([{ dest: 'team-rule.md', teamRelPath: 'rules/team-rule.md', teamChanged: false }]), 'workspace');
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+
+    const printed = lines.join('\n');
+    expect(printed).toContain('Share it with `teamai push`');
+    expect(printed).not.toContain('in the team repo');
+  });
+
+  it('warns with the team folder for a folder copy the team changed since', () => {
+    const lines: string[] = [];
+    const capture = (message: unknown) => lines.push(String(message));
+    const originalLog = console.log;
+    const originalError = console.error;
+    console.log = capture;
+    console.error = capture;
+    try {
+      reportKept(ledgerWith([{ dest: 'api-style.md', teamRelPath: 'rules/api-style/RULE.md', teamChanged: true, editAt: 'rules/api-style/' }]), 'workspace');
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+
+    const printed = lines.join('\n');
+    expect(printed).toContain('Push does not take it from this copy: make the change in rules/api-style/ in the team repo');
   });
 });
