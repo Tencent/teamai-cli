@@ -2058,6 +2058,33 @@ console.error('Could not remove podman image teamai-warm:fedcba9876543210: podma
     expect([await fse.pathExists(path.join(projectRoot, '.codex', 'agents')), await fse.pathExists(path.join(projectRoot, '.claude', 'agents', 'mine.md'))]).toEqual([false, true]);
   });
 
+  it('removes an empty seeded skills folder in self mode and retains member skills', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    const projectRoot = path.join(tmpDir, 'business-repo');
+    const emptySkills = path.join(projectRoot, '.codex', 'skills');
+    const memberSkill = path.join(projectRoot, '.claude', 'skills', 'mine', 'SKILL.md');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.ensureDir(emptySkills);
+    await fse.outputFile(memberSkill, '# Mine\n');
+    const dataHome = path.join(homeDir, '.teamai', 'projects', 'business-repo-0123456789abcdef');
+    await fse.ensureDir(dataHome);
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot,
+      dataHome,
+      enabledAgents: ['codex', 'claude'],
+      repo: { localPath: repoPath, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+    });
+    const teamConfig = makeTeamConfig({ toolPaths: { codex: { skills: '.codex/skills' }, claude: { skills: '.claude/skills' } } });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(emptySkills)).toBe(false);
+    expect(await fse.readFile(memberSkill, 'utf8')).toBe('# Mine\n');
+  });
+
   // Self mode's init makes each tool's rules folder before a rule is in it (known-agents.ts), so a team with no rule leaves it empty.
   it('removes the empty rules folder self mode seeds, and keeps one holding the member\'s rule', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
