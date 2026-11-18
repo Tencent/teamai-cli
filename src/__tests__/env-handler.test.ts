@@ -4,7 +4,7 @@ import os from 'node:os';
 import fse from 'fs-extra';
 import YAML from 'yaml';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { EnvHandler, describeMissingVariablesKey, parseEnvFile, parseEnvFileKept, readEnvBackup } from '../resources/env.js';
+import { EnvHandler, describeMissingVariablesKey, envEntryReader, parseEnvFile, parseEnvFileKept, readEnvBackup } from '../resources/env.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { TEAMAI_ENV_START, TEAMAI_ENV_END } from '../types.js';
 import { memberEnvironment } from '../member-env.js';
@@ -201,6 +201,21 @@ scope: 'user',
 
       const result = await handler.parseEnvYaml(envYamlPath);
       expect(result.variables).toEqual([]);
+    });
+  });
+
+  describe('reading a broken env.yaml for delivery', () => {
+    it('names the entry and the field on one line instead of printing the schema error as JSON', async () => {
+      const envYamlPath = path.join(repoPath, 'env', 'env.yaml');
+      await fse.writeFile(envYamlPath, 'variables:\n  - key: PORT\n    value: 8080\n');
+
+      const read = await envEntryReader.read(envYamlPath, 'env/env.yaml');
+
+      expect(read).toMatchObject({ ok: false });
+      if (!read || read.ok) return;
+      expect(read.reason).toContain('variables.0.value');
+      expect(read.reason).toContain('expected string, received number');
+      expect(read.reason).not.toContain('\n');
     });
   });
 
