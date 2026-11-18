@@ -140,6 +140,13 @@ describe('self-mode push from a checkout behind the default branch', () => {
     teammateLandsOnMain({ '.teamai/docs/README.md': TEAMMATE_README, '.teamai/env/env.yaml': TEAMMATE_ENV });
     fs.writeFileSync(active('.teamai/docs/handbook.md'), '# Handbook\n');
 
+    const fetchHead = active('.git/FETCH_HEAD');
+    const previousFetch = fs.readFileSync(fetchHead, 'utf8');
+    const preview = await runCLI(['push', '--all', '--dry-run'], projectRoot, home);
+    expect(preview.code, preview.output).toBe(0);
+    expect(git(['rev-parse', 'origin/main'], projectRoot)).toBe(git(['rev-parse', 'main'], remote));
+    expect(fs.readFileSync(fetchHead, 'utf8')).toBe(previousFetch);
+
     const push = await runCLI(['push', '--all'], projectRoot, home);
 
     // A generic git host takes the branch but no pull request, which exits 1.

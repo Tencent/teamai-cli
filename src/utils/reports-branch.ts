@@ -332,7 +332,15 @@ export async function withKnowledgeWorktree<T>(
   const defaultBranch = await getDefaultBranch(repoRoot);
 
   try {
-    await git.fetch(['origin', defaultBranch]);
+    const fetchArgs = ['origin', defaultBranch];
+
+    if (selfMode) {
+      const { major, minor } = await git.version();
+
+      if (major > 2 || (major === 2 && minor >= 29)) fetchArgs.unshift('--no-write-fetch-head');
+    }
+
+    await git.fetch(fetchArgs);
   } catch (error) {
     if (options.requireFreshBase) throw error;
     // offline / no remote — fall back to local default branch state
