@@ -237,6 +237,20 @@ it('check rejects an invented command in served skills', () => {
   expect(checked.status).toBe(1);
   expect(checked.output).toContain('unknown command "extract"');
 });
+it('checks skill commands after global options, including options between subcommands', () => {
+  const root = checkout();
+  const skill = path.join(root, 'skill-data/core/SKILL.md');
+  fs.appendFileSync(skill, '\n`teamai --dry-run codebase --deep-enrich --project checkout`\n`teamai skill -v list --json`\n`teamai --dry-run <command>`\n');
+  const valid = run(root, '--only=skill-commands-exist');
+  expect(valid.status, valid.output).toBe(0);
+
+  fs.appendFileSync(skill, '\n`teamai -v extract graph`\n`teamai skill --verbose gett core`\n`teamai --dry-run codebase --no-such-flag`\n');
+  const invalid = run(root, '--only=skill-commands-exist');
+  expect(invalid.status, invalid.output).toBe(1);
+  expect(invalid.output).toContain('unknown command "extract"');
+  expect(invalid.output).toContain('unknown subcommand "gett"');
+  expect(invalid.output).toContain('unknown flag "--no-such-flag"');
+}, 2 * RUN_MS);
 it('check rejects removed wiki workflow instructions', () => {
   const root = checkout();
   fs.appendFileSync(path.join(root, 'skill-data/wiki/SKILL.md'), '\nRun GRAPH-CAPABILITIES.md first.\n');
