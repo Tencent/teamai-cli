@@ -59,7 +59,6 @@
   "src/utils/cache-index.ts": 1,
   "src/utils/data-branches.ts": 3,
   "src/utils/fs.ts": 3,
-  "src/utils/git.ts": 1,
   "src/utils/import-lock.ts": 1,
   "src/utils/jsonl-store.ts": 1,
   "src/utils/learnings-publish.ts": 1,
