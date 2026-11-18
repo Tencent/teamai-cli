@@ -495,7 +495,10 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       continue;
     }
 
-    for (const warning of DefaultWorkflows.callerWarnings(relativePath, resolved.definition)) log.warn(`[workflows] ${warning}`);
+    // A folder that inherits teamai's WORKFLOW.yaml runs teamai's steps, which the team has no file of its own to change.
+    const inheritsSteps = merged?.files.some((file) => file.path === WORKFLOW_MARKER && file.layer === 'teamai') === true;
+
+    if (!inheritsSteps) for (const warning of DefaultWorkflows.callerWarnings(relativePath, resolved.definition)) log.warn(`[workflows] ${warning}`);
 
     for (const step of confinedFolderReaders(resolved.definition)) {
       log.warn(`[workflows] ${relativePath}: step ${step} is confined and may not be able to read $TEAMAI_WORKFLOW_DIR`);
