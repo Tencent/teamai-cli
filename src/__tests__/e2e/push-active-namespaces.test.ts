@@ -1193,6 +1193,45 @@ describe('push places a new resource by the active projects (#1021)', () => {
   });
 });
 
+describe('push under sharing.namespaceMerge: intersect (#1894)', () => {
+  /** The team's role and project declarations and this directory's selection, for one case. */
+  function intersectTeam(input: { roleSkills: string[]; project: string }): void {
+    commitOnTeam('manifest/roles.yaml', YAML.stringify({
+      version: 1,
+      roles: [{ id: 'dev', description: '', resources: { knowledge: [], skills: input.roleSkills } }],
+    }));
+    commitOnTeam('teamai.yaml', YAML.stringify({
+      team: 'push-active-ns', repo: origin, provider: 'git', usageReport: false,
+      sharing: { namespaceMerge: 'intersect' },
+    }));
+    setConfig({ primaryRole: 'dev', projects: [input.project] });
+    const pulled = run(['pull', '--force']);
+    expect(pulled.code, pulled.output).toBe(0);
+  }
+
+  it('places a new skill in the one namespace both the role and the active project declare, without asking', () => {
+    intersectTeam({ roleSkills: ['svc-a', 'svc-b'], project: 'svc-a' });
+    writeFile(path.join(project, '.claude', 'skills', 'new-skill', 'SKILL.md'), skillMd('new-skill'));
+
+    const pushed = run(['push', '--all']);
+
+    expect(pushed.output).toContain('[skills] new-skill → skills/svc-a/new-skill');
+    expect(pushedFiles()).toContain('skills/svc-a/new-skill/SKILL.md');
+  }, 120000);
+
+  it('refuses a new skill when the role and the active project share no namespace, and names the ways out', () => {
+    intersectTeam({ roleSkills: ['svc-a'], project: 'svc-b' });
+    writeFile(path.join(project, '.claude', 'skills', 'new-skill', 'SKILL.md'), skillMd('new-skill'));
+
+    const pushed = run(['push', '--all']);
+
+    expect(pushed.code, pushed.output).not.toBe(0);
+    expect(pushed.output).toContain('No skills namespace is both in your role and declared by the active projects');
+    expect(pushed.output).toContain('--role <ns>');
+    expect(pushedFiles()).toEqual([]);
+  }, 120000);
+});
+
 describe('push --role places only where a role or project declares the namespace for that type (#1101)', () => {
   it('pushes nothing for a namespace no role or project declares', () => {
     writeFile(path.join(project, '.claude', 'rules', 'new-rule.md'), '# new rule\n');
