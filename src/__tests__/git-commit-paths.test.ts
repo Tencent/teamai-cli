@@ -42,6 +42,18 @@ describe('hasCommits', () => {
 });
 
 describe('commitPaths', () => {
+  it.each([false, true])('preserves COMMIT_EDITMSG (existed: %s)', async (existed) => {
+    const editmsg = path.resolve(dir, gitOutput(['rev-parse', '--git-path', 'COMMIT_EDITMSG']).trimEnd());
+    const original = Buffer.from('previous commit message\r\n');
+    if (existed) fs.writeFileSync(editmsg, original);
+    fs.writeFileSync(path.join(dir, 'skeleton.txt'), 'skeleton');
+
+    expect(await commitPaths(dir, 'init skeleton', ['skeleton.txt'])).toBe(true);
+    expect(gitOutput(['log', '-1', '--format=%s']).trim()).toBe('init skeleton');
+    expect(fs.existsSync(editmsg)).toBe(existed);
+    if (existed) expect(fs.readFileSync(editmsg)).toEqual(original);
+  });
+
   it('creates the first commit in an empty repo from the given paths', async () => {
     fs.mkdirSync(path.join(dir, '.teamai', 'skills'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.teamai', 'skills', '.gitkeep'), '');
