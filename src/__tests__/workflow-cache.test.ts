@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { LocalConfig } from '../types.js';
-import { loadCachedWorkflow } from '../workflow/cache.js';
+import { loadCachedWorkflow, workflowSourceHash } from '../workflow/cache.js';
 import type { SyncWorkflowResult } from '../workflow/cache.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 import { leaseNext, startRun } from '../workflow/engine.js';
@@ -2634,5 +2634,16 @@ steps:
       code: 'bad_role',
       message: 'workflows/review.yaml:8: field "steps[0].workflow": step "review" runs workflow "look", whose step "look" has role spec but continues a clone, which runs with the role of the step that opens it; set role on that step',
     }]);
+  });
+});
+
+describe('workflowSourceHash', () => {
+  it('gives a workflow and the same text with a prompt file different hashes', () => {
+    // A workflow whose text spells a prompt file's path and text is not the same source as that text with the file beside
+    // it: a hash has to mark where each part ends.
+    const spelled = workflowSourceHash('draft\0prompts/plan.md\0ship it', []);
+    const split = workflowSourceHash('draft', [{ path: 'prompts/plan.md', content: 'ship it' }]);
+
+    expect(spelled).not.toBe(split);
   });
 });

@@ -38,6 +38,20 @@ import {
 } from '../utils/team-revision.js';
 import { readRegularFile } from '@teamai/shared/regular-file';
 
+/**
+ * The sourceHash of a single-file workflow: its text, then each prompt file's path and text. Each part starts with its
+ * length, so no text can spell where the next part begins.
+ */
+export function workflowSourceHash(content: string, sources: readonly { readonly path: string; readonly content: string }[]): string {
+  const digest = createHash('sha256').update(`${JSON.stringify([Buffer.byteLength(content)])}\n`).update(content);
+
+  for (const source of sources) {
+    digest.update(`${JSON.stringify([source.path, Buffer.byteLength(source.content)])}\n`).update(source.content);
+  }
+
+  return digest.digest('hex');
+}
+
 export interface SyncWorkflowOptions {
   scopeLabel?: string;
   dryRun?: boolean;
@@ -504,11 +518,7 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       log.warn(`[workflows] ${relativePath}: step ${step} is confined and may not be able to read $TEAMAI_WORKFLOW_DIR`);
     }
 
-    const hash = createHash('sha256').update(content);
-
-    for (const prompt of resolved.sources) {
-      hash.update('\0').update(prompt.path).update('\0').update(prompt.content);
-    }
+    const sourceHash = folder ? WorkflowFolder.hash(folder.files) : workflowSourceHash(content, resolved.sources);
 
     // Only the team's own files are in its commit; the ones a default gave are pinned by the teamai version that gave them.
     const teamFiles = merged ? merged.files.filter((file) => file.layer === 'team') : folder?.files;
@@ -524,7 +534,7 @@ export async function syncWorkflowDefinitions(config: LocalConfig, options: Sync
       : undefined;
 
     const candidate: Candidate = {
-      stem, relativePath, content, definition: resolved.definition, sourceHash: folder ? WorkflowFolder.hash(folder.files) : hash.digest('hex'), promptFileLocations: parsed.promptFileLocations,
+      stem, relativePath, content, definition: resolved.definition, sourceHash, promptFileLocations: parsed.promptFileLocations,
     };
 
     if (teamRevision) candidate.teamRevision = teamRevision;
