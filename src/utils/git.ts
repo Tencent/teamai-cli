@@ -759,7 +759,19 @@ export async function commitPaths(
   if (staged.length === 0) return false;
   // A path-limited commit leaves the rest of the user's index intact, including
   // partially staged files. Use literal, NUL-delimited names from the index.
-  await git.raw(['--literal-pathspecs', 'commit', '--only', '-m', message, '--', ...staged]);
+  const editMessage = path.resolve(localPath, (await git.raw(['rev-parse', '--git-path', 'COMMIT_EDITMSG'])).trimEnd());
+  const original = await fs.promises.readFile(editMessage).catch((error: unknown) => {
+    if (errnoCode(error) === 'ENOENT') return undefined;
+    throw error;
+  });
+
+  // Keep normal commit hooks without leaving Git's generated message in the user's checkout.
+  try {
+    await git.raw(['--literal-pathspecs', 'commit', '--only', '-m', message, '--', ...staged]);
+  } finally {
+    if (original === undefined) await fs.promises.rm(editMessage, { force: true });
+    else await fs.promises.writeFile(editMessage, original);
+  }
 
   return true;
 }
