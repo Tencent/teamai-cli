@@ -8,8 +8,10 @@ import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.j
 import { assertNotReadOnly } from './read-only.js';
 import {
   createGit, pullRepo, pushRepoBranch, checkoutMaster, unusedBranchName,
-  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch, getFileContentAtRev, getHeadCommit, hashObject, prepareExplicitBranch, readFileAtRev,
+  resetToCleanMaster, isDedicatedRepoRoot, getDefaultBranch, getFileContentAtRev, getHeadCommit, hashObject, prepareExplicitBranch, readFileAtRev, getTreeOf,
+  isGerritClone, dropPushBranchIfLeft, getChangeIdOf,
 } from './utils/git.js';
+import { gerritWebUrl } from './utils/remote-format.js';
 import { reconcilePlacementRecords, dropClosedPendingPushes,
   findPendingForItem, isRecordedItem, partiallySelectedEntries, pendingNamespaceFor, planPushGroups, recordedNamespace,
   prunePendingPushes, recordPendingPush, toPendingItems, type PushGroup,
@@ -398,7 +400,9 @@ async function warnKeptCopiesTheTeamChanged(
 
 /**
  * Create a PR/MR via the configured provider with standard error handling.
- * Returns the PR URL on success, or null if creation failed (branch is still pushed).
+ * Returns the PR URL on success, or null when no PR exists: creation failed
+ * (the branch is still pushed), or the remote is a Gerrit host, where the
+ * `refs/for` push was the review.
  */
 async function createPrWithFallback(
   teamConfig: { repo: string; provider?: string; reviewers?: string[] },
@@ -406,10 +410,31 @@ async function createPrWithFallback(
   branchName: string,
   title: string,
   description: string,
-  opts: { spawnTimeoutMs?: number; reuseExisting?: boolean } = {},
+  opts: { spawnTimeoutMs?: number; reuseExisting?: boolean; gerrit?: boolean } = {},
 ): Promise<string | null> {
   // A member's `init --provider` choice outranks the team's provider (#789).
   const provider = getProvider(localConfig.provider ?? teamConfig.provider);
+  // The clone's own remote decides, the same way the push did; `opts.gerrit`
+  // lets a caller that already decided pass it instead of reading it again.
+  const gerrit = opts.gerrit ?? await isGerritClone(localConfig.repo.localPath, localConfig.provider ?? teamConfig.provider);
+
+  // A Gerrit remote creates no pull request: the push above went to refs/for,
+  // and the change is already in review. The web link is built from the host
+  // and repo path so the member can open it; it does not name a change number,
+  // which only the server knows.
+  if (gerrit) {
+    const gerritUrl = gerritWebUrl(teamConfig.repo) ?? gerritWebUrl(localConfig.repo.remote);
+    const targetBranch = await getDefaultBranch(localConfig.repo.localPath);
+
+    if (gerritUrl) {
+      log.info(`Pushed for review: ${gerritUrl} (target ${targetBranch})`);
+    } else {
+      log.info(`Pushed for review on Gerrit (target ${targetBranch}).`);
+    }
+
+    return null;
+  }
+
   const mrSpin = (await spinner('Creating Pull Request...')).start();
   let repoInput = teamConfig.repo;
 
@@ -775,13 +800,15 @@ function rememberPrePlacementPath(item: PushItem): void {
  * which placement leaves alone — the shared root included, as much a recorded
  * destination as any namespace.
  */
-function reuseRecordedDestinations(groups: PushGroup[]): Set<ResourceItem> {
+function reuseRecordedDestinations(groups: PushGroup[], gerrit: boolean): Set<ResourceItem> {
   const settled = new Set<ResourceItem>();
 
   for (const group of groups) {
     if (!group.reuse) continue;
     log.info(
-      `Updating existing PR instead of creating a new one: ${group.reuse.prUrl ?? group.reuse.branch}`,
+      gerrit
+        ? `Updating the open Change instead of opening a new one: ${group.reuse.branch}`
+        : `Updating existing PR instead of creating a new one: ${group.reuse.prUrl ?? group.reuse.branch}`,
     );
 
     for (const item of group.items) {
@@ -1040,14 +1067,20 @@ async function pushGroup(args: {
     ]);
 
     const base = headCommit ?? undefined;
+    const provider = localConfig.provider ?? teamConfig.provider;
 
     // An explicit --branch names the destination only for a group with no open
-    // PR to reuse; a reuse group keeps its recorded branch.
+    // PR to reuse; a reuse group keeps its recorded branch. A Gerrit review
+    // keeps the Change-Id only while its resources are still absent from the
+    // default branch: once one of them is there, that review landed and a new
+    // edit belongs to a new Change.
+    const reuseChangeId = reuse && items.every((i) => i.status === 'new') ? reuse.changeId : undefined;
+
     const pushOptions = reuse
-      ? { reuseBranch: true }
+      ? { reuseBranch: true, reviewTree: reuse.reviewTree, changeId: reuseChangeId, provider }
       : branch
-        ? { reuseBranch: false, explicitBranch: true }
-        : { reuseBranch: false };
+        ? { reuseBranch: false, explicitBranch: true, provider }
+        : { reuseBranch: false, provider };
 
     const hasChanges = await pushRepoBranch(
       localConfig.repo.localPath,
@@ -1067,24 +1100,31 @@ async function pushGroup(args: {
     // `hasChanges` is false — but there IS outstanding work (the PR). Only such
     // an entry may proceed past the no-change gate to (re)create the PR for the
     // already-pushed branch; it must NOT re-push (nothing changed) (#702 follow-up).
-    const needsPrRetry = Boolean(reuse) && !reuse?.prUrl;
+    // A Gerrit review has no PR to retry: `refs/for` was the review. The clone's
+    // own remote decides, the same way pushRepoBranch decided where to push.
+    const gerrit = await isGerritClone(localConfig.repo.localPath, provider);
+    const needsPrRetry = Boolean(reuse) && !reuse?.prUrl && !gerrit;
 
     if (!hasChanges && !needsPrRetry) {
       // Genuinely nothing to do: a brand-new branch with no changes, or a reuse
       // entry whose PR already exists.
       pushSpin.succeed(
-        reuse
-          ? `No changes to push (PR already up to date: ${reuse.prUrl ?? branchName})`
-          : 'No changes to push (files already up to date)',
+        gerrit
+          ? 'No changes to push (already in review)'
+          : reuse
+            ? `No changes to push (PR already up to date: ${reuse.prUrl ?? branchName})`
+            : 'No changes to push (files already up to date)',
       );
 
       return 'nochange';
     }
 
     pushSpin.succeed(
-      hasChanges
-        ? `Pushed branch ${branchName}`
-        : `No new changes; retrying PR creation for ${branchName}`,
+      gerrit
+        ? 'Pushed to Gerrit review (refs/for)'
+        : hasChanges
+          ? `Pushed branch ${branchName}`
+          : `No new changes; retrying PR creation for ${branchName}`,
     );
 
     let prUrl: string | null;
@@ -1102,16 +1142,19 @@ async function pushGroup(args: {
       // branch's resources would sit on a branch that never enters review. This
       // reaches here even when hasChanges is false (needsPrRetry): the branch is
       // already pushed, so we only create the PR, never re-push.
+      // A Gerrit push opens the review through refs/for, so no PR URL is
+      // expected; createPrWithFallback printed the review link and returned
+      // null normally. Only a non-Gerrit host treats a missing URL as failure.
       prUrl = await createPrWithFallback(
         teamConfig,
         localConfig,
         branchName,
         commitMsg,
         `Pushed ${items.length} resource(s):\n${items.map((i) => `- [${i.type}] ${i.name}`).join('\n')}`,
-        { reuseExisting: branch !== undefined },
+        { reuseExisting: branch !== undefined, gerrit },
       );
 
-      if (!prUrl) {
+      if (!prUrl && !gerrit) {
         process.exitCode = 1;
         prFailed = true;
       }
@@ -1122,17 +1165,39 @@ async function pushGroup(args: {
     // remote, so pushing again must reuse it. A PR retry pushed nothing, so
     // the branch — and the blobs and base that prove its placements — is the
     // one already recorded; this run has no branch checked out to hash.
-    recordPendingPush(pushState, {
+    // A Gerrit review has no PR URL, but its record still keeps the next run
+    // from opening a second Change for the same resources: `reviewTree` is the
+    // tree this push carried, and a later push compares against it, while
+    // `changeId` makes an edit a new patchset of the same Change.
+    const reviewTree = gerrit && hasChanges
+      ? await getTreeOf(localConfig.repo.localPath) ?? undefined
+      : reuse?.reviewTree;
+
+    const changeId = gerrit && hasChanges
+      ? await getChangeIdOf(localConfig.repo.localPath) ?? reuse?.changeId
+      : reuse?.changeId;
+
+    const pending: PendingPush = {
       branch: branchName,
       prUrl,
       createdAt: new Date().toISOString(),
       ...(hasChanges
         ? { base, items: await toPendingItems(items, localConfig.repo.localPath) }
         : { base: reuse?.base, items: reuse?.items ?? [] }),
-    });
+    };
+
+    if (reviewTree) pending.reviewTree = reviewTree;
+
+    if (changeId) pending.changeId = changeId;
+
+    recordPendingPush(pushState, pending);
 
     // Switch back to the default branch so the next group starts clean
     await checkoutMaster(localConfig.repo.localPath);
+
+    // A Gerrit review publishes no branch of ours, so a generated push branch
+    // has nothing left to back; the pending record still names it for reuse.
+    if (gerrit && !branch) await dropPushBranchIfLeft(localConfig.repo.localPath, branchName);
 
     // git tracks files, not directories: any empty subdirectory a pushed
     // resource carried (e.g. an unused `assets/`) survives that checkout as an
@@ -1144,7 +1209,8 @@ async function pushGroup(args: {
 
     // The branch is on the remote either way, but a run whose PR creation failed
     // is not a completed push — report it distinctly so the caller does not fire
-    // the `push` webhook (#702 follow-up).
+    // the `push` webhook (#702 follow-up). A Gerrit push never sets prFailed:
+    // `createPrWithFallback` returned null normally after pushing to refs/for.
     return prFailed ? 'pr-failed' : 'pushed';
   } catch (e) {
     pushSpin.fail(`Push failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -2145,7 +2211,13 @@ async function pushCore(
   // are dropped first; the scan-presence rule needs the scan and runs after it.
   const pushState = await loadStateForScope(localConfig);
   const recordedPushes = pushState.pendingPushes ?? [];
-  const openPushes = await dropClosedPendingPushes(localConfig.repo.localPath, recordedPushes);
+  const provider = localConfig.provider ?? teamConfig.provider;
+
+  // A Gerrit review is not backed by a branch of ours; the provider decides
+  // whether the remote can be one at all, as everywhere else in this command.
+  const gerrit = await isGerritClone(localConfig.repo.localPath, provider);
+
+  const openPushes = await dropClosedPendingPushes(localConfig.repo.localPath, recordedPushes, provider);
 
   // The copy `--skill` names. The skills scan leaves its outcome to --skill below.
   const requestedSkill = options.skill ? resolveRequestedSkill(options.skill) : undefined;
@@ -2501,6 +2573,7 @@ async function pushCore(
     localConfig.repo.localPath,
     openPushes,
     fullScan,
+    provider,
   );
 
   pushState.pendingPushes = pruned.pending;
@@ -2803,7 +2876,7 @@ async function pushCore(
     if (await branchGuard.stops(allItems)) return;
     // Same two steps, same order as a real run: an open PR's recorded
     // destination first, then placement for whatever is still at the root.
-    const settled = reuseRecordedDestinations(planPushGroups(allItems, reusablePending));
+    const settled = reuseRecordedDestinations(planPushGroups(allItems, reusablePending), gerrit);
 
     const placed = await placeNewResources({
       items: allItems, options, localConfig, projectsManifest, roleNamespaces, skillsDestinationError, teamRepoStale, settled,
@@ -2846,7 +2919,7 @@ async function pushCore(
   // can happen in one run, so editing a resource under review updates its PR
   // without dragging unrelated resources into that review.
   const groups = planPushGroups(selectedItems, reusablePending);
-  const settled = reuseRecordedDestinations(groups);
+  const settled = reuseRecordedDestinations(groups, gerrit);
 
   // The conflicting entries dropped above are deliberately not reused, so they
   // are not "partly selected" either — warning about them would contradict the
@@ -2854,7 +2927,7 @@ async function pushCore(
   for (const entry of partiallySelectedEntries(selectedItems, reusablePending)) {
     log.warn(
       `Only part of ${entry.prUrl ?? entry.branch} is selected, so the selected resources go into a `
-      + 'new PR and will exist in both. Select all of its resources to update it in place instead.',
+      + `${gerrit ? 'new Change' : 'new PR'} and will exist in both. Select all of its resources to update it in place instead.`,
     );
   }
 
@@ -3028,7 +3101,8 @@ async function pushTeamConfigOnly(
   const pushSpin = (await spinner('Pushing team config...')).start();
   const branchName = options.branch ?? await unusedBranchName(localConfig.repo.localPath, localConfig.username);
   const commitMsg = `[teamai] Update team config from ${localConfig.username}`;
-  const pushOptions = options.branch ? { explicitBranch: true } : undefined;
+  const provider = localConfig.provider ?? teamConfig.provider;
+  const pushOptions = options.branch ? { explicitBranch: true, provider } : { provider };
 
   try {
     // The config edit is already in the working tree; preparation carries it
@@ -3049,7 +3123,9 @@ async function pushTeamConfigOnly(
       return;
     }
 
-    pushSpin.succeed(`Pushed branch ${branchName}`);
+    const gerrit = await isGerritClone(localConfig.repo.localPath, provider);
+
+    pushSpin.succeed(gerrit ? 'Pushed to Gerrit review (refs/for)' : `Pushed branch ${branchName}`);
 
     const prUrl = await createPrWithFallback(
       teamConfig,
@@ -3057,10 +3133,12 @@ async function pushTeamConfigOnly(
       branchName,
       commitMsg,
       'Updated team config (teamai.yaml)',
-      { reuseExisting: options.branch !== undefined },
+      { reuseExisting: options.branch !== undefined, gerrit },
     );
 
-    if (!prUrl) {
+    // A Gerrit review was created by the refs/for push; createPrWithFallback
+    // returns null for it normally, so only a non-Gerrit host failed here.
+    if (!prUrl && !gerrit) {
       process.exitCode = 1;
     } else if (result) {
       // A real config PR was pushed. Not set on dry-run or no-change (both
@@ -3069,6 +3147,10 @@ async function pushTeamConfigOnly(
     }
 
     await checkoutMaster(localConfig.repo.localPath);
+
+    // A Gerrit review publishes no branch of ours, so a generated push branch
+    // has nothing left to back.
+    if (gerrit && !options.branch) await dropPushBranchIfLeft(localConfig.repo.localPath, branchName);
   } catch (e) {
     pushSpin.fail(`Push failed: ${e instanceof Error ? e.message : String(e)}`);
 

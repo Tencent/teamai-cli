@@ -81,6 +81,7 @@ export async function pushManifestChange(input: {
             commitMsg,
             ['manifest/'],
             branchName,
+            { provider: localConfig.provider ?? teamConfig.provider },
         );
 
         if (!hasChanges) {

@@ -107,6 +107,8 @@ vi.mock('../utils/git.js', () => ({
   hashObject: vi.fn().mockResolvedValue('b10b'),
   blobInHistory: vi.fn().mockResolvedValue(true),
   getHeadCommit: vi.fn().mockResolvedValue('base000'),
+  isGerritClone: vi.fn().mockResolvedValue(false),
+  dropPushBranchIfLeft: vi.fn().mockResolvedValue(undefined),
 }));
 
 const mockLoadProjectsManifest = vi.fn().mockResolvedValue(null);

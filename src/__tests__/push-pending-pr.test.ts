@@ -67,11 +67,14 @@ vi.mock('../utils/git.js', () => ({
   generateBranchName: (...args: unknown[]) => mockGenerateBranchName(...args),
   unusedBranchName: async (_localPath: string, username: string) => mockGenerateBranchName(username),
   remoteBranchExists: (...args: unknown[]) => mockRemoteBranchExists(...args),
+  isGerritClone: vi.fn().mockResolvedValue(false),
+  dropPushBranchIfLeft: vi.fn().mockResolvedValue(undefined),
   resetToCleanMaster: vi.fn(),
   isDedicatedRepoRoot: vi.fn().mockResolvedValue(true),
   getDefaultBranch: vi.fn().mockResolvedValue('main'),
   getFileContentAtRev: vi.fn().mockResolvedValue(null),
   getHeadCommit: vi.fn().mockResolvedValue('base000'),
+  getTreeOf: vi.fn().mockResolvedValue(null),
 }));
 
 // No local branch unless a case says otherwise: `git show-ref` answers with its exit code.
@@ -339,7 +342,7 @@ describe('push() with an open PR', () => {
     expect(mockPushRepoBranch).toHaveBeenCalledTimes(1);
     const [, , , branch, opts] = mockPushRepoBranch.mock.calls[0];
     expect(branch).toBe('teamai/push/testuser/20260827-065032');
-    expect(opts).toEqual({ reuseBranch: true });
+    expect(opts).toEqual({ reuseBranch: true, provider: 'github' });
     // The namespace recorded with the PR is reused, not re-prompted.
     expect(mockPushRepoBranch.mock.calls[0][2]).toContain('skills/js/hello-skill');
   });
@@ -357,9 +360,9 @@ describe('push() with an open PR', () => {
 
     expect(mockPushRepoBranch).toHaveBeenCalledTimes(2);
     expect(mockPushRepoBranch.mock.calls[0][3]).toBe('teamai/push/testuser/20260827-065032');
-    expect(mockPushRepoBranch.mock.calls[0][4]).toEqual({ reuseBranch: true });
+    expect(mockPushRepoBranch.mock.calls[0][4]).toEqual({ reuseBranch: true, provider: 'github' });
     expect(mockPushRepoBranch.mock.calls[1][3]).toBe('teamai/push/testuser/20260827-070000');
-    expect(mockPushRepoBranch.mock.calls[1][4]).toEqual({ reuseBranch: false });
+    expect(mockPushRepoBranch.mock.calls[1][4]).toEqual({ reuseBranch: false, provider: 'github' });
     // Only the new resource needs a PR created; the other one updated its own.
     expect(mockCreatePullRequest).toHaveBeenCalledTimes(1);
     const saved = mockSaveStateForScope.mock.calls.at(-1)?.[0] as State;
@@ -387,7 +390,7 @@ describe('push() with an open PR', () => {
     expect(mockCreatePullRequest).toHaveBeenCalledTimes(1);
     const [, , , branch, opts] = mockPushRepoBranch.mock.calls[0];
     expect(branch).toBe('teamai/push/testuser/20260827-070000');
-    expect(opts).toEqual({ reuseBranch: false });
+    expect(opts).toEqual({ reuseBranch: false, provider: 'github' });
     const saved = mockSaveStateForScope.mock.calls.at(-1)?.[0] as State;
     expect(saved.pendingPushes).toEqual([expect.objectContaining({
       branch: 'teamai/push/testuser/20260827-070000',
@@ -448,7 +451,7 @@ describe('push() with an open PR', () => {
     await push({ silent: true });
 
     expect(mockCreatePullRequest).not.toHaveBeenCalled();
-    expect(mockPushRepoBranch.mock.calls[0][4]).toEqual({ reuseBranch: true });
+    expect(mockPushRepoBranch.mock.calls[0][4]).toEqual({ reuseBranch: true, provider: 'github' });
   });
 
   it('reports an unchanged PR without touching its branch', async () => {
@@ -533,7 +536,7 @@ describe('push() with an open PR', () => {
       // must survive the prune and the open PR must be updated, not duplicated.
       expect(mockCreatePullRequest).not.toHaveBeenCalled();
       expect(mockPushRepoBranch.mock.calls[0][3]).toBe('teamai/push/testuser/solo-branch');
-      expect(mockPushRepoBranch.mock.calls[0][4]).toEqual({ reuseBranch: true });
+      expect(mockPushRepoBranch.mock.calls[0][4]).toEqual({ reuseBranch: true, provider: 'github' });
       const saved = mockSaveStateForScope.mock.calls.at(-1)?.[0] as State;
       expect(saved.pendingPushes.map((p) => p.branch)).toContain('teamai/push/testuser/solo-branch');
     });
@@ -556,7 +559,7 @@ describe('push() with an open PR', () => {
       // and force-pushed in place.
       expect(mockCreatePullRequest).toHaveBeenCalledTimes(1);
       expect(mockPushRepoBranch.mock.calls[0][3]).toBe('teamai/push/testuser/20260827-065032');
-      expect(mockPushRepoBranch.mock.calls[0][4]).toEqual({ reuseBranch: true });
+      expect(mockPushRepoBranch.mock.calls[0][4]).toEqual({ reuseBranch: true, provider: 'github' });
       // A real completed push → webhook may fire.
       expect(outcome.completed).toBe(true);
       // The pending entry now carries the newly-created prUrl (healed).
@@ -595,7 +598,7 @@ describe('push() with an open PR', () => {
 
       // Existing PR is updated in place — never a duplicate creation.
       expect(mockCreatePullRequest).not.toHaveBeenCalled();
-      expect(mockPushRepoBranch.mock.calls[0][4]).toEqual({ reuseBranch: true });
+      expect(mockPushRepoBranch.mock.calls[0][4]).toEqual({ reuseBranch: true, provider: 'github' });
       expect(outcome.completed).toBe(true);
     });
   });
