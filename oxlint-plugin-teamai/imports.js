@@ -136,12 +136,20 @@ export function importVisitors(
   };
 }
 
-/** Resolve source imports without requiring a built dist directory. */
+/**
+ * Resolve source imports without requiring a built dist directory.
+ *
+ * The result has `/` separators on every platform, like `lintedPath` in utils.js: callers compare it
+ * with a repository root built from that path, and `path.posix.relative` on a Windows path names the
+ * whole absolute path instead of the relative one.
+ */
 export function sourceImport(/** @type {string} */ from, /** @type {string} */ specifier) {
   if (!specifier.startsWith('.')) return undefined;
   const stem = path.resolve(path.dirname(from), specifier).replace(/\.[cm]?js$/, '');
 
-  return [stem + '.ts', stem + '.tsx', path.join(stem, 'index.ts')].find((candidate) => fs.existsSync(candidate));
+  return [stem + '.ts', stem + '.tsx', path.join(stem, 'index.ts')]
+    .find((candidate) => fs.existsSync(candidate))
+    ?.split('\\').join('/');
 }
 
 /** @type {Map<string, { source: string; specifiers: string[] }>} */
