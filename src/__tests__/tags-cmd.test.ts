@@ -31,7 +31,7 @@ import {
   saveLocalConfigForScope,
   saveStateForScope,
 } from '../config.js';
-import { tagsList, tagsSubscribe, tagsUnsubscribe } from '../tags.js';
+import { tagsAdd, tagsList, tagsSubscribe, tagsUnsubscribe } from '../tags.js';
 import { log } from '@teamai/shared/log';
 import type { LocalConfig } from '../types.js';
 
@@ -180,6 +180,23 @@ describe('tags list', () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(path.join(dir, 'SKILL.md'), '# skill');
   }
+
+  it('warns when the tagged skill is not in the team repo', async () => {
+    useConfig({});
+
+    await tagsAdd('skills', 'nope', ['tag1'], {});
+
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('skills/nope is not in the team repo'));
+  });
+
+  it('stays silent for a skill the team repo holds', async () => {
+    addSkill('demo');
+    useConfig({});
+
+    await tagsAdd('skills', 'demo', ['tag1'], {});
+
+    expect(log.warn).not.toHaveBeenCalled();
+  });
 
   it('counts untagged skills in both the flat and the namespace layout', async () => {
     addSkill('solo');
