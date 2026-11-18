@@ -57,6 +57,13 @@ export function parseGitLabRepoInput(input: string): RepoInfo {
     return buildRepoInfo(sshMatch[1], sshMatch[2], sshMatch[3]);
   }
 
+  const sshUrl = /^ssh:\/\//i.test(trimmed) && URL.canParse(trimmed) ? new URL(trimmed) : null;
+  const sshPath = sshUrl?.pathname.match(/^\/(.+)\/([^/]+?)(?:\.git)?\/?$/);
+
+  if (sshUrl?.hostname && sshPath) {
+    return buildRepoInfo(sshUrl.hostname, sshPath[1], sshPath[2]);
+  }
+
   // Short format: owner/repo or group/subgroup/repo (host = configured default)
   const shortMatch = trimmed.match(
     /^([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)\/([A-Za-z0-9_.-]+)$/,
@@ -72,7 +79,8 @@ export function parseGitLabRepoInput(input: string): RepoInfo {
       '    owner/repo\n' +
       '    group/subgroup/repo\n' +
       `    https://${GITLAB_HOST}/owner/repo.git\n` +
-      `    git@${GITLAB_HOST}:owner/repo.git`,
+      `    git@${GITLAB_HOST}:owner/repo.git\n` +
+      `    ssh://git@${GITLAB_HOST}/owner/repo.git`,
   );
 }
 
