@@ -24,6 +24,7 @@ export const SESSION_PLATFORM_FACTS = {
   muse: BUILT_IN_FACTS.muse.platforms.muse,
   hermes: BUILT_IN_FACTS.hermes.platforms.hermes,
   copilot: BUILT_IN_FACTS.copilot.platforms.copilot,
+  zcode: BUILT_IN_FACTS.zcode.platforms.zcode,
 } satisfies Record<string, SessionPlatformFacts<ToolId>>;
 
 /** A platform teamai has a session adapter for. */

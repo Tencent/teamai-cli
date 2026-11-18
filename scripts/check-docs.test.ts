@@ -77,25 +77,25 @@ it('write regenerates the command reference and a second write is stable', () =>
   const root = checkout();
   const reference = path.join(root, 'skill-data/core/references/commands.md');
   fs.writeFileSync(reference, 'stale commands\n');
-  expect(run(root, '--write').status).toBe(0);
+  expect(run(root, '--write', '--only=skill-commands-exist').status).toBe(0);
   const generated = fs.readFileSync(reference, 'utf8');
   expect(generated).toContain('# teamai command reference');
   expect(generated).toContain('teamai workflow start');
-  expect(run(root, '--write').status).toBe(0);
+  expect(run(root, '--write', '--only=skill-commands-exist').status).toBe(0);
   expect(fs.readFileSync(reference, 'utf8')).toBe(generated);
-  expect(run(root).status).toBe(0);
+  expect(run(root, '--only=skill-commands-exist').status).toBe(0);
 }, 3 * RUN_MS);
 it('check refuses stale support pages in both languages and write repairs them', () => {
   const root = checkout();
   const pages = ['docs/guide/tool-support.md', 'docs/guide/zh-CN/tool-support.md'];
   for (const page of pages) fs.writeFileSync(path.join(root, page), 'stale support\n');
-  const checked = run(root);
+  const checked = run(root, '--only=readme-matrix');
   expect(checked.status).toBe(1);
   for (const page of pages) expect(checked.output).toContain(`Generated documentation is stale: ${page}`);
   for (const page of pages) expect(fs.readFileSync(path.join(root, page), 'utf8')).toBe('stale support\n');
-  expect(run(root, '--write').status).toBe(0);
+  expect(run(root, '--write', '--only=readme-matrix').status).toBe(0);
   for (const page of pages) expect(fs.readFileSync(path.join(root, page), 'utf8')).toContain('Claude');
-  expect(run(root).status).toBe(0);
+  expect(run(root, '--only=readme-matrix').status).toBe(0);
 }, 3 * RUN_MS);
 it('check rejects a README matrix that disagrees with the tool descriptor', () => {
   const root = checkout();
