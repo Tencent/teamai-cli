@@ -38,10 +38,10 @@ teamai uninstall --force
 teamai uninstall --agent claude
 ```
 
-To rejoin after uninstalling:
+To rejoin after uninstalling, rerun your original `teamai init` command. For example, to rejoin from the same workspace:
 
 ```bash
-teamai init --repo https://github.com/your-org/your-repo --scope user --role <role_id> --force
+teamai init https://github.com/your-org/your-repo
 ```
 
 ---
