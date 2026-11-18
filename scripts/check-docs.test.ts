@@ -118,16 +118,19 @@ it('check validates GitHub-style heading and explicit Markdown anchors in every 
   ].join('\n'));
   fs.appendFileSync(path.join(root, 'README.md'), '\n[underscore](docs/anchor-target.md#name_with-underscore)\n[duplicate](docs/anchor-target.md#重复-1)\n');
   const skill = path.join(root, 'skill-data/core/SKILL.md');
+  fs.appendFileSync(skill, '\n[from repository root](/docs/anchor-target.md#explicit-id)\n');
   fs.appendFileSync(skill, '\n[code and tool](../../docs/anchor-target.md#code-and-tool)\n[id](../../docs/anchor-target.md#explicit-id)\n[name](../../docs/anchor-target.md#explicit-name)\n');
   expect(run(root, '--only=anchors')).toMatchObject({ status: 0 });
 
   fs.appendFileSync(path.join(root, 'README.md'), '\n[missing](docs/anchor-target.md#missing-readme-anchor)\n');
   fs.appendFileSync(skill, '\n[missing](../../docs/anchor-target.md#missing-skill-anchor)\n');
+  fs.appendFileSync(skill, '\n[missing from repository root](/docs/anchor-target.md#missing-root-anchor)\n');
   const page = path.join(root, 'docs/guide/zh-CN/benchmarks.md');
   fs.writeFileSync(page, fs.readFileSync(page, 'utf8').replace('dashboard.md#基准测试benchmarks', 'dashboard.md#benchmarks'));
   const checked = run(root, '--only=anchors');
   expect(checked.status).toBe(1);
   expect(checked.output).toMatch(/README\.md:\d+ links docs\/anchor-target\.md#missing-readme-anchor, which has no heading for it\./u);
+  expect(checked.output).toContain('links /docs/anchor-target.md#missing-root-anchor, which has no heading for it.');
   expect(checked.output).toMatch(/skill-data\/core\/SKILL\.md:\d+ links \.\.\/\.\.\/docs\/anchor-target\.md#missing-skill-anchor, which has no heading for it\./u);
   expect(checked.output).toMatch(/docs\/guide\/zh-CN\/benchmarks\.md:\d+ links dashboard\.md#benchmarks, which has no heading for it\./u);
 });
