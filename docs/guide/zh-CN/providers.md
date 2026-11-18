@@ -29,6 +29,7 @@ https://cnb.cool/org/repo(.git)         → cnb
 git@cnb.cool:org/repo.git               → cnb
 https://gitlab.com/org/repo(.git)       → gitlab
 git@gitlab.com:org/repo.git             → gitlab
+ssh://git@gitlab.com/org/repo.git       → gitlab
 https://gitcode.com/org/repo(.git)      → gitcode
 git@gitcode.com:org/repo.git            → gitcode
 https://git.example.com/group/repo.git  → git

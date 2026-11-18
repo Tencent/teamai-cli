@@ -69,10 +69,16 @@ describe('parseGitLabRepoInput', () => {
     expect(info.repo).toBe('repo');
   });
 
-  it('parses ssh URL', () => {
-    const info = parseGitLabRepoInput('git@gitlab.com:org/repo.git');
-    expect(info.owner).toBe('org');
+  it.each([
+    ['git@gitlab.com:org/repo.git', 'gitlab.com', 'org'],
+    ['ssh://git@gitlab.com/org/repo.git', 'gitlab.com', 'org'],
+    ['ssh://git@gitlab.example.com:2222/group/sub/repo.git', 'gitlab.example.com', 'group/sub'],
+  ])('parses ssh URL %s', (url, host, owner) => {
+    const info = parseGitLabRepoInput(url);
+    expect(info.owner).toBe(owner);
     expect(info.repo).toBe('repo');
+    expect(info.httpsUrl).toBe(`https://${host}/${owner}/repo.git`);
+    expect(info.projectId).toBe(encodeURIComponent(`${owner}/repo`));
   });
 
   it('accepts any self-hosted host in a full URL', () => {
