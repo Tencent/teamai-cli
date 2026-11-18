@@ -2,8 +2,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { z } from 'zod';
 import type { SearchResult } from './utils/search-index.js';
-import { getUserHome } from '@teamai/shared/home';
 import { readRegularFileSync } from '@teamai/shared/regular-file';
+import { getSessionStateDir } from './types.js';
 
 // ─── Recall quality tracking ─────────────────────────────
 //
@@ -43,12 +43,7 @@ function sanitizeSessionId(sessionId: string): string {
 function getCachePath(sessionId: string): string {
     const safeName = sanitizeSessionId(sessionId);
 
-    return path.join(
-        getUserHome(),
-        '.teamai',
-        'sessions',
-        `${safeName}-recall-cache.json`,
-    );
+    return path.join(getSessionStateDir(), `${safeName}-recall-cache.json`);
 }
 
 /** The cache file as written; a field of another type reads as its zero. */

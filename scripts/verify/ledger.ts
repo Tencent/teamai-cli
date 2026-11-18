@@ -247,14 +247,8 @@ const TEAMAI_LEFTOVERS: readonly (readonly [string, string])[] = [
   ['home/.teamai', 'dir'],
   ['home/.teamai/projects', 'dir'],
   ['home/.teamai/debug.log', 'any'],
-  // What the hooks of a session leave today, in a world that ran them.
-  ['home/.teamai/dashboard', 'dir'],
-  ['home/.teamai/dashboard/session-owners.jsonl', 'any'],
-  ['home/.teamai/dashboard/events.jsonl', 'any'],
-  ['home/.teamai/dashboard/requests.jsonl', 'any'],
   // The skills a session used, kept across log truncation (usage-tracker.ts `updateKnownSkills`).
   ['home/.teamai/known-skills.json', 'any'],
-  ['home/.teamai/state.json', 'any'],
 ];
 
 /**
@@ -527,7 +521,7 @@ export function ledgerRules(instances: readonly DeclaredTool[], moved: readonly 
   ]);
 
   const emptyTables = new Map(views.flatMap((view) => (TOOL_LEFTOVERS[view.tool]?.emptyTables ?? []).map(({ file, table, owner }) => [view.placed(file), { table, owner }] as const)));
-  const knownLeftoverDirs = ['home/.teamai/sessions', ...views.flatMap((view) => (TOOL_LEFTOVERS[view.tool]?.dirs ?? []).map(view.placed))];
+  const knownLeftoverDirs = views.flatMap((view) => (TOOL_LEFTOVERS[view.tool]?.dirs ?? []).map(view.placed));
 
   const isTeamaiPlace = (entry: string, value: string | undefined): boolean =>
     writes.some((write) => entry === write || entry.startsWith(`${write}/`))
