@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { parseYaml } from '@teamai/shared/yaml';
-import { mergeTeamConfig } from '../utils/yaml.js';
+import { mergeEnvFile, mergeTeamConfig } from '../utils/yaml.js';
 
 describe('parseYaml', () => {
   afterEach(() => {
@@ -75,5 +75,23 @@ describe('mergeTeamConfig', () => {
     const formatted = '# Keep this comment\r\nautoUpdate: true\r\nusageReport: false\r\n';
 
     expect(mergeTeamConfig(base, formatted, base)).toBe(formatted);
+  });
+});
+
+describe('mergeEnvFile', () => {
+  it('keeps the destination CRLF line endings', () => {
+    const base = 'variables:\r\n  - key: A\r\n    value: a\r\n';
+    const edit = 'variables:\n  - key: A\n    value: a\n  - key: B\n    value: b\n';
+    const target = 'variables:\r\n  - key: A\r\n    value: a\r\n  - key: C\r\n    value: c\r\n';
+    const merged = mergeEnvFile(base, edit, target);
+
+    expect(merged).not.toMatch(/(?<!\r)\n/);
+    expect(parseYaml(merged)).toEqual({
+      variables: [
+        { key: 'A', value: 'a' },
+        { key: 'C', value: 'c' },
+        { key: 'B', value: 'b' },
+      ],
+    });
   });
 });

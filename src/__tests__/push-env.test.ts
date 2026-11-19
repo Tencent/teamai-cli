@@ -143,6 +143,49 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  /** A teammate's commit on the remote, made after this clone was last pulled. */
+  async function teammatePushes(envYaml: string): Promise<void> {
+    const mate = path.join(tmpDir, 'mate');
+    await simpleGit().clone(remote, mate);
+    const mateGit = simpleGit(mate);
+    await mateGit.addConfig('user.email', 'm@t.com');
+    await mateGit.addConfig('user.name', 'm');
+    fs.writeFileSync(path.join(mate, 'env', 'env.yaml'), envYaml);
+    await mateGit.add('.');
+    await mateGit.commit('add TEAMMATE_VAR');
+    await mateGit.push('origin', 'main');
+  }
+
+  it('keeps a variable a teammate added to env.yaml since the last pull', async () => {
+    const { envAdd } = await import('../env-commands.js');
+    const { push } = await import('../push.js');
+    await envAdd('TEAM_VAR', 'changed', {});
+    await teammatePushes('variables:\n  - key: TEAM_VAR\n    value: first\n  - key: TEAMMATE_VAR\n    value: theirs\n');
+
+    await push({ all: true });
+
+    expect(process.exitCode).toBe(previousExitCode);
+    const [branch] = await pushBranches(remote);
+    expect(branch).toBeDefined();
+    const pushed = await simpleGit(remote).show([`${branch}:env/env.yaml`]);
+    expect(pushed).toContain('value: changed');
+    expect(pushed).toContain('key: TEAMMATE_VAR');
+  });
+
+  it('does not overwrite a variable a teammate changed differently, and says so', async () => {
+    const { envAdd } = await import('../env-commands.js');
+    const { push } = await import('../push.js');
+    await envAdd('TEAM_VAR', 'mine', {});
+    await teammatePushes('variables:\n  - key: TEAM_VAR\n    value: theirs\n');
+
+    await push({ all: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(errorOutput()).toContain('env/env.yaml');
+    expect(await pushBranches(remote)).toEqual([]);
+    expect(fs.readFileSync(path.join(teamRepo, 'env', 'env.yaml'), 'utf8')).toContain('value: theirs');
+  });
+
   it('pushes the env.yaml edit from env add', async () => {
     const { envAdd } = await import('../env-commands.js');
     const { push } = await import('../push.js');

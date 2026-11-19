@@ -2,7 +2,7 @@ import { chmod } from 'node:fs/promises';
 import { openRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { parseYaml } from '@teamai/shared/yaml';
-import { mergeTeamConfig } from './utils/yaml.js';
+import { mergeEnvFile, mergeTeamConfig } from './utils/yaml.js';
 import { z } from 'zod';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
 import { assertNotReadOnly } from './read-only.js';
@@ -1696,14 +1696,29 @@ async function pushCore(
   // plus a plain write would recreate a 0600 file under the umask.
   const pendingEnvFiles = new Map<string, { content: Buffer; mode: number }>();
 
+  // The commit the env edits were made against; set just before the refresh.
+  let envBaseHead: string | null = null;
+
   /** Write the captured env edits back; returns each one it could not, with the reason. */
   const restorePendingEnvFiles = async (): Promise<string[]> => {
     const lost: string[] = [];
 
-    for (const [relativePath, { content, mode }] of pendingEnvFiles) {
+    for (const [relativePath, snapshot] of pendingEnvFiles) {
+      const { mode } = snapshot;
+      let { content } = snapshot;
       const target = path.join(localConfig.repo.localPath, ...relativePath.split('/'));
 
       try {
+        if (envBaseHead !== null && /\.ya?ml$/.test(relativePath)) {
+          const base = await getFileContentAtRev(localConfig.repo.localPath, envBaseHead, relativePath);
+          const current = await getFileContentAtRev(localConfig.repo.localPath, 'HEAD', relativePath);
+
+          if (current !== null && !current.equals(base ?? Buffer.alloc(0))) {
+            content = Buffer.from(mergeEnvFile(base?.toString() ?? null, content.toString(), current.toString()));
+            pendingEnvFiles.set(relativePath, { content, mode });
+          }
+        }
+
         await writeFile(target, content);
         await chmod(target, mode);
       } catch (e) {
@@ -1826,6 +1841,8 @@ async function pushCore(
       }
 
       const originalHead = pendingTeamConfig !== null ? await git.revparse(['HEAD']) : null;
+
+      if (pendingEnvFiles.size > 0) envBaseHead = await git.revparse(['HEAD']);
 
       try {
         await resetToCleanMaster(git, repoPath);
