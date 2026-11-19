@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { loadStateForScope } from './config.js';
 import type { Check, DoctorContext } from './doctor.js';
-import type { DamagedMarker, GitExcludeReport } from './git-exclude.js';
+import { lsFilesBatched, type DamagedMarker, type GitExcludeReport } from './git-exclude.js';
 import {
   describeForeign, describeUnreadableGitExcludeSetting, deliveredUnion, reportDeliveredGitExclude, type DeliveredUnion,
 } from './git-exclude-delivered.js';
@@ -94,7 +94,7 @@ async function inspectOnce(ctx: DoctorContext): Promise<Inspection | null> {
  * pass keeps, because deleting them would change the repository. One
  * `ls-files` for all of them.
  */
-async function keptTrackedCopies(projectRoot: string, delivered: Record<string, string>, listed: string[]): Promise<string[]> {
+export async function keptTrackedCopies(projectRoot: string, delivered: Record<string, string>, listed: string[]): Promise<string[]> {
   const { recordedUnchanged } = await import('./resources/delivered-copies.js');
   const covered = (file: string): boolean => listed.some((p) => file === p || file.startsWith(`${p}${path.sep}`));
   const candidates: string[] = [];
@@ -107,9 +107,11 @@ async function keptTrackedCopies(projectRoot: string, delivered: Record<string, 
 
   if (inside.length === 0) return [];
 
-  const result = await execCommand('git', ['--literal-pathspecs', 'ls-files', '-z', '--', ...inside.map((file) => path.relative(projectRoot, file))], {
-    cwd: projectRoot, timeoutMs: 10_000, env: withoutGitRepositoryEnv(),
-  }).catch(() => null);
+  const result = await lsFilesBatched(
+    ['--literal-pathspecs', 'ls-files', '-z', '--'],
+    inside.map((file) => path.relative(projectRoot, file)),
+    (args) => execCommand('git', args, { cwd: projectRoot, timeoutMs: 10_000, env: withoutGitRepositoryEnv() }),
+  ).catch(() => null);
 
   if (result?.code !== 0) return [];
   const tracked = new Set(result.stdout.split('\0').filter(Boolean));
