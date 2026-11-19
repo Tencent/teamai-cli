@@ -533,7 +533,9 @@ describe.skipIf(process.platform === 'win32')('a Codex instance that moves only 
     repo = path.join(root, 'repo');
     home = path.join(root, 'home');
     for (const dir of [repo, path.join(home, '.codex'), path.join(home, '.home-codex')]) fs.mkdirSync(dir, { recursive: true });
-    codexBin = installFakeCodex({ dir: path.join(root, 'bin') });
+    // Trust manages the newest Codex build, and a Mac with the ChatGPT or Codex app installed ships one under
+    // /Applications that is newer than this fake; the fake has to be the newest so the state read here is the state written.
+    codexBin = installFakeCodex({ dir: path.join(root, 'bin'), version: '0.999.0' });
     fs.writeFileSync(path.join(home, '.gitconfig'), '[user]\n\tname = Test\n\temail = test@example.com\n[gc]\n\tauto = 0\n');
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repo });
     fs.mkdirSync(path.join(repo, '.teamai', 'tools'), { recursive: true });
