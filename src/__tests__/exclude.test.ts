@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import path from 'node:path';
+import os from 'node:os';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import fse from 'fs-extra';
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
@@ -15,6 +18,7 @@ vi.mock('@teamai/shared/log', () => ({
     dim: vi.fn(),
     info: vi.fn(),
     success: vi.fn(),
+    warn: vi.fn(),
   },
 }));
 
@@ -68,6 +72,22 @@ describe('skill exclude commands', () => {
       expect.objectContaining({ lastPullRev: null }),
       expect.objectContaining({ scope: 'user' }),
     );
+  });
+
+  it('warns when an exclusion names no team skill or MCP server', async () => {
+    const repo = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-exclude-'));
+    onTestFinished(async () => fse.remove(repo));
+    await fse.outputFile(path.join(repo, 'skills', 'a', 'SKILL.md'), '---\nname: a\ndescription: A.\n---\n');
+    await fse.outputFile(path.join(repo, 'mcp', 'mcp.yaml'), 'servers:\n  - name: db\n    transport: stdio\n    command: db\n');
+    vi.mocked(requireInit).mockResolvedValue({
+      localConfig: { ...userConfig, repo: { ...userConfig.repo, localPath: repo } },
+      teamConfig: {} as never,
+    });
+
+    await excludeAdd(['a', 'db', 'nope'], {});
+
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('No team skill or MCP server named "nope"'));
+    expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('"a"'));
   });
 
   it('removes exclusions in project scope and invalidates that scope only', async () => {
