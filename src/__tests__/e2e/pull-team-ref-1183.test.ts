@@ -141,14 +141,22 @@ describe('workspace team ref (#1183)', () => {
 
   it('unpins, removes unchanged branch-only copies, keeps edited copies with advice, and removes resources deleted by a branch', () => {
     const m = machine();
+    m.ok(['pull']);
+    expect(read(m.copy('base'))).toContain('base');
+    m.teamCommit({ 'skills/base': null });
+    write(m.copy('base'), skill('base', 'MY EDIT BEFORE PINNING'));
     m.ok(['pull', '--team-ref', 'trial']);
-    write(path.join(m.dir, '.codex/skills/trial/SKILL.md'), skill('trial', 'MY EDIT'));
+    const editedTrial = path.join(m.dir, '.codex/skills/trial/SKILL.md');
+    write(editedTrial, skill('trial', 'MY EDIT'));
     const unpin = m.ok(['pull', '--team-ref', 'main']);
     expect(m.config().repo.ref).toBeUndefined();
     expect(fs.existsSync(m.copy('trial')), unpin.output).toBe(false);
-    expect(read(path.join(m.dir, '.codex/skills/trial/SKILL.md'))).toContain('MY EDIT');
-    expect(unpin.output).toContain('"trial"\'s content');
+    expect(read(editedTrial)).toContain('MY EDIT');
+    expect(read(m.copy('base'))).toContain('MY EDIT BEFORE PINNING');
+    expect(unpin.output).toContain(`Kept ${path.dirname(m.copy('base'))} when returning from "trial". Preview what would be sent with \`teamai push --dry-run\`.`);
+    expect(unpin.output).toContain(`Kept ${path.dirname(editedTrial)} when returning from "trial". Preview what would be sent with \`teamai push --dry-run\`.`);
     expect(m.git(['branch', '--show-current'], m.clone())).toBe('main');
+    write(m.copy('base'), skill('base'));
     m.ok(['pull']);
     m.teamCommit({ 'skills/base': null, 'rules/style.md': null, 'agents/reviewer.yaml': 'name: reviewer\ndescription: Reviews\ninstructions: Review.\n' });
     m.ok(['pull', '--team-ref', 'trial']);
@@ -312,7 +320,7 @@ describe('team ref reconciliation and safe transitions', () => {
     const r = m.ok(['pull', ...flags], wt);
     expect(fs.existsSync(m.copy('extra', wt)), r.output).toBe(false);
     expect(read(m.copy('trial', wt))).toContain('MY EDIT');
-    expect(r.output).toMatch(/\[workspace\] Kept .*"trial"'s content/);
+    expect(r.output).toMatch(/\[workspace\] Kept .* when returning from "trial".*teamai push --dry-run/);
   });
 
   it('removes a namespaced branch-only skill and rule on unpin', () => {
