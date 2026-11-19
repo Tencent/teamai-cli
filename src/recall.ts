@@ -17,6 +17,7 @@ import { annotateCodebaseSourceFreshness } from './codebase-freshness.js';
 import { resolveResourceNamespaces } from './resource-namespaces.js';
 import { deliveredLearningsNamespaces, formatProjectsManifestWarning, readWorkspaceChildren } from './workspace-children.js';
 import { recordRecallQuality } from './recall-quality.js';
+import { recordRecallIndexes } from './recall-provenance.js';
 import { agentSessionFromEnv, deriveSessionId } from './utils/session-id.js';
 import type { EnvAgentSession } from './utils/session-id.js';
 import { classifyTreePath, teamwikiCodebaseSlug } from './resource-relations.js';
@@ -1193,6 +1194,14 @@ export async function recall(
   // Scope isolation (issue #73) remains the default. Projects may explicitly
   // opt into searching the user index after the project index.
   const scopeIndexes: Array<{ index: SearchIndex; scope: 'user' | 'project'; config: LocalConfig; learningsBase: string }> = [];
+  const readIndexes: SearchIndex[] = [];
+
+  const observed = <T extends { index: SearchIndex } | 'build-failed' | null>(result: T): T => {
+    if (result && result !== 'build-failed') readIndexes.push(result.index);
+
+    return result;
+  };
+
   // A failed build has named its cause; "no learnings" would misdirect to pull.
   let indexBuildFailed = false;
   // An index that holds nothing is what pull leaves when the member receives
@@ -1202,7 +1211,7 @@ export async function recall(
   if (projectConfig) {
     // Project mode: project scope first.
     try {
-      const result = await loadOrBuildScopeIndex(projectConfig, 'project', options.dryRun);
+      const result = observed(await loadOrBuildScopeIndex(projectConfig, 'project', options.dryRun));
 
       if (result === 'build-failed') indexBuildFailed = true;
       else if (result && result.index.entries.length > 0) {
@@ -1217,7 +1226,7 @@ export async function recall(
         const userConfig = await loadLocalConfigForScope('user', undefined, { dryRun: options.dryRun });
 
         if (userConfig) {
-          const result = await loadOrBuildScopeIndex(userConfig, 'user', options.dryRun);
+          const result = observed(await loadOrBuildScopeIndex(userConfig, 'user', options.dryRun));
 
           if (result === 'build-failed') indexBuildFailed = true;
           else if (result && result.index.entries.length > 0) {
@@ -1232,7 +1241,7 @@ export async function recall(
     // User mode: user scope only.
     try {
       const { localConfig: userConfig } = await requireInit({ dryRun: options.dryRun });
-      const result = await loadOrBuildScopeIndex(userConfig, 'user', options.dryRun);
+      const result = observed(await loadOrBuildScopeIndex(userConfig, 'user', options.dryRun));
 
       if (result === 'build-failed') indexBuildFailed = true;
       else if (result && result.index.entries.length > 0) {
@@ -1242,6 +1251,8 @@ export async function recall(
       log.debug(`recall: user scope not available: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
+
+  if (!options.dryRun) await recordRecallIndexes(process.env, readIndexes).catch(() => log.debug('Recall provenance could not be recorded'));
 
   // Codebase knowledge stays bound to the active project even when its search
   // index is empty and only an inherited user index is available.

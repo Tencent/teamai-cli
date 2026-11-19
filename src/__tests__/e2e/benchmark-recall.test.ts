@@ -20,7 +20,29 @@ afterEach(() => {
 
 describe('benchmark arm recall', () => {
   it('deploys the team recall into the clone of an arm that asks for it, and none into one that does not', async () => {
-    const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true, suite: RECALL_SUITE });
+    const fixture = await benchmarkFixture({
+      tool: 'fixes', sandbox: true, suite: RECALL_SUITE, team: { 'docs/probe.md': '# Provenance sentinel\n' },
+      recallProbe: `
+if (fs.existsSync('.claude/agents/teamai-recall.md')) {
+  const recall = () => {
+    const ran = spawnSync(process.execPath, [recallCli, 'recall', 'provenance sentinel'], { encoding: 'utf8' });
+    if (ran.status !== 0) throw new Error(ran.stderr);
+  };
+  const home = path.resolve('..', 'h');
+  const files = fs.readdirSync(home, { recursive: true, withFileTypes: true }).filter((entry) => entry.name === 'search-index.json');
+  if (files.length !== 1) throw new Error('Expected one trial index, found ' + files.length);
+  const file = path.join(files[0].parentPath, files[0].name);
+  const index = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (!index.provenance?.teamRevision || index.provenance.learningsRevision !== null) throw new Error('Missing build provenance');
+  recall();
+  index.provenance = { teamRevision: 'a'.repeat(40), learningsRevision: null };
+  fs.writeFileSync(file, JSON.stringify(index));
+  recall();
+  delete index.provenance;
+  fs.writeFileSync(file, JSON.stringify(index));
+  recall();
+}`,
+    });
     fixtures.push(fixture);
 
     const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
@@ -54,11 +76,23 @@ describe('benchmark arm recall', () => {
     // tell a run that measured recall from one that did not.
     const runId = (envelope(ran).data?.done as { run?: string } | undefined)?.run;
     expect(runId, 'the run answers its id').toBeDefined();
-    const record = fixture.benchmarkRecord(String(runId)) as { arms: Array<{ name: string; recall?: boolean }> };
+    const record = fixture.benchmarkRecord(String(runId)) as {
+      arms: Array<{ name: string; recall?: boolean }>;
+      trials: Array<{ arm: string; recallProvenance?: unknown }>;
+    };
     expect(record.arms.map(({ name, recall }) => ({ name, recall }))).toEqual([
       { name: 'with-recall', recall: true },
       { name: 'baseline', recall: undefined },
     ]);
+    const trial = record.trials.find(({ arm }) => arm === 'with-recall');
+    expect(trial?.recallProvenance).toEqual({
+      queried: true, unavailable: true,
+      indexes: [
+        { teamRevision: expect.stringMatching(/^[0-9a-f]{40}$/), learningsRevision: null },
+        { teamRevision: 'a'.repeat(40), learningsRevision: null },
+      ],
+    });
+    expect(record.trials.find(({ arm }) => arm === 'baseline')?.recallProvenance).toBeUndefined();
 
     // And the report the run prints shows it, so the record's own text says which arms ran with recall.
     const text = (envelope(ran).data?.done as { outputs?: { text?: string } } | undefined)?.outputs?.text ?? '';

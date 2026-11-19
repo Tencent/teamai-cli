@@ -212,7 +212,7 @@ timeout: 45m
 
 `recall` 从不算作一个被更改的 `defaults` 键，matrix 也不能交叉它。不写它时，该 arm 和每个 workflow 克隆一样在没有 recall 下运行。
 
-记录会把这个 arm 的 `recall` 保留下来，因此之后的对比能分清一个 run 测了 recall、另一个没测；只要有 arm 开了它，结果就会多出一列 Recall：
+记录会保留 arm 的 `recall`；只要有 arm 开了它，结果就会多出一列 Recall。JSON 记录中，开启 recall 的试验通过 `recallProvenance` 显示它是否查询了 recall，以及实际读取的搜索索引版本，而不是 arm 配置中的版本。来源缺失会标记为不可用；如果索引从有未提交修改或在构建期间发生变化的检出构建，这是预期结果。learnings 版本为 null 表示索引里没有 learnings。一次试验可以报告多个索引版本。
 
 ```text
 | Arm | Tool | Model (source) | Recall | Planned | Passed | … |

@@ -212,7 +212,7 @@ Both arms run with recall. This example removes the whole rule, not just the rel
 
 `recall` never counts as a changed `defaults` key, and the matrix cannot cross it. Leave it out and the arm runs as every workflow clone does, without recall.
 
-The record keeps `recall` on the arm, so a later comparison can tell a run that measured recall from one that did not, and the results gain a Recall column once an arm runs with it:
+The record keeps `recall` on the arm, and the results gain a Recall column once an arm runs with it. In the JSON record, a recall-enabled trial's `recallProvenance` shows whether it queried recall and the revisions of the search indexes it actually read, not the arm's configured revision. Missing provenance is marked unavailable; this is expected when an index is built from a dirty checkout or one that changes during the build. A null learnings revision means the index held no learnings. A trial can report more than one index revision.
 
 ```text
 | Arm | Tool | Model (source) | Recall | Planned | Passed | … |
