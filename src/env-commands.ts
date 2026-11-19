@@ -5,7 +5,7 @@ import { log, spinner } from '@teamai/shared/log';
 import { EnvHandler, envEntryReader, unknownEnvVariableKeys, type EnvVariable, type EnvYaml } from './resources/env.js';
 import { ENV_KEY_RE, envName, envValue, sameEnvName } from './resources/env-key.js';
 import {
-  SECRETS_LAYOUT, declaredSecretKeys, readSecretsForEdit, resolveSecretDeclarations, unknownSecretDeclarationKeys,
+  SECRETS_LAYOUT, declaredSecretKeys, readSecretsForEdit, resolveSecretDeclarations, secretsEntryReader, unknownSecretDeclarationKeys,
   writeSecretsFile, type WrittenSecretDeclaration,
 } from './resources/secrets.js';
 import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, updateSecretStore, type StoredSecret } from './secret-store.js';
@@ -616,6 +616,24 @@ async function declareSecret(
  * only, for a key both files carry.
  * Changes are deferred — run `teamai push` to sync to team repo.
  */
+/**
+ * Warn when an active namespace still declares `key` of `kind` after the root declaration came out: this directory keeps
+ * receiving that namespace's declaration, and only `--role`/`--project` names the file to edit.
+ */
+async function warnNamespaceStillDeclares(localConfig: LocalConfig, key: string, kind: 'variable' | 'secret'): Promise<void> {
+  const resolution = await resolveEntriesFor(kind === 'secret' ? secretsEntryReader : envEntryReader, localConfig);
+
+  if (resolution.kind !== 'resolved') return;
+  const entry = resolution.entries.find((candidate) => candidate.namespace !== null && sameEntryKey(candidate.name, key));
+
+  if (entry === undefined) return;
+  log.warn(
+    `${entry.source} still declares ${key} in ${entry.namespace}, which is active in this directory, so this directory `
+      + `still receives ${kind === 'secret' ? 'the secret' : 'it'}. Run `
+      + `\`teamai env remove ${key}${kind === 'secret' ? ' --secret' : ''} --role ${entry.namespace}\` (or --project) to remove that one.`,
+  );
+}
+
 export async function envRemove(
   key: string,
   options: GlobalOptions & { role?: string; project?: string; secret?: boolean },
@@ -632,7 +650,11 @@ export async function envRemove(
   if (!target) return;
 
   if (options.secret) {
-    if (await removeSecret(key, target, options) !== 'absent') return;
+    const outcome = await removeSecret(key, target, options);
+
+    if (outcome === 'removed' && target.namespace === null) await warnNamespaceStillDeclares(localConfig, key, 'secret');
+
+    if (outcome !== 'absent') return;
 
     return fail(
       `Secret "${key}" is not declared in ${target.relativePath}. Nothing was changed. For a namespace's file, pass `
@@ -644,7 +666,11 @@ export async function envRemove(
   const secretsFile = entryFileIn(repoPath, SECRETS_LAYOUT, target.namespace);
 
   if (!await pathExists(envYamlPath)) {
-    if (await removeSecret(key, secretsFile, options) === 'removed') return;
+    if (await removeSecret(key, secretsFile, options) === 'removed') {
+      if (target.namespace === null) await warnNamespaceStillDeclares(localConfig, key, 'secret');
+
+      return;
+    }
 
     return fail(`No env variables defined (${relativePath} not found)`);
   }
@@ -655,13 +681,19 @@ export async function envRemove(
   const idx = envConfig.variables.findIndex(v => sameEntryKey(v.key, key));
 
   if (idx === -1) {
-    if (await removeSecret(key, secretsFile, options) === 'removed') return;
+    if (await removeSecret(key, secretsFile, options) === 'removed') {
+      if (target.namespace === null) await warnNamespaceStillDeclares(localConfig, key, 'secret');
+
+      return;
+    }
 
     return fail(`Env variable "${key}" not found${where}`);
   }
 
   if (options.dryRun) {
     log.info(`[dry-run] Would remove env variable${where}: ${key}`);
+
+    if (target.namespace === null) await warnNamespaceStillDeclares(localConfig, key, 'variable');
 
     return;
   }
@@ -670,6 +702,8 @@ export async function envRemove(
   await envHandler.writeEnvYaml(envYamlPath, envConfig);
 
   log.success(`Removed env variable${where}: ${key}`);
+
+  if (target.namespace === null) await warnNamespaceStillDeclares(localConfig, key, 'variable');
   log.info('Run `teamai push` to sync to team repo.');
 }
 
