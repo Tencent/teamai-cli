@@ -11,7 +11,7 @@ import { callerProvenance, cancelRun, endRunsPartOf, respondProvenance, respondT
 import { pendingRecords } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
 import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, runFilePath, runsRemovalLockIn, runScratchDir, takeRunLock, withRunnerLock } from '../workflow/store.js';
-import { recordGroup, signalPid } from '@teamai/shared/process-group';
+import { recordGroup, signalGroup } from '@teamai/shared/process-group';
 import { attemptRun } from '../workflow/runtimes/attempt.js';
 import type { DriverCan } from '../workflow/requirements.js';
 import type { StepRuntime } from '@teamai/runtime-protocol/step-runtime';
@@ -338,18 +338,25 @@ describe('workflow retry', () => {
     const f = await fixture('  - id: work\n    command: echo work');
     const lease = data(await f.next()).lease;
     const directory = attemptDir(f.config, RunIdSchema.parse(f.id), AttemptIdSchema.parse(lease.attempt));
+    fs.mkdirSync(directory, { recursive: true });
     const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore', windowsHide: true });
-    let ended = false;
-    const exited = new Promise<void>((resolve) => child.once('exit', () => { ended = true; resolve(); }));
-    onTestFinished(async () => { child.kill('SIGKILL'); await exited; });
+    const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+    onTestFinished(async () => {
+      if (child.pid !== undefined) child.kill('SIGKILL');
+      await closed;
+    });
     await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    const pid = child.pid;
+    if (pid === undefined) throw new Error('The detached command has no pid.');
     recordGroup(child, directory);
+    const group = path.join(directory, `group-${pid}.json`);
+    expect(JSON.parse(fs.readFileSync(group, 'utf8'))).toMatchObject({ pid });
     await cancelRun(f.config, f.id, {}, 'work');
-    expect(child.pid !== undefined && signalPid(child.pid, 0)).toBe('sent');
+    expect(signalGroup(pid, 0)).toBe('sent');
 
     expect(data(await retryStep(f.config, f.id, {}, 'work')).retried.pass).toBe(2);
-    expect(ended).toBe(true);
-    expect(fs.readdirSync(directory).filter((name) => name.startsWith('group-'))).toEqual([]);
+    expect(signalGroup(pid, 0)).toBe('gone');
+    expect(fs.existsSync(group)).toBe(false);
   });
 
   it.each(['leased', 'cancelled', 'timed out'])('does not replace a %s attempt while its recorded process may still run', async (status) => {
