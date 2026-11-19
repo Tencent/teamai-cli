@@ -52,7 +52,7 @@ teamai pull --team-ref main  # use your team's default branch to unpin
 
 The pin stays in this workspace's local config and applies to all its checkouts and hook pulls. Branch pins follow new commits; tags and commits stay fixed. A commit must be reachable from a remote branch. `pull` and `status` show the pin.
 
-A revision switch removes unchanged skill, rule, and agent copies the new revision lacks. Edited copies stay, and unpinning names edits that `push` would send to the default branch. While pinned, `push` sends nothing, and `source add`, `source remove` and `import` into the team wiki refuse; pull still reports usage and learnings. A failed or incomplete pinned pull exits 1. `--team-ref` with `--dry-run` is refused.
+A revision switch removes unchanged skill, rule, and agent copies the new revision lacks. Edited copies stay. After unpinning, use `teamai push --dry-run` to see which edits would be sent to the default branch. While pinned, `push` sends nothing, and `source add`, `source remove` and `import` into the team wiki refuse; pull still reports usage and learnings. A failed or incomplete pinned pull exits 1. `--team-ref` with `--dry-run` is refused.
 
 This requires a workspace install without user-scope inheritance or the same team installed at user scope. It does not apply to HTTP or self mode. Other workspaces keep their own revision.
 
