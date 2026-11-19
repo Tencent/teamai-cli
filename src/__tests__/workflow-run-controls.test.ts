@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { log } from '@teamai/shared/log';
@@ -9,7 +10,8 @@ import { leaseNext, parseNextPayload, parseReport, reportAttempt, startRun, type
 import { callerProvenance, cancelRun, endRunsPartOf, respondProvenance, respondToHitl, retryStep } from '../workflow/run-controls.js';
 import { pendingRecords } from '../workflow/records.js';
 import { projectRun } from '../workflow/snapshot.js';
-import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, runFilePath, runsRemovalLockIn, runScratchDir, takeRunLock } from '../workflow/store.js';
+import { attemptDir, AttemptIdSchema, readRun, RunIdSchema, runFilePath, runsRemovalLockIn, runScratchDir, takeRunLock, withRunnerLock } from '../workflow/store.js';
+import { recordGroup, signalPid } from '@teamai/shared/process-group';
 import { attemptRun } from '../workflow/runtimes/attempt.js';
 import type { DriverCan } from '../workflow/requirements.js';
 import type { StepRuntime } from '@teamai/runtime-protocol/step-runtime';
@@ -332,6 +334,88 @@ describe('a run part of a step', () => {
 });
 
 describe('workflow retry', () => {
+  it.skipIf(process.platform === 'win32')('stops the process a cancelled attempt left before opening its next pass', async () => {
+    const f = await fixture('  - id: work\n    command: echo work');
+    const lease = data(await f.next()).lease;
+    const directory = attemptDir(f.config, RunIdSchema.parse(f.id), AttemptIdSchema.parse(lease.attempt));
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore', windowsHide: true });
+    let ended = false;
+    const exited = new Promise<void>((resolve) => child.once('exit', () => { ended = true; resolve(); }));
+    onTestFinished(async () => { child.kill('SIGKILL'); await exited; });
+    await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    recordGroup(child, directory);
+    await cancelRun(f.config, f.id, {}, 'work');
+    expect(child.pid !== undefined && signalPid(child.pid, 0)).toBe('sent');
+
+    expect(data(await retryStep(f.config, f.id, {}, 'work')).retried.pass).toBe(2);
+    expect(ended).toBe(true);
+    expect(fs.readdirSync(directory).filter((name) => name.startsWith('group-'))).toEqual([]);
+  });
+
+  it.each(['leased', 'cancelled', 'timed out'])('does not replace a %s attempt while its recorded process may still run', async (status) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    const now = Date.now();
+    const f = await fixture('  - id: work\n    command: echo work\n    timeout: 1s');
+    const lease = data(await f.next()).lease;
+    const directory = attemptDir(f.config, RunIdSchema.parse(f.id), AttemptIdSchema.parse(lease.attempt));
+    fs.mkdirSync(directory, { recursive: true });
+    const group = path.join(directory, 'group-424242.json');
+    // A different pid namespace gives this machine no way to confirm the old process stopped.
+    fs.writeFileSync(group, JSON.stringify({ pid: 424242, spawnedAt: now, pidNamespace: 'pid:[1]' }));
+
+    if (status === 'cancelled') await cancelRun(f.config, f.id, {}, 'work');
+    else if (status === 'timed out') {
+      vi.setSystemTime(now + 2000);
+      await f.next();
+    }
+
+    const before = await f.state();
+    expect(await retryStep(f.config, f.id, {}, 'work')).toMatchObject({
+      error: { code: 'not_retryable', message: expect.stringContaining('could not confirm that process 424242') },
+    });
+    expect(await f.state()).toEqual(before);
+    expect(fs.existsSync(group)).toBe(true);
+
+    fs.rmSync(group);
+    expect(data(await retryStep(f.config, f.id, {}, 'work')).retried.pass).toBe(2);
+  });
+
+  it('does not reset the dependency cone while a dependent attempt may still run', async () => {
+    const f = await fixture("  - id: work\n    command: echo work\n  - id: later\n    needs: [work]\n    if: steps.work.outcome == 'failed'\n    command: echo later");
+    await f.report(data(await f.next()).lease, 'failed');
+    const lease = data(await f.next()).lease;
+    expect(lease.step).toBe('later');
+    const directory = attemptDir(f.config, RunIdSchema.parse(f.id), AttemptIdSchema.parse(lease.attempt));
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, 'group-424242.json'), JSON.stringify({ pid: 424242, spawnedAt: Date.now(), pidNamespace: 'pid:[1]' }));
+    const before = await f.state();
+
+    expect(await retryStep(f.config, f.id, {}, 'work')).toMatchObject({
+      error: { code: 'not_retryable', message: expect.stringContaining('Step "later" cannot run again yet') },
+    });
+    expect(await f.state()).toEqual(before);
+  });
+
+  it.each(['driver', 'runner'])('leaves the process of an attempt with a live %s to its owner to stop', async (owner) => {
+    const f = await fixture('  - id: work\n    command: echo work');
+    const lease = data(await f.next()).lease;
+    const run = RunIdSchema.parse(f.id);
+    const attempt = AttemptIdSchema.parse(lease.attempt);
+    const directory = attemptDir(f.config, run, attempt);
+    fs.mkdirSync(directory, { recursive: true });
+    const group = path.join(directory, 'group-424242.json');
+    fs.writeFileSync(group, JSON.stringify({ pid: 424242, spawnedAt: Date.now(), pidNamespace: 'pid:[1]' }));
+    const retry = async () => {
+      expect(data(await retryStep(f.config, f.id, {}, 'work')).retried.pass).toBe(2);
+      expect((await f.state()).cancelledAttempts).toContain(lease.attempt);
+      expect(fs.existsSync(group)).toBe(true);
+    };
+
+    if (owner === 'driver') expect(await takeRunLock(f.config, run, retry, { waitMs: 0 })).toMatchObject({ kind: 'held' });
+    else await withRunnerLock(f.config, run, attempt, retry);
+  });
+
   it.each(['cancelled', 'failed', 'succeeded'])('points to resume after reopening a %s run', async (outcome) => {
     const f = await fixture(outcome === 'succeeded'
       ? '  - id: work\n    choose: { message: Go?, options: [go, stop] }'
