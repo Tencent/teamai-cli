@@ -179,6 +179,29 @@ export function mergeHookOutputs(outputs: string[]): string | null {
   return outputs[0];
 }
 
+/** Cursor reads injected context from a top-level snake_case field. */
+export function formatCursorContextReply(event: string, output: string): string {
+  if (event !== 'session-start' && event !== 'prompt-submit') return output;
+
+  try {
+    const reply = HookReplySchema.safeParse(JSON.parse(output));
+
+    if (!reply.success) return output;
+
+    const context = HookContextReplySchema.safeParse(reply.data);
+
+    if (!context.success) return output;
+
+    const additional_context = context.data.hookSpecificOutput.additionalContext;
+
+    return event === 'session-start'
+      ? JSON.stringify({ additional_context })
+      : JSON.stringify({ ...reply.data, continue: true, additional_context });
+  } catch {
+    return output;
+  }
+}
+
 /**
  * Wrap a promise with a timeout. Rejects with a timeout error if not resolved in time.
  */
@@ -301,6 +324,10 @@ export function createDispatcher(config: DispatcherConfig): Dispatcher {
         } else {
           log.debug(`[hook-dispatch] ${event}/${tool}: reply context is ${length} characters, over the ${CURSOR_HOOK_CONTEXT_LIMIT}-character limit even without ${yielded}; Cursor drops it`);
         }
+      }
+
+      if (baseToolOf(tool) === 'cursor' && output !== null) {
+        output = formatCursorContextReply(event, output);
       }
 
       return { output, errors };

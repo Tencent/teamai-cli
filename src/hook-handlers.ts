@@ -1156,7 +1156,7 @@ const teamRulesHandler: HookHandler = {
   },
 };
 
-/** SessionStart: Cursor's user-scope rules for a workspace its rules walk does not reach (#1197). */
+/** Cursor's user-scope rules for a workspace its rules walk does not reach (#1197). */
 const cursorUserRulesHandler: HookHandler = {
   name: 'cursor-user-rules',
   async execute(stdin, tool, config) {
@@ -1169,7 +1169,12 @@ const cursorUserRulesHandler: HookHandler = {
 
     if (text === null) return null;
 
-    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: text } });
+    const hookEventName =
+      stdin.hook_event_name === 'UserPromptSubmit' || stdin.hook_event_name === 'beforeSubmitPrompt'
+        ? 'UserPromptSubmit'
+        : 'SessionStart';
+
+    return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: text } });
   },
 };
 
@@ -1362,6 +1367,7 @@ export function buildHandlerRegistry(): HandlerRegistration[] {
     { event: 'session-start', matcher: '*', handler: dashboardReportHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: teamRulesHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: cursorUserRulesHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true, yieldsToContextLimit: true },
+    { event: 'prompt-submit', matcher: '*', handler: cursorUserRulesHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true, yieldsToContextLimit: true },
     { event: 'session-start', matcher: '*', handler: mrHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, gitOnly: true, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: mrHintStashHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, background: true, gitOnly: true, requiresConfig: true },
     { event: 'session-start', matcher: '*', handler: packageHintHandler, timeoutMs: FOREGROUND_HOOK_TIMEOUT_MS, requiresConfig: true },
