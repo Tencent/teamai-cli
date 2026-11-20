@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import type { LocalConfig } from '../types.js';
+import { trySymlink } from './helpers/symlink.js';
 
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
@@ -217,7 +218,9 @@ describe('each scope reports only the dashboard sessions recorded in it (#785)',
   it('a session started under a symlinked path of the project is reported by the project', async () => {
     const { root, user, project } = await setup();
     const link = path.join(tmp, 'link-p');
-    fs.symlinkSync(root, link, 'dir');
+
+    // Without a symlink there is nothing to assert (Windows needs a privilege for one).
+    if (!trySymlink(root, link)) return;
     await session('claude', { session_id: 'sid-link', cwd: link });
 
     expect(await reportedSessions(user)).toBe(0);
@@ -227,7 +230,9 @@ describe('each scope reports only the dashboard sessions recorded in it (#785)',
   it('events recorded before sessions carried a data home go to the scope their cwd resolves to now', async () => {
     const { root, user, project } = await setup();
     const link = path.join(tmp, 'link-p');
-    fs.symlinkSync(root, link, 'dir');
+
+    // Without a symlink there is nothing to assert (Windows needs a privilege for one).
+    if (!trySymlink(root, link)) return;
     fs.mkdirSync(path.join(root, 'src'));
     fs.mkdirSync(path.join(tmp, 'elsewhere'));
     // A nested clone under P resolves to no project, so it is the user scope's, not P's too.
