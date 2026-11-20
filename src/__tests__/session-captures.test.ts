@@ -118,6 +118,29 @@ describe('session captures (#1178)', () => {
     expect((await SessionCaptures.read(config, 'claude-code', SESSION)).map((capture) => capture.teamSkills)).toEqual([{ review: [skill] }]);
   });
 
+  it('captures a session whose host omits cwd, reading the project the capture belongs to (#2000)', async () => {
+    const { config, project, rev, skill } = checkout();
+    await recordDelivery(config, { rev, targets: ['claude'], files: [skill] });
+    const { cwd: _omitted, ...withoutCwd } = start(project);
+
+    expect(await SessionCaptures.atStart(config, 'claude', withoutCwd, {})).toBeTypeOf('string');
+
+    const [capture] = await SessionCaptures.read(config, 'claude-code', SESSION);
+    expect(capture?.teamSkills).toEqual({ review: [skill] });
+  });
+
+  it('records how a session whose host omits cwd at its Stop ended, in the checkout the hook runs in (#2000)', async () => {
+    const { config, project } = checkout();
+    await SessionCaptures.atStart(config, 'claude', start(project), {});
+    const withoutCwd: HookStdin = { session_id: SESSION, hook_event_name: 'Stop' };
+
+    await SessionCaptures.atStop(config, 'claude', withoutCwd);
+
+    const dir = path.join(config.dataHome ?? '', 'sessions', 'captures', 'claude-code', SESSION);
+    const end = JSON.parse(fs.readFileSync(path.join(dir, 'end'), 'utf8')) as { end: unknown };
+    expect(end.end).toEqual({ commit: git(project, 'rev-parse', 'HEAD'), dirty: false });
+  });
+
   it('sweeps the captures of a session whose file is gone a day after they were written, and keeps the rest', async () => {
     const { config, project, rev, skill } = checkout();
     await recordDelivery(config, { rev, targets: ['claude'], files: [skill] });

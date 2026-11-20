@@ -63,7 +63,7 @@ const SEGMENT = /^(?!\.{1,2}$)[A-Za-z0-9._-]{1,200}$/;
 /** The session-start hook payload fields a capture reads: a session id safe as a path segment, and the session's cwd. */
 const StartPayloadSchema = z.object({
   session_id: z.string().regex(SEGMENT),
-  cwd: z.string(),
+  cwd: OptionalString,
   model: OptionalString,
   transcript_path: OptionalString,
 });
@@ -79,7 +79,7 @@ const SessionEndSchema = z.object({
 export type SessionEnd = z.infer<typeof SessionEndSchema>;
 
 /** The Stop payload fields an end record reads. */
-const StopPayloadSchema = z.object({ session_id: z.string().regex(SEGMENT), cwd: z.string().min(1) });
+const StopPayloadSchema = z.object({ session_id: z.string().regex(SEGMENT), cwd: OptionalString });
 
 /** The background pass's payload: its session and the capture the start wrote, both safe as path segments. */
 const ToolVersionPayloadSchema = z.object({
@@ -93,6 +93,21 @@ const PulledPayloadSchema = z.object({
   cwd: OptionalString,
   [CAPTURE_PAYLOAD_KEY]: OptionalString,
 });
+
+/**
+ * The checkout to read for a hook whose payload carries no `cwd`. WorkBuddy's SessionStart omits it, and a capture
+ * belongs to the project it was taken in, so the config's own project root stands in, and the directory the host runs
+ * the hook in after that. Reading on keeps the capture, and the team skills in it are the only evidence the scorers
+ * have; dropping the payload loses the whole session (#2000).
+ */
+function sessionCwd(cwd: string | undefined, config: LocalConfig, platform: string, sessionId: string): string {
+  if (cwd) return cwd;
+
+  const fallback = config.projectRoot ?? process.cwd();
+  log.debug(`session capture: ${platform} session ${sessionId} sent no cwd, reading the checkout this hook runs in: ${fallback}`);
+
+  return fallback;
+}
 
 function sessionDir(config: LocalConfig, platform: string, sessionId: string): string {
   return path.join(getDataHome(config), 'sessions', 'captures', platform, sessionId);
@@ -118,7 +133,8 @@ async function atStart(config: LocalConfig, tool: string, payload: HookStdin, en
   const fields = StartPayloadSchema.safeParse(payload);
 
   if (!platform || !fields.success) return undefined;
-  const { session_id: sessionId, cwd, model: requested, transcript_path: file } = fields.data;
+  const { session_id: sessionId, model: requested, transcript_path: file } = fields.data;
+  const cwd = sessionCwd(fields.data.cwd, config, platform, sessionId);
 
   try {
     const model = requested === undefined ? undefined : { requested };
@@ -182,7 +198,8 @@ async function atStop(config: LocalConfig, tool: string, payload: HookStdin): Pr
   const fields = StopPayloadSchema.safeParse(payload);
 
   if (!platform || !fields.success) return;
-  const { session_id: sessionId, cwd } = fields.data;
+  const { session_id: sessionId } = fields.data;
+  const cwd = sessionCwd(fields.data.cwd, config, platform, sessionId);
   const dir = sessionDir(config, platform, sessionId);
 
   if (!(await fs.stat(dir).catch(() => undefined))) return;
