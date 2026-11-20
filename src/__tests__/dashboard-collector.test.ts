@@ -83,7 +83,7 @@ const HOST_BLOCKED_LINE = JSON.stringify({
 // Use a temp dir for each test to avoid cross-test interference
 let tmpDir: string;
 let originalHome: string;
-
+let originalProfile: string;
 /** Simulate Copilot flushing its current shutdown after SessionEnd fires. */
 function appendCopilotShutdownLater(transcript: string, entry: object): NodeJS.Timeout {
   return setTimeout(() => {
@@ -106,13 +106,20 @@ function writeResumedCopilotLog(transcript: string, oldInputTokens: number): voi
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-dashboard-test-'));
   originalHome = process.env.HOME ?? '';
+  originalProfile = process.env.USERPROFILE ?? '';
   process.env.HOME = tmpDir;
+  // The tools write their session stores under the home the OS reports, which on
+  // Windows is %USERPROFILE% whatever HOME says (tool-home.ts), so a case that
+  // stubs only HOME reads the developer's real profile there and finds no
+  // transcript.
+  process.env.USERPROFILE = tmpDir;
   _setLogFilePath(path.join(tmpDir, '.teamai', 'debug.log'));
 });
 
 afterEach(() => {
   useToolInstances(new Map());
   process.env.HOME = originalHome;
+  process.env.USERPROFILE = originalProfile;
   resetLogger();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
