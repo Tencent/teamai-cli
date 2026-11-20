@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {
+  isHumanPromptEntry,
   parseHookEvent,
   readLastAssistantOutput,
   countInterventions,
@@ -1249,6 +1250,14 @@ describe('parseHookEvent', () => {
       const event = await parseHookEvent(raw, 'claude');
       expect(event!.correction, word).toBe(false);
     }
+  });
+
+  it('does not count a compaction summary as a human turn (#1989)', async () => {
+    // Claude writes the summary of the compacted conversation back in the user
+    // role. It is not something the member typed, so the prompt count must skip it.
+    expect(isHumanPromptEntry({ type: 'user', isCompactSummary: true, message: { content: 'Summary of the conversation so far.' } })).toBe(false);
+    expect(isHumanPromptEntry({ type: 'user', isCompactSummary: false, message: { content: 'Fix the trend panel.' } })).toBe(true);
+    expect(isHumanPromptEntry({ type: 'user', message: { content: 'Fix the trend panel.' } })).toBe(true);
   });
 
   it('drops a UserPromptSubmit that is purely injected content (no human turn)', async () => {
