@@ -158,7 +158,9 @@ export function queryGitInstallPath(): string | null {
     const out = execFileSync(
       'reg.exe',
       ['query', 'HKLM\\SOFTWARE\\GitForWindows', '/v', 'InstallPath'],
-      { timeout: 5000, windowsHide: true, encoding: 'utf8' },
+      // A missing key is legitimate — the git may ship with an agent — and
+      // execFileSync would otherwise inherit reg.exe's complaint.
+      { timeout: 5000, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
 
     const match = out.match(/InstallPath\s+REG_SZ\s+(.+)/);
