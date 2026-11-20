@@ -488,38 +488,56 @@ describe('hookDispatchCli', () => {
     }
   });
 
-  it('captures the session before the detached pull starts, and hands it the capture and the one git state it read (#1178)', async () => {
+  it.each([
+    { tool: 'claude', platform: 'claude-code', withCwd: true },
+    { tool: 'codebuddy', platform: 'codebuddy', withCwd: false },
+  ])('captures $tool before the detached pull starts (payload cwd: $withCwd)', async ({ tool, platform, withCwd }) => {
     const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'capture-hook-')));
     const team = path.join(root, 'team');
     const project = path.join(root, 'project');
     initRepo(team);
     initRepo(project);
     commitFile(project, 'README.md');
-    const rev = commitFile(team, 'skills/review/SKILL.md');
+    const skillText = '---\nname: review\ndescription: Review a change\n---\nCheck the diff.\n';
+    const rev = commitFile(team, 'skills/review/SKILL.md', skillText);
+    const skill = path.join(project, '.agents', 'skills', 'review', 'SKILL.md');
+    fs.mkdirSync(path.dirname(skill), { recursive: true });
+    fs.writeFileSync(skill, skillText);
     const config: LocalConfig = {
       repo: { localPath: team, remote: 'local', kind: 'git' },
       username: 'tester', scope: 'project', additionalRoles: [], projectRoot: project, dataHome: path.join(root, 'data'),
     };
-    await recordDelivery(config, { rev, targets: ['claude'] });
+    await recordDelivery(config, { rev, targets: [tool], files: [skill] });
     const stdinFile = path.join(root, 'payload.json');
-    fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'c1', cwd: project, source: 'startup', teamai_capture: 'from-host' }));
-    const resolveConfig = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookScopeFor').mockResolvedValue({ config, dir: project });
-    const capturesDir = path.join(root, 'data', 'sessions', 'captures', 'claude-code', 'c1');
+    const dir = withCwd ? project : undefined;
+    fs.writeFileSync(stdinFile, JSON.stringify({ hook_event_name: 'SessionStart', session_id: 'c1', cwd: dir, source: 'startup', teamai_capture: 'from-host' }));
+    const resolveConfig = vi.spyOn(await import('../dashboard-collector.js'), 'resolveHookScopeFor').mockResolvedValue({ config, dir });
+    const capturesDir = path.join(root, 'data', 'sessions', 'captures', platform, 'c1');
     let detachedPayload = '';
     let capturedFirst: string[] = [];
     mockSpawn.mockImplementation(() => {
       capturedFirst = fs.existsSync(capturesDir) ? fs.readdirSync(capturesDir) : [];
       return { on: vi.fn(), stdin: { on: vi.fn(), end: vi.fn((raw: string, done: () => void) => { detachedPayload = raw; done(); }) }, unref: vi.fn() };
     });
+    if (process.platform === 'win32') mockSpawn.mockReturnValueOnce(fakePowerShell(3, undefined, 'ReturnValue=21'));
     const originalCwd = process.cwd();
     vi.stubEnv('HOME', path.join(root, 'home'));
+    vi.stubEnv('TEAMAI_LAUNCHED_BY', undefined);
+    vi.stubEnv('TEAMAI_WORKFLOW_ATTEMPT', undefined);
 
     try {
-      await hookDispatchCli('session-start', 'claude', '*', { stdinFile });
-      expect(capturedFirst).toEqual([`${JSON.parse(detachedPayload).teamai_capture}.json`]);
-      expect(JSON.parse(fs.readFileSync(path.join(capturesDir, capturedFirst[0] ?? ''), 'utf8')).agent.team).toMatchObject({ revision: rev, localChanges: false });
-      const { agent } = JSON.parse(fs.readFileSync(path.join(capturesDir, capturedFirst[0] ?? ''), 'utf8'));
-      expect(JSON.parse(detachedPayload).teamai_git_at_start).toEqual({ head: agent.project.commit, dirty: agent.project.dirty });
+      if (!withCwd) process.chdir(project);
+      await hookDispatchCli('session-start', tool, '*', { stdinFile });
+      const forwarded = JSON.parse(detachedPayload);
+      expect(capturedFirst).toEqual([`${forwarded.teamai_capture}.json`]);
+      const capture = JSON.parse(fs.readFileSync(path.join(capturesDir, capturedFirst[0] ?? ''), 'utf8'));
+      expect(capture).toMatchObject({
+        agent: { team: { revision: rev, localChanges: false } },
+        teamSkills: { review: [skill] },
+        teamSkillInfo: { review: { description: 'Review a change' } },
+      });
+      expect(forwarded.cwd).toBe(project);
+      expect(forwarded.teamai_git_at_start).toEqual({ head: capture.agent.project.commit, dirty: capture.agent.project.dirty });
     } finally {
       process.chdir(originalCwd);
       vi.unstubAllEnvs();
