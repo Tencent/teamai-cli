@@ -87,14 +87,18 @@ export function extractSkillName(toolInput: string | z.input<typeof SkillToolInp
 
     if (!trimmed) return null;
 
+    // A skill may be named by the path it was loaded from, and on Windows that path arrives with `\` separators and a
+    // drive letter, so the matching below runs on a slash-separated copy.
+    const slashed = trimmed.replace(/\\/g, '/');
+
     // If value looks like a path to SKILL.md, extract the parent directory name
-    const skillMdMatch = trimmed.match(/\/([^/]+)\/SKILL\.md$/i);
+    const skillMdMatch = slashed.match(/\/([^/]+)\/SKILL\.md$/i);
 
     if (skillMdMatch) return skillMdMatch[1];
 
     // If value looks like a filesystem path, extract the last segment
-    if (trimmed.startsWith('/') || trimmed.startsWith('~')) {
-      const segments = trimmed.split('/').filter(Boolean);
+    if (slashed.startsWith('/') || slashed.startsWith('~') || /^[a-z]:\//i.test(slashed)) {
+      const segments = slashed.split('/').filter(Boolean);
 
       return segments[segments.length - 1] || null;
     }

@@ -1389,6 +1389,12 @@ describe('extractSkillName', () => {
     expect(extractSkillName({ skill: '~/skills/code-review' })).toBe('code-review');
   });
 
+  it('extracts the name from a Windows path, which arrives with backslashes and a drive letter', () => {
+    expect(extractSkillName({ skill: 'C:\\Users\\me\\.claude\\skills\\tdd\\SKILL.md' })).toBe('tdd');
+    expect(extractSkillName({ name: 'D:\\work\\.cursor\\skills\\plan-eng-review\\SKILL.md' })).toBe('plan-eng-review');
+    expect(extractSkillName({ skill: 'C:\\Users\\me\\.claude\\skills\\code-review' })).toBe('code-review');
+  });
+
   it('handles JSON string input', () => {
     expect(extractSkillName(JSON.stringify({ skill: 'tdd' }))).toBe('tdd');
   });
