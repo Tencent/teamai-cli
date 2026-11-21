@@ -399,9 +399,14 @@ describe('issue #373 project hook isolation (real CLI)', () => {
     const teamRepo = path.join(sandbox, 'bare-team');
     fs.cpSync(path.join(projectA, '.teamai', 'team-repo'), teamRepo, { recursive: true });
     execFileSync('git', ['init', '--bare', '-q', bare]);
+    // `worktree add --orphan` needs git 2.42+: seed one commit, and give each worktree its own branch off it.
+    const seed = path.join(sandbox, 'bare-seed');
+    execFileSync('git', ['init', '-q', seed]);
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: seed });
+    execFileSync('git', ['push', '-q', bare, 'HEAD:refs/heads/main'], { cwd: seed });
     const worktrees = [path.join(sandbox, 'bare-a'), path.join(sandbox, 'bare-b')];
     for (const worktree of worktrees) {
-      execFileSync('git', ['--git-dir', bare, 'worktree', 'add', '--orphan', worktree]);
+      execFileSync('git', ['--git-dir', bare, 'worktree', 'add', '-q', '-b', path.basename(worktree), worktree, 'main']);
       fs.mkdirSync(path.join(worktree, '.teamai'));
       fs.writeFileSync(path.join(worktree, '.teamai', 'config.yaml'),
         fs.readFileSync(path.join(projectB, '.teamai', 'config.yaml'), 'utf8')
