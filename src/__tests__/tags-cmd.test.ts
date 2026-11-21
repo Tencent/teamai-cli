@@ -181,6 +181,25 @@ describe('tags list', () => {
     writeFileSync(path.join(dir, 'SKILL.md'), '# skill');
   }
 
+  it('shows the subscriptions even when the team has no tags.yaml', async () => {
+    useConfig({ subscribedTags: ['frontend'] });
+
+    await tagsList();
+
+    expect(log.info).toHaveBeenCalledWith('Your subscriptions: frontend');
+    expect(log.info).toHaveBeenCalledWith('No tags.yaml found in team repo. Tags are not configured yet.');
+  });
+
+  it('shows the subscriptions when tags.yaml holds no tags', async () => {
+    writeFileSync(path.join(repoPath, 'tags.yaml'), 'skills: {}\nrules: {}\n');
+    useConfig({ subscribedTags: ['frontend'] });
+
+    await tagsList();
+
+    expect(log.info).toHaveBeenCalledWith('Your subscriptions: frontend');
+    expect(log.info).toHaveBeenCalledWith('tags.yaml exists but contains no tags.');
+  });
+
   it('counts untagged skills in both the flat and the namespace layout', async () => {
     addSkill('solo');
     addSkill('hai', 'a');

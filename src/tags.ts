@@ -53,6 +53,15 @@ async function saveTagsScopeConfig(localConfig: LocalConfig): Promise<void> {
 export async function tagsList(): Promise<void> {
     // Read-only: the load never persists a migration (#893).
     const localConfig = await resolveTagsScope({ dryRun: true });
+    // The member's subscriptions are their own, so they show whether or not the team has a tags.yaml to list yet.
+    const subscribed = new Set(localConfig.subscribedTags ?? []);
+
+    if (subscribed.size > 0) {
+        log.info(`Your subscriptions: ${[...subscribed].join(', ')}`);
+    } else {
+        log.info('You have no tag subscriptions (pulling all resources).');
+    }
+
     const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
 
     if (!tagsConfig) {
@@ -67,15 +76,6 @@ export async function tagsList(): Promise<void> {
         log.info('tags.yaml exists but contains no tags.');
 
         return;
-    }
-
-    // Show current subscriptions
-    const subscribed = new Set(localConfig.subscribedTags ?? []);
-
-    if (subscribed.size > 0) {
-        log.info(`Your subscriptions: ${[...subscribed].join(', ')}`);
-    } else {
-        log.info('You have no tag subscriptions (pulling all resources).');
     }
 
     console.log('');
