@@ -726,28 +726,24 @@ function retryRefusal(run: RunState, step: string, retention: ResolvedRetention,
 
 /** The step a retry runs again and the workflows it runs again in, or why it cannot. */
 /**
- * Why step `target` may not run again yet: it failed rather than run again beside a process a killed driver left of its
- * attempt, which no stop confirms ended, as staging refuses to (local-driver.ts stopLeftHere). Once one confirms it, the
- * attempt lets its login go.
+ * Why step `target` may not run again yet: no stop confirms that a process of `attempt` ended. Once one confirms it,
+ * the attempt lets its login go.
  */
-async function leftBeside(config: LocalConfig, run: RunId, target: StepState): Promise<WorkflowEnvelope | undefined> {
-  const attempt = target.status === 'failed' && target.failure?.code === 'runtime_lost' ? AttemptIdSchema.safeParse(target.attempt) : undefined;
-
-  if (!attempt?.success) return undefined;
-  const left = await stopRecordedGroup(attemptDir(config, run, attempt.data));
+async function leftBeside(config: LocalConfig, run: RunId, target: StepState, attempt: AttemptId): Promise<WorkflowEnvelope | undefined> {
+  const left = await stopRecordedGroup(attemptDir(config, run, attempt));
 
   if (left.length === 0) {
-    await stopLeftInProcess(config, run, attempt.data);
+    await stopLeftInProcess(config, run, attempt);
 
     return undefined;
   }
 
   const holders = await Promise.all(LOGIN_TOOLS.map((tool) => loginHolder(tool)));
-  const held = LOGIN_TOOLS.filter((_, index) => holders[index]?.run === run && holders[index]?.attempt === attempt.data);
+  const held = LOGIN_TOOLS.filter((_, index) => holders[index]?.run === run && holders[index]?.attempt === attempt);
 
-  if (held.length === 0) return error('not_retryable', `Step "${target.id}" cannot run again yet: teamai could not confirm that process ${left.join(', ')}, which attempt ${attempt.data} left, ended. Once it has ended, run ${retryCommand({ run, step: target.id })} again.`);
+  if (held.length === 0) return error('not_retryable', `Step "${target.id}" cannot run again yet: teamai could not confirm that process ${left.join(', ')}, which attempt ${attempt} left, ended. Once it has ended, run ${retryCommand({ run, step: target.id })} again.`);
 
-  return error('not_retryable', `Step "${target.id}" cannot run again yet: teamai could not confirm that process ${left.join(', ')}, which attempt ${attempt.data} left, ended, and it may still use the ${held.join(' and ')} login that attempt holds. Once it has ended, run ${retryCommand({ run, step: target.id })} again; if teamai still cannot tell, teamai workflow cancel ${run} --release ${attempt.data} lets the login go.`);
+  return error('not_retryable', `Step "${target.id}" cannot run again yet: teamai could not confirm that process ${left.join(', ')}, which attempt ${attempt} left, ended, and it may still use the ${held.join(' and ')} login that attempt holds. Once it has ended, run ${retryCommand({ run, step: target.id })} again; if teamai still cannot tell, teamai workflow cancel ${run} --release ${attempt} lets the login go.`);
 }
 
 function retryTarget(config: LocalConfig, run: RunState, step: string): { target: StepState; containers: RetryContainer[] } | WorkflowEnvelope {
@@ -779,14 +775,23 @@ function retryTarget(config: LocalConfig, run: RunState, step: string): { target
 }
 
 /**
- * Why step `target` of run `run` may not run again yet: what its attempt ran on a step runtime may still run there. The
- * step runs again under a new attempt, whose staging stops only what that one left, so this stops it first, through the
- * driver recorded for it, as a cancel does: under the run's driver lock, taken without waiting. A live driver of the run
- * holds that lock and closes its attempts' places itself: one it has not closed yet may still run, unless it still holds
- * the lease, whose cancel it stops and waits for before the new pass starts.
+ * A retry creates new attempts, whose staging cannot stop processes the old attempts left. Stops those first under
+ * the driver lock, or leaves a live driver or runner to stop its own cancelled attempts before starting their next pass.
+ * An external place a live driver has not closed yet still refuses a retry once its step settled.
  */
-async function stopLeftOnRuntime(config: LocalConfig, state: RunState, run: RunId, { state: target, attempt }: { state: StepState; attempt: AttemptId }): Promise<WorkflowEnvelope | undefined> {
-  if (!isPlaceLeftOpen(await readAttemptPlacement(config, run, attempt))) return undefined;
+async function stopLeftBeforeRetry(config: LocalConfig, state: RunState, run: RunId, { state: target, attempt }: { state: StepState; attempt: AttemptId }): Promise<WorkflowEnvelope | undefined> {
+  if (!isPlaceLeftOpen(await readAttemptPlacement(config, run, attempt))) {
+    const taken = await takeRunLock(config, run, async () => {
+      if (await runnerAlive(config, run, attempt)) return undefined;
+
+      return leftBeside(config, run, target, attempt);
+    }, { waitMs: 0 }).catch(runRemovalRefusal);
+
+    if (!('kind' in taken)) return taken;
+
+    return taken.kind === 'held' ? taken.value : undefined;
+  }
+
   const checkout = await existingCheckout(state) ?? process.cwd();
   const taken = await takeRunLock(config, run, () => stopLeftAttempt(config, run, attempt, checkout), { waitMs: 0 }).catch(runRemovalRefusal);
 
@@ -802,7 +807,7 @@ async function stopLeftOnRuntime(config: LocalConfig, state: RunState, run: RunI
 
 /**
  * What a retry of step `step` of run `runId` does before it changes the run, outside the run lock, since both reach the
- * network: stops what the attempt of each step it runs again left on a step runtime (`stopLeftOnRuntime`), then brings
+ * network: stops what the attempt of each step it runs again left (`stopLeftBeforeRetry`), then brings
  * back, before it reopens a succeeded run, the branches it recorded that a cleanup deleted, here or on the install it was
  * claimed from. Answers why a step does not run again yet, or why the run is not reopened when a branch does not come
  * back. A retry refused anyway does neither: the change under the run lock answers that refusal.
@@ -817,7 +822,7 @@ async function prepareRetry(config: LocalConfig, runId: RunId, step: string, ret
   const discarded = discardedAttempts(retryDiscards(run, planned.target, planned.containers));
 
   for (const left of discarded) {
-    const refused = await stopLeftOnRuntime(config, run, runId, left);
+    const refused = await stopLeftBeforeRetry(config, run, runId, left);
 
     if (refused) return { refused };
   }
@@ -894,8 +899,8 @@ export async function retryStep(config: LocalConfig, runId: string, secrets: Rec
 
     const id = RunIdSchema.safeParse(runId);
 
-    for (const { state } of discarded) {
-      const left = id.success ? await leftBeside(config, id.data, state) : undefined;
+    for (const { state, attempt } of discarded) {
+      const left = id.success && state.status === 'failed' && state.failure?.code === 'runtime_lost' ? await leftBeside(config, id.data, state, attempt) : undefined;
 
       if (left) return left;
     }
