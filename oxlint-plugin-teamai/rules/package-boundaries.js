@@ -4,7 +4,7 @@ import path from 'node:path';
 import { defineRule } from '@oxlint/plugins';
 
 import { importVisitors } from '../imports.js';
-import { FAMILY, PROCESS_STARTERS, isTestSupportPath, lintedPath, manifest, workspaceRoot } from '../utils.js';
+import { FAMILY, PROCESS_STARTERS, isTestSupportPath, lintedPath, manifest, resolveFrom, workspaceRoot } from '../utils.js';
 
 /** @type {Map<string, Map<string, string>>} */
 const packageNames = new Map();
@@ -140,7 +140,7 @@ export default defineRule({
         }
 
         if (specifier.startsWith('.')) {
-          const to = path.posix.relative(root, path.posix.resolve(path.posix.dirname(file), specifier));
+          const to = path.posix.relative(root, resolveFrom(path.posix.dirname(file), specifier));
           const target = packageFolder(to);
 
           if (!isTestSupport && isTestSupportPath(to)) {

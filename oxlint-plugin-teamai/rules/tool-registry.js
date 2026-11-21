@@ -2,7 +2,7 @@ import path from 'node:path';
 import { defineRule } from '@oxlint/plugins';
 
 import { importVisitors } from '../imports.js';
-import { lintedPath, scopedFiles, sourcePath } from '../utils.js';
+import { lintedPath, resolveFrom, scopedFiles, sourcePath } from '../utils.js';
 
 /** The raw tool tables, by the module that defines each. */
 const TABLES = new Map([
@@ -52,7 +52,7 @@ export default defineRule({
 
     return {
       ...importVisitors(({ node, specifier, names }) => {
-        const owner = specifier.startsWith('.') ? `${path.posix.relative(root, path.posix.resolve(path.posix.dirname(file), specifier)).replace(/\.[cm]?js$/, '')}.ts` : specifier;
+        const owner = specifier.startsWith('.') ? `${path.posix.relative(root, resolveFrom(path.posix.dirname(file), specifier)).replace(/\.[cm]?js$/, '')}.ts` : specifier;
         const table = TABLES.get(owner) ?? FAMILIES.get(owner);
 
         if (table === undefined || !names.some((name) => name === table || name === '*')) return;
