@@ -1,8 +1,8 @@
 # Connected drivers
 
-> Status: Proposal — workflow drivers become named, overridable definitions whose runtimes run steps in sandboxes (containers, native sandboxes, hosted sandboxes), T3 Code threads, other teamai installs of a fleet or anything else, nested where one needs another, while teamai keeps the git, credential and evidence boundary and knows nothing about the technology a runtime uses.
+> Status: Implemented — workflow drivers become named, overridable definitions whose runtimes run steps in sandboxes (containers, native sandboxes, hosted sandboxes), T3 Code threads, other teamai installs of a fleet or anything else, nested where one needs another, while teamai keeps the git, credential and evidence boundary and knows nothing about the technology a runtime uses.
 
-Tracking: workflow-first (#1589), Paseo adapter (#1087, maintainer-owned), runtime integration (#818).
+Tracking: connected drivers (#1716), workflow-first (#1589), Paseo adapter (#1087, maintainer-owned), runtime integration (#818).
 
 ## Problem
 
