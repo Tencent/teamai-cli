@@ -411,6 +411,34 @@ describe('doctor — rules delivered on disk', () => {
     }
   });
 
+  it('points a kept copy of a rule folder at the team folder, which push takes nothing from (#1880)', async () => {
+    await fse.ensureDir(path.join(repoPath, 'rules', 'api-style'));
+    await fse.writeFile(path.join(repoPath, 'rules', 'api-style', 'RULE.md'), '# API style\n');
+    await deliverPlain(CLAUDE_RULES, 'coding-style');
+    await deliverPlain(CLAUDE_RULES, 'reviews');
+    const folderCopy = path.join(homeDir, CLAUDE_RULES, 'api-style.md');
+    await fse.writeFile(folderCopy, 'My own version\n');
+    await deliverMdc('coding-style');
+    await deliverMdc('reviews');
+    const delivered = { [folderCopy]: crypto.createHash('sha256').update('API style\n').digest('hex') };
+    vi.mocked(loadStateForScope).mockResolvedValue(StateSchema.parse({
+      lastPullByWorkspace: { [await checkoutKey(homeDir)]: { rev: 'r1', targets: [], delivered } },
+    }));
+
+    try {
+      // The advice shows only beside a failing check, so one rule goes missing to carry it.
+      await fse.remove(path.join(homeDir, CLAUDE_RULES, 'coding-style.md'));
+      const kept = await rulesCheck('claude');
+
+      expect(await kept.check()).toBe(false);
+      expect(kept.fix).toContain('changed by you (kept by pull): api-style');
+      expect(kept.fix).toContain('`teamai push` takes nothing from the copy of an agent or rule folder');
+      expect(kept.fix).not.toContain('share it with `teamai push`, or delete it');
+    } finally {
+      vi.mocked(loadStateForScope).mockResolvedValue(StateSchema.parse({}));
+    }
+  });
+
   it('treats a plain .md rule as applicable without frontmatter', async () => {
     await deliverPlain(CLAUDE_RULES, 'coding-style');
     await deliverPlain(CLAUDE_RULES, 'reviews');

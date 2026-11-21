@@ -170,12 +170,20 @@ function describeProblems(problems: Map<string, string[]>, labels: readonly stri
  */
 const CHANGED_BY_YOU = 'changed by you (kept by pull)';
 
-/** The advice for CHANGED_BY_YOU, when a failing check lists it. */
-function changedByYouFix(delivery: ToolDelivery): string {
-  return delivery.problems.has(CHANGED_BY_YOU)
-    ? ' A copy changed by you is kept by pull: share it with `teamai push`, '
-      + 'or delete it and run `teamai pull --force` to take the team version.'
-    : '';
+/**
+ * The advice for CHANGED_BY_YOU, when a failing check lists it. A copy of an
+ * agent or rule folder is edited in the team repo, and push takes nothing from
+ * it (#1880).
+ */
+function changedByYouFix(delivery: ToolDelivery, foldersKept: ReadonlySet<string>): string {
+  if (!delivery.problems.has(CHANGED_BY_YOU)) return '';
+
+  return foldersKept.has(delivery.tool)
+    ? ' A copy changed by you is kept by pull: `teamai push` takes nothing from the copy of an agent or rule folder, '
+      + 'so make your change in the team folder, then delete your copy and run `teamai pull --force` '
+      + 'to take the team version.'
+    : ' A copy changed by you is kept by pull: share it with `teamai push`, '
+      + 'or delete it and run `teamai pull --force` to take the team version.';
 }
 
 /**
@@ -226,14 +234,18 @@ function membersOwnFix(lines: Map<string, string[]>, delivery: ToolDelivery): st
  * writing gets that label instead.
  */
 async function differingCopyLabel(
-  item: ResourceItem, target: DeliveryTarget, olderLabel: string, localConfig: LocalConfig, memberLines: string[], recordedLabel?: string,
+  item: ResourceItem, target: DeliveryTarget, olderLabel: string, localConfig: LocalConfig, memberLines: string[], folderTools: Set<string>, recordedLabel?: string,
 ): Promise<string> {
   const { deliveredHashes } = await import('./pull.js');
   const { describeKeptEntry, judgeCopy, recordedUnchanged } = await import('./resources/delivered-copies.js');
   const previous = await deliveredHashes(localConfig);
   const verdict = await judgeCopy(previous, item, target);
 
-  if (verdict.kind === 'keep') return CHANGED_BY_YOU;
+  if (verdict.kind === 'keep') {
+    if (item.folder === true) folderTools.add(target.tool);
+
+    return CHANGED_BY_YOU;
+  }
 
   if (verdict.kind === 'member') {
     memberLines.push(await describeKeptEntry(target.dest, item.relativePath));
@@ -784,6 +796,8 @@ export async function buildRulesDeliveryChecks(ctx: DoctorContext): Promise<Chec
   const ruleLabels = ['not delivered', 'delivered from an older copy', RECORDED_OLDER_RULE, FLAT_NAME_TAKEN, CHANGED_BY_YOU, MEMBERS_OWN] as const;
   // Pull's line for each file of the member's own, by the tool it is in.
   const memberLines = new Map<string, string[]>();
+  // The tools holding a kept copy of an agent or rule folder, whose fix names the team folder.
+  const folderTools = new Set<string>();
 
   const { byTool } = await walkDelivery(
     getHandler('rules'),
@@ -798,7 +812,7 @@ export async function buildRulesDeliveryChecks(ctx: DoctorContext): Promise<Chec
 
       if (target.content === undefined || delivered === target.content) return null;
 
-      return differingCopyLabel(item, target, ruleLabels[1], localConfig, linesFor(memberLines, target.tool), RECORDED_OLDER_RULE);
+      return differingCopyLabel(item, target, ruleLabels[1], localConfig, linesFor(memberLines, target.tool), folderTools, RECORDED_OLDER_RULE);
     },
   );
 
@@ -865,7 +879,7 @@ export async function buildRulesDeliveryChecks(ctx: DoctorContext): Promise<Chec
             ? 'Run `teamai pull` to rewrite a copy that still holds what teamai recorded writing: it re-renders '
               + 'one even when the team repo has not changed. '
             : '')
-          + `${olderRuleCopyMeaning(delivery.tool)}${changedByYouFix(delivery)}${membersOwnFix(memberLines, delivery)}`,
+          + `${olderRuleCopyMeaning(delivery.tool)}${changedByYouFix(delivery, folderTools)}${membersOwnFix(memberLines, delivery)}`,
     });
   }
 
@@ -1445,6 +1459,8 @@ export async function buildAgentsDeliveryChecks(ctx: DoctorContext): Promise<Che
   const agentLabels = ['not delivered', 'delivered from an older spec', MODEL_CHANGED, CHANGED_BY_YOU, MEMBERS_OWN] as const;
   // Pull's line for each file of the member's own, by the tool it is in.
   const memberLines = new Map<string, string[]>();
+  // The tools holding a kept copy of an agent folder, whose fix names the team folder.
+  const folderTools = new Set<string>();
   // What the last pull wrote for each agent, its model as recorded then (#830).
   const recordedTargets = new Map<string, Promise<DeliveryTarget[]>>();
 
@@ -1478,7 +1494,7 @@ export async function buildAgentsDeliveryChecks(ctx: DoctorContext): Promise<Che
 
       if (delivered === await recordedContent(item, target.tool)) return MODEL_CHANGED;
 
-      return differingCopyLabel(item, target, agentLabels[1], localConfig, linesFor(memberLines, target.tool));
+      return differingCopyLabel(item, target, agentLabels[1], localConfig, linesFor(memberLines, target.tool), folderTools);
     },
   );
 
@@ -1514,7 +1530,7 @@ export async function buildAgentsDeliveryChecks(ctx: DoctorContext): Promise<Che
           ? [`${modelChanged ? 'For the rest, run' : 'Run'} \`teamai pull --force\`: a plain pull skips a scope whose team repo `
             + 'has not changed, so it cannot restore this.']
           : []),
-      ].join(' ') + changedByYouFix(delivery) + membersOwnFix(memberLines, delivery),
+      ].join(' ') + changedByYouFix(delivery, folderTools) + membersOwnFix(memberLines, delivery),
     };
   });
 

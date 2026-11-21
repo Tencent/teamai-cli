@@ -416,4 +416,27 @@ describe('pull keeps a delivered copy the member changed (#822 item 5)', () => {
     // An unedited copy holds an earlier team version, which proves it teamai's.
     expect(read(cursorRule())).toContain('Version two.');
   });
+
+  it('points a kept copy of a rule folder at the team folder, since push takes nothing from it (#1880)', async () => {
+    await pull();
+    teamCommit((repo) => {
+      fs.mkdirSync(path.join(repo, 'rules', 'api-style'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'rules', 'api-style', 'RULE.md'), '# API style\n\nVersion one.\n');
+    });
+    await pull();
+    const folderCopy = path.join(projectRoot, '.claude', 'rules', 'api-style.md');
+
+    fs.appendFileSync(folderCopy, '\nMy extra line.\n');
+    // The member changed the copy and the team changed the folder, which is the state pull words this for.
+    teamCommit((repo) => {
+      fs.writeFileSync(path.join(repo, 'rules', 'api-style', 'RULE.md'), '# API style\n\nVersion two.\n');
+    });
+    const output = await pull();
+
+    expect(read(folderCopy)).toContain('My extra line.');
+    // The edit lands in the team folder, and the copy goes: moving the edit alone leaves these bytes, so pull keeps it.
+    expect(output).toContain('make your change in rules/api-style/ in the team repo');
+    expect(output).toContain('then delete your copy and run `teamai pull --force` to take the team version.');
+    expect(output).not.toContain(`Kept ${folderCopy}: you changed it since teamai delivered it. Share it with \`teamai push\``);
+  });
 });
