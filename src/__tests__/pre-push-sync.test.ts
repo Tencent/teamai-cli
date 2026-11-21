@@ -27,6 +27,7 @@ vi.mock('../utils/git.js', () => ({
   generateBranchName: vi.fn(),
 }));
 
+import { trySymlink } from './helpers/symlink.js';
 import { syncTeamUpdatesToLocal } from '../utils/pre-push-sync.js';
 import { fileHash } from '../utils/fs.js';
 import { recordDelivered } from '../resources/delivered-copies.js';
@@ -788,7 +789,8 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     const dotfile = path.join(tmpDir, 'dotfiles', 'nod.md');
     await fse.outputFile(dotfile, withSkillFrontmatter(v1('nod'), 'nod'));
     await fse.ensureDir(path.dirname(nod));
-    await fse.symlink(dotfile, nod);
+    // Creating a symlink needs a privilege Windows does not grant by default; without one the linked copy cannot be set up.
+    const linked = trySymlink(dotfile, nod);
     mockGetFileContentAtRev.mockImplementation(async (_repo, _rev, file) => (
       file === './skills/greet.md' ? Buffer.from(v1('greet')) : file === './skills/ns/wave.md' ? Buffer.from(v1('wave')) : file === './skills/nod.md' ? Buffer.from(v1('nod')) : null
     ));
@@ -796,8 +798,10 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
 
     expect(await fse.readFile(greet, 'utf-8')).toBe(withSkillFrontmatter('---\ndescription: greet\n---\n# greet\n\nv2\n', 'greet'));
-    expect(await fse.readFile(nod, 'utf-8')).toBe(withSkillFrontmatter('---\ndescription: nod\n---\n# nod\n\nv2\n', 'nod'));
-    expect(await fse.readFile(dotfile, 'utf-8')).toBe(withSkillFrontmatter(v1('nod'), 'nod'));
+    if (linked) {
+      expect(await fse.readFile(nod, 'utf-8')).toBe(withSkillFrontmatter('---\ndescription: nod\n---\n# nod\n\nv2\n', 'nod'));
+      expect(await fse.readFile(dotfile, 'utf-8')).toBe(withSkillFrontmatter(v1('nod'), 'nod'));
+    }
     expect(await fse.readFile(wave, 'utf-8')).toBe(`${withSkillFrontmatter(v1('wave'), 'wave')}mine\n`);
   });
 
