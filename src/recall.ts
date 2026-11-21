@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { entriesUnder } from '@teamai/shared/entries-under';
 import { readRegularFileSync } from '@teamai/shared/regular-file';
 import matter from 'gray-matter';
 import { z } from 'zod';
@@ -409,7 +410,7 @@ export function collectCodePages(
   let rels: string[];
 
   try {
-    rels = readdirSync(codeRoot, { recursive: true, encoding: 'utf8' });
+    rels = entriesUnder(codeRoot).filter(({ entry }) => entry.isFile()).map(({ relative }) => relative).sort();
   } catch {
     return pages; // no code pages in this wiki
   }
