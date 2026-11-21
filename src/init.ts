@@ -1065,9 +1065,12 @@ export async function initHttp(
     // not parse, an unknown `--role` — must not be swallowed: a role-less config
     // matches every role when hooks are reconciled, so it would install exactly
     // the hooks the manifest restricts.
-    const lenient = error instanceof RolesManifestNotFoundError || error instanceof NoRoleSelectedError;
-
-    if (!lenient) throw error;
+    if (error instanceof RolesManifestNotFoundError) {
+      // A team without a roles manifest keeps the legacy convention: the role id names the skills namespace push uses.
+      if (options.role) localConfig.primaryRole = options.role;
+    } else if (!(error instanceof NoRoleSelectedError)) {
+      throw error;
+    }
   }
 
   // The team's assignment, if it has one (#1186). This config is handed to the
@@ -1790,9 +1793,12 @@ export async function initSelfMode(options: GlobalOptions & {
     // not parse, an unknown `--role` — must not be swallowed: a role-less config
     // matches every role when hooks are reconciled, so it would install exactly
     // the hooks the manifest restricts.
-    const lenient = error instanceof RolesManifestNotFoundError || error instanceof NoRoleSelectedError;
-
-    if (!lenient) throw error;
+    if (error instanceof RolesManifestNotFoundError) {
+      // A team without a roles manifest keeps the legacy convention: the role id names the skills namespace push uses.
+      if (options.role) localConfig.primaryRole = options.role;
+    } else if (!(error instanceof NoRoleSelectedError)) {
+      throw error;
+    }
   }
 
   // The team's assignment, if it has one (#1186). This config is handed to the
@@ -2650,7 +2656,9 @@ export async function init(options: GlobalOptions & {
       const msg = (error instanceof Error ? error.message : String(error));
 
       if (msg.includes('Roles manifest not found')) {
-        log.debug('No roles manifest found — skipping role selection');
+        // A team without a roles manifest keeps the legacy convention: the role id names the skills namespace push uses.
+        if (options.role) roleProfile = { primaryRole: options.role, additionalRoles: [] };
+        else log.debug('No roles manifest found — skipping role selection');
       } else {
         log.error(msg);
         process.exit(1);
@@ -2869,7 +2877,9 @@ export async function init(options: GlobalOptions & {
       const msg = (error instanceof Error ? error.message : String(error));
 
       if (msg.includes('Roles manifest not found')) {
-        log.debug('No roles manifest found — skipping role selection');
+        // A team without a roles manifest keeps the legacy convention: the role id names the skills namespace push uses.
+        if (options.role) roleProfile = { primaryRole: options.role, additionalRoles: [] };
+        else log.debug('No roles manifest found — skipping role selection');
       } else {
         log.error(msg);
         process.exit(1);
