@@ -39,6 +39,7 @@ const TeamHookSchema = z.object({
   command: z.string().min(1),
   /** Optional per-hook timeout in seconds. */
   timeout: z.number().optional(),
+  additionalContextLimit: z.int().nonnegative().optional(),
   /** Optional restriction to specific tools (default = all hook-capable tools). */
   tools: z.array(z.string()).optional(),
   /** Deprecated (0.25.0): members holding one of these role ids. Use hooks/<ns>/hooks.yaml. */
@@ -219,6 +220,7 @@ export function teamHookToDef(h: TeamHook): HookDef {
     matcher: h.matcher,
     command: h.command,
     timeout: h.timeout,
+    additionalContextLimit: h.additionalContextLimit,
     description: `${TEAMAI_CUSTOM_HOOK_PREFIX}${h.id}] ${h.description}`,
     tools: h.tools,
   };

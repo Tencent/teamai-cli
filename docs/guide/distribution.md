@@ -6,6 +6,9 @@
 
 Where files install, which repo they come from, and who receives them are all here. A file that is not in a namespace goes to everyone.
 
+
+In `hooks/hooks.yaml`, set `additionalContextLimit` on a team hook to limit the context Codex adds from its output. Use a non-negative token count; `0` disables truncation, and omitting it keeps Codex’s default (2,500 tokens). Other tools ignore it. If TeamAI combines team hooks into one Codex dispatcher, Codex applies one limit to the combined reply: the largest explicit limit for that event, or unlimited if any explicit limit is `0`. Run `teamai doctor` to see the installed values.
+
 ## Scope
 
 ### Project checkouts

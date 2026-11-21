@@ -37,6 +37,7 @@ export interface CodexTeamHook {
   command: string;
   /** Seconds; Codex's default for the event when absent. */
   timeout?: number;
+  additionalContextLimit?: number;
 }
 
 /**
@@ -198,6 +199,7 @@ export async function setCodexDispatcherHooks(project: string, hooks: CodexTeamH
  */
 export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: CodexTrustPolicy): Promise<void> {
   const timeouts = new Map<string, number>();
+  const limits = new Map<string, number>();
 
   for (const [root, record] of Object.entries((await readIndex()).projects)) {
     // A project or checkout that is gone needs no entry; the index drops it on its next write.
@@ -212,6 +214,12 @@ export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: C
       if (!DISPATCHABLE_EVENT.test(hook.event)) continue;
       const timeout = hook.timeout ?? defaultTimeout(hook.event);
       timeouts.set(hook.event, Math.max(timeouts.get(hook.event) ?? 0, timeout));
+      const limit = hook.additionalContextLimit;
+
+      if (limit !== undefined) {
+        const previous = limits.get(hook.event);
+        limits.set(hook.event, previous === 0 || limit === 0 ? 0 : Math.max(previous ?? limit, limit));
+      }
     }
   }
 
@@ -237,6 +245,7 @@ export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: C
               // the built-in entries (#1074).
               commandWindows: getTeamHookDispatchCommandWindows(event, CODEX_TOOL_ID),
               timeout,
+              additionalContextLimit: limits.get(event),
             }],
           },
         };

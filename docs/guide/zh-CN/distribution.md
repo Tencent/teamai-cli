@@ -6,6 +6,9 @@
 
 装到哪、用哪个仓库，以及谁收到什么，都在这里。没放进 namespace 的文件给所有人。
 
+
+在 `hooks/hooks.yaml` 的单个团队 hook 上设置 `additionalContextLimit`，可限制 Codex 从该 hook 输出加入的上下文。值为非负整数（token 数）；`0` 表示不截断，省略则使用 Codex 默认值（2,500 token）。其他工具忽略此字段。如果 TeamAI 把团队 hooks 合并到同一个 Codex dispatcher，Codex 对合并后的输出使用该事件显式配置的最大值；任一显式值为 `0` 则不截断。运行 `teamai doctor` 查看已安装的值。
+
 ## 安装范围
 
 ### 项目 checkout
