@@ -5,4 +5,5 @@ export const detect = {
   codebuddy: { probe: ['codebuddy', '--version'], read: (raw) => raw },
   'codebuddy-ide': { apps: ['/Applications/CodeBuddy.app', '/Applications/CodeBuddy CN.app'] },
   workbuddy: { apps: ['/Applications/WorkBuddy.app'] },
+  workbuddypro: { apps: ['/Applications/WorkBuddyPro.app'] },
 } as const satisfies Record<string, VersionDetector>;

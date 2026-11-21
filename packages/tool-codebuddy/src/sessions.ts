@@ -19,4 +19,10 @@ export const platforms = {
     ...facts.platforms.workbuddy,
     adapter: (storeDir, { processes }): AgentAdapter => new WorkBuddyAdapter(storeDir, processes),
   },
+  'workbuddypro': {
+    // Pro keeps WorkBuddy's store layout (projects/*.jsonl + sqlite), so WorkBuddy's adapter
+    // reads it unchanged once the store root points at Pro's data directory.
+    ...facts.platforms.workbuddypro,
+    adapter: (storeDir, { processes }): AgentAdapter => new WorkBuddyAdapter(storeDir, processes),
+  },
 } as const satisfies Record<keyof typeof facts.platforms, SessionPlatformDefinition>;

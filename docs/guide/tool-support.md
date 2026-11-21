@@ -36,6 +36,7 @@ Rule and agent folder files: how the tool reads the files a user-scope rule or a
 | Hermes | `~/.hermes` `$HERMES_HOME` `~/.hermes$HERMES_DATA_DIR_SUFFIX` `%LOCALAPPDATA%\hermes$HERMES_DATA_DIR_SUFFIX` `<home>/profiles/<active_profile>` | `~/.hermes/skills` s | in the blocks file (Hermes SOUL.md) | copy | `~/.hermes/SOUL.md` s | — | hermes-plugin v | `~/.hermes/config.yaml` d | hermes |
 | DeepSeek Harness | `~/.dsh` `$DSH_HOME` | `~/.dsh/skills` v | in the blocks file (DeepSeek Harness AGENTS.md) | copy | `~/.dsh/AGENTS.md` s | — | dsh-hooks s | `~/.dsh/cordis.patch.yml` s | — |
 | WorkBuddy | `~/.workbuddy` | written; reads ? | `~/.workbuddy/rules` s | copy | `~/.workbuddy/rules` s | `~/.workbuddy/agents` s | `~/.workbuddy/settings.json` t | first of `~/.workbuddy/.mcp.json`, `~/.workbuddy/mcp.json`, `~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set) s | workbuddy |
+| workbuddypro | `~/.workbuddypro` | `~/.workbuddypro/skills` v | `~/.workbuddypro/rules` t | copy | `~/.workbuddypro/rules` t | `~/.workbuddypro/agents` t | `~/.workbuddypro/settings.json` v | first of `~/.workbuddypro/.mcp.json`, `~/.workbuddypro/mcp.json` v | workbuddypro |
 | OpenCode | `~/.config/opencode` `$OPENCODE_CONFIG_DIR` `$XDG_CONFIG_HOME/opencode` | `~/.config/opencode/skills` v<br>`~/.claude/skills` v | `~/.config/opencode/rules` v | copy | `~/.config/opencode/teamai-context.md` v | `~/.config/opencode/agents` v | opencode-plugin s | `~/.config/opencode/opencode.json` v | opencode |
 | Muse Code | `~/.config/muse` `$XDG_CONFIG_HOME/muse` | `~/.config/muse/skills` v<br>`~/.agents/skills` v<br>`~/.claude/skills` v | in the blocks file (Muse Code AGENTS.md) | copy | `~/.config/muse/AGENTS.md` v | `~/.config/muse/agents` s | `~/.config/muse/settings.json` v | `~/.config/muse/settings.json` s | muse |
 | Antigravity | `~/.gemini/config` | `~/.gemini/config/skills` v<br>`~/.agents/skills` v | `~/.gemini/config/rules` v | copy | `~/.gemini/config/rules` v | `~/.gemini/config/agents` v | agy-hooks v | `~/.gemini/config/mcp_config.json` v | agy |
@@ -68,6 +69,7 @@ Paths are relative to the project root. `cwd only`: the tool reads it only from 
 | Hermes | `~/.hermes/skills` s | — | plugin s | — | user hooks | — |
 | DeepSeek Harness | written; reads ? | session hook s | session hook s | — | user hooks | — |
 | WorkBuddy | written; reads ? | written; reads ? | written; reads ? | `.workbuddy/agents` t cwd only | written; reads ? | first of `.mcp.json`, `mcp.json` s cwd only |
+| workbuddypro | written; reads ? | written; reads ? | written; reads ? | `.workbuddypro/agents` t cwd only | written; reads ? | first of `.mcp.json`, `mcp.json` s cwd only |
 | OpenCode | `.opencode/skills` v<br>`.claude/skills` v | `.opencode/rules` v | `.opencode/teamai-context.md` v | `.opencode/agents` v | user hooks | `opencode.json` v<br>`.opencode/teamai-mcp.json` v |
 | Muse Code | `.agents/skills` v | session hook v | session hook v | written; reads ? | `.muse/hooks.json` v | `.mcp.json` s |
 | Antigravity | `.agents/skills` v | `.agents/rules` v | `.agents/rules` v | `.agents/agents` v | user hooks | `.agents/plugins/teamai/mcp_config.json` v |
@@ -100,6 +102,7 @@ User scope, from #1221's matrix; a fix merged since is marked `t`, with a note. 
 | Hermes | ◐s | +s | ? | ✓v | +s | +s<sup>22</sup> | ✓s | ✓s<sup>25</sup> | ✓s<sup>26</sup> |
 | DeepSeek Harness | ✗s | +s | ? | ✓s | ✓t<sup>2</sup> | +s<sup>27</sup> | +s | ◐s<sup>28</sup> | —t |
 | WorkBuddy | ? | ✓t | ✓t | ✓t | ? | ✓t | ✓t | ✓t<sup>29</sup> | ? |
+| workbuddypro | ? | ✓t | ✓t | ✓t | ? | ✓t | ✓t | ✓t<sup>29</sup> | ? |
 | OpenCode | ? | ✓t | ✓d | ✓v | ✓t<sup>2</sup> | ✓v | ✓v | ✓t<sup>1</sup> | ✓v<sup>30</sup> |
 | Muse Code | ✓t | +v | ? | ✓t | ✓v | ✓t | ✓v | ✓t<sup>1</sup> | ✓t<sup>31</sup> |
 | Antigravity | ✓v<sup>32</sup> | ✓v | ✓d | ✓v | ✓v | ◐v<sup>33</sup> | ✓v | ✓t<sup>34</sup> | ✓t<sup>35</sup> |

@@ -16,6 +16,7 @@ export const SESSION_PLATFORM_FACTS = {
   codebuddy: BUILT_IN_FACTS.codebuddy.platforms.codebuddy,
   'codebuddy-ide': BUILT_IN_FACTS.codebuddy.platforms['codebuddy-ide'],
   workbuddy: BUILT_IN_FACTS.codebuddy.platforms.workbuddy,
+  workbuddypro: BUILT_IN_FACTS.codebuddy.platforms.workbuddypro,
   cursor: BUILT_IN_FACTS.cursor.platforms.cursor,
   opencode: BUILT_IN_FACTS.opencode.platforms.opencode,
   agy: BUILT_IN_FACTS.agy.platforms.agy,

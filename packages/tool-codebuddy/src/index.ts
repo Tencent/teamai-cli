@@ -8,5 +8,5 @@ import { platforms } from './sessions.js';
 
 const tokens: Readonly<Record<'codebuddy', TokenFormat>> = { 'codebuddy': readCodebuddy };
 
-/** The CodeBuddy CLI, the CodeBuddy IDE and WorkBuddy. */
+/** The CodeBuddy CLI, the CodeBuddy IDE, WorkBuddy and WorkBuddy Pro. */
 export const family = { tools, launch, platforms, tokens, detect } as const satisfies ToolFamily;
