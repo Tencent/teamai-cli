@@ -53,6 +53,34 @@ export function isOneOf(context, files) {
 }
 
 /** @type {Map<string, string | undefined>} */
+/**
+ * `specifier` resolved against `dir`, both paths of this plugin's own spelling.
+ *
+ * `path.posix.resolve` consults the process directory for a path that does not start with `/`, and a Windows path
+ * this plugin builds (`C:/checkout/src`) does not: resolving `../utils/log` against it produced
+ * `/cwd/C:/checkout/src/utils/log`, so every specifier a rule resolved pointed at nothing on Windows.
+ * @param {string} dir
+ * @param {string} specifier
+ * @returns {string}
+ */
+export function resolveFrom(dir, specifier) {
+  return path.posix.normalize(path.posix.join(dir, specifier));
+}
+
+/**
+ * Whether `dir` is as high as the walk up can go: a POSIX root, or a Windows drive.
+ *
+ * `path.posix.dirname` answers `.` above a drive (`C:` -> `.`), and `.` is the process's own directory, so without
+ * stopping here the walk would read the checkout the lint runs in as an ancestor: its package.json declares
+ * workspaces, every file would resolve against `.`, and no rule would see a repository path at all on Windows. `.` is
+ * left out on purpose - it is the right root for a filename oxlint reports relative to the directory it runs in.
+ * @param {string} dir
+ * @returns {boolean}
+ */
+function isWalkEnd(dir) {
+  return dir === '' || dir === '/' || /^[A-Za-z]:$/.test(dir);
+}
+
 const packageRoots = new Map();
 
 /**
@@ -61,6 +89,8 @@ const packageRoots = new Map();
  * @returns {string | undefined}
  */
 function packageRoot(dir) {
+  if (isWalkEnd(dir)) return undefined;
+
   if (packageRoots.has(dir)) return packageRoots.get(dir);
   const parent = path.posix.dirname(dir);
   const root = fs.existsSync(`${dir}/package.json`) ? dir : parent === dir ? undefined : packageRoot(parent);
@@ -93,6 +123,8 @@ const roots = new Map();
  * @returns {string | undefined}
  */
 export function workspaceRoot(dir) {
+  if (isWalkEnd(dir)) return undefined;
+
   if (roots.has(dir)) return roots.get(dir);
   const parent = path.posix.dirname(dir);
   const root = manifest(dir)?.workspaces !== undefined ? dir : parent === dir ? undefined : workspaceRoot(parent);

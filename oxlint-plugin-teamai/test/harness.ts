@@ -7,7 +7,10 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 import { z } from 'zod';
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const OXLINT = path.join(PLUGIN_ROOT, '..', 'node_modules', '.bin', process.platform === 'win32' ? 'oxlint.cmd' : 'oxlint');
+// The package's own entry, run by this Node, instead of the `.bin` shim: a shim
+// needs a shell on Windows, and cmd.exe both rewrites the arguments and caps the
+// command line, so a rule with many fixtures got back something that was not JSON.
+const OXLINT = path.join(PLUGIN_ROOT, '..', 'node_modules', 'oxlint', 'bin', 'oxlint');
 
 interface RuleHarness {
   /** The source lints clean with only this rule on. */
@@ -49,8 +52,8 @@ export function ruleHarness(rule: `teamai/${string}`, defaults: { filename: stri
   };
 
   beforeAll(() => {
-    const lint = spawnSync(OXLINT, ['-c', config, '--format', 'json', ...fixtures], {
-      encoding: 'utf8', shell: process.platform === 'win32', maxBuffer: 10 * 1024 * 1024,
+    const lint = spawnSync(process.execPath, [OXLINT, '-c', config, '--format', 'json', ...fixtures], {
+      encoding: 'utf8', maxBuffer: 10 * 1024 * 1024,
     });
     expect(lint.error, lint.stderr).toBeUndefined();
     expect([0, 1], lint.stdout + lint.stderr).toContain(lint.status);
@@ -103,7 +106,7 @@ export function lintWithOptions(rule: `teamai/${string}`, options: readonly obje
     const file = path.join(dir, 'src', 'x.ts');
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, 'export const x = 1;\n');
-    const lint = spawnSync(OXLINT, ['-c', config, '--format', 'json', file], { encoding: 'utf8', shell: process.platform === 'win32' });
+    const lint = spawnSync(process.execPath, [OXLINT, '-c', config, '--format', 'json', file], { encoding: 'utf8' });
     return { status: lint.status, output: lint.stdout + lint.stderr };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
