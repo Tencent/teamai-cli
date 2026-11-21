@@ -140,4 +140,72 @@ export const tools = {
       agentHooks: '?',
     },
   },
+  // WorkBuddy Pro is CodeBuddy's engine behind WorkBuddy's UX with its own data
+  // root at `.workbuddypro/` — observed on a live install (macOS, 2026-11-21):
+  // `skills/`, `rules` (absent until written), `settings.json`, `mcp.json`,
+  // `projects/`, `sessions/`, `agents` (absent), `binaries/`. The launcher binds
+  // that root the same way WorkBuddy binds `~/.workbuddy`, and teamai 0.30.x
+  // skips it entirely (no descriptor), so team resources never reach Pro.
+  // Every `verified` below was exercised on that install: a pull with the
+  // recorded home pointed at `~/.workbuddypro` landed team skills under
+  // `skills/` and wrote the five hook entries into `settings.json`.
+  workbuddypro: {
+    home: { dir: '.workbuddypro' },
+    installedBy: 'own-root',
+    skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }, { name: 'skill', evidence: 'assumed' }] },
+    skills: { user: [{ base: 'home', path: '.workbuddypro/skills', evidence: 'verified' }], project: 'unknown' },
+    rules: {
+      user: { channel: 'dir', format: 'codebuddy', reads: [{ base: 'home', path: '.workbuddypro/rules', evidence: 'assumed' }] },
+      project: { channel: 'dir', format: 'codebuddy', reads: 'unknown' },
+    },
+    blocks: {
+      user: {
+        channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', owned: true, header: 'always-apply' },
+        reads: [{ base: 'home', path: '.workbuddypro/rules', evidence: 'assumed' }],
+      },
+      // Same engine, same project layout: Pro reads the project's `.codebuddy/rules` like WorkBuddy does.
+      project: { channel: 'file', file: { in: 'rules-dir', name: 'teamai-context.md', dir: '.codebuddy/rules', owned: true, header: 'always-apply' }, reads: 'unknown' },
+      retired: { user: ['AGENTS.md'], project: ['AGENTS.md'] },
+    },
+    agents: {
+      user: { reads: [{ base: 'home', path: '.workbuddypro/agents', evidence: 'assumed' }] },
+      project: { reads: [{ base: 'project', path: '.workbuddypro/agents', when: 'cwdOnly', evidence: 'assumed' }] },
+    },
+    mcp: {
+      user: {
+        format: 'buddy',
+        // `mcp.json` observed on the live install; the firstOf chain mirrors WorkBuddy's.
+        reads: [{ base: 'home', firstOf: ['.workbuddypro/.mcp.json', '.workbuddypro/mcp.json'], evidence: 'verified' }],
+      },
+      project: {
+        judgedTeamaiOnly: true,
+        format: 'buddy',
+        localScope: { file: { in: 'codebuddy-config-dir', path: '.codebuddy.json' }, key: 'realpath' },
+        reads: [{ base: 'project', firstOf: ['.mcp.json', 'mcp.json'], when: 'cwdOnly', evidence: 'source' }],
+      },
+    },
+    // `settings.json` took teamai's hook entries on the live install (verified).
+    // SubagentStop stays at WorkBuddy's conservative `false` until Pro's engine
+    // is confirmed to run it.
+    hooks: { user: { channel: 'settings', format: 'claude', reads: [{ base: 'home', path: '.workbuddypro/settings.json', evidence: 'verified' }] }, self: { channel: 'settings', format: 'claude', reads: 'unknown' }, subagentStop: false, stopReply: false, shell: 'bundled', teamHooks: 'home', needsBundle: false },
+    sessions: ['workbuddypro'],
+    launch: 'codebuddy',
+    autoCompact: 'buddy',
+    skillAllowedTools: false,
+    searchEvidence: true,
+    projectFromHome: false,
+    legacyAgentMd: false,
+    tokens: 'codebuddy',
+    features: {
+      env: '?',
+      workflows: '✓t',
+      unattended: '✓t',
+      recall: '✓t',
+      stats: '?',
+      tokens: '✓t',
+      aiBackend: '✓t',
+      sessionJudge: { cell: '✓t', note: 'CodeBuddy\'s engine, whose session judges its skill-driven run; not run' },
+      agentHooks: '?',
+    },
+  },
 } as const satisfies Record<string, ToolDescriptor>;

@@ -44,6 +44,7 @@ const DETECTORS: Record<ToolId, VersionDetector | null> = {
   hermes: BUILT_IN_FACTS.hermes.detect.hermes,
   dsh: BUILT_IN_FACTS.dsh.detect.dsh,
   workbuddy: BUILT_IN_FACTS.codebuddy.detect.workbuddy,
+  workbuddypro: BUILT_IN_FACTS.codebuddy.detect.workbuddypro,
   opencode: null,
   muse: BUILT_IN_FACTS.muse.detect.muse,
   agy: BUILT_IN_FACTS.agy.detect.agy,

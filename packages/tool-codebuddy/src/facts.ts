@@ -46,6 +46,19 @@ const platformFacts = {
     idFormat: 'uuid',
     instanceSessions: false,
   },
+  'workbuddypro': {
+    // Same engine and store layout as WorkBuddy, under Pro's own data root.
+    store: { in: 'tool-home', home: 'workbuddypro', dir: 'projects' },
+    resume: (id) => `workbuddypro --resume ${id}`,
+    thinking: true, images: false,
+    nativeTools: new Set([
+      'read_file', 'write_file', 'edit_file', 'bash', 'grep', 'glob', 'task', 'todo_write',
+    ]),
+    legacyIdWithoutWorkspace: false,
+    sqliteRegistrationOnWindows: true,
+    idFormat: 'uuid',
+    instanceSessions: false,
+  },
 } as const satisfies Record<string, SessionPlatformFacts>;
 
 /** What every command may load of this family: its tools, its session platforms' facts and its version detectors. */

@@ -714,6 +714,17 @@ export const DEFAULT_TOOL_PATHS = {
     mcpProject: '.mcp.json',
     userScope: { rules: '.workbuddy/rules', agents: '.workbuddy/agents' },
   },
+  // WorkBuddy Pro mirrors WorkBuddy's layout under its own `.workbuddypro/` root.
+  workbuddypro: {
+    skills: '.workbuddypro/skills',
+    rules: '.codebuddy/rules',
+    settings: '.workbuddypro/settings.json',
+    claudemd: 'AGENTS.md',
+    agents: '.workbuddypro/agents',
+    mcp: '.workbuddypro/mcp.json',
+    mcpProject: '.mcp.json',
+    userScope: { rules: '.workbuddypro/rules', agents: '.workbuddypro/agents' },
+  },
   // OpenCode reads project config from <root>/.opencode/ but user config from
   // ~/.config/opencode/ — a different prefix, hence userScope. Skills are also
   // read natively from .claude/skills, but we write .opencode/skills so an

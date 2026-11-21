@@ -1338,7 +1338,9 @@ export function renderForTool(spec: AgentSpec, tool: ToolName, resolved?: Resolv
     case 'joycode': return renderForJoycode(target);
     case 'kiro': return renderForKiro(target);
     case 'opencode': return renderForOpencode(target, fields);
-    case 'workbuddy': return renderForWorkbuddy(target);
+    case 'workbuddy':
+    case 'workbuddypro':
+      return renderForWorkbuddy(target);
     case 'muse': return renderForMuse(target);
     case 'agy': return renderForAgy(spec, resolved);
     case 'trae':
@@ -1397,6 +1399,7 @@ function reverseByParser(tool: ToolName, filePath: string, content: string): Rev
     case 'opencode':
       return reverseFromOpencode(filePath, content);
     case 'workbuddy':
+    case 'workbuddypro':
       return reverseFromWorkbuddy(filePath, content);
     case 'muse':
       return reverseFromMuse(filePath, content);

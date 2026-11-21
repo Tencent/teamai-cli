@@ -63,7 +63,7 @@ const VERSION_DIR = /^\d+(?:\.\d+)*(?:-\d+)?$/;
  */
 function workbuddyVersionDirs(runtime: WorkbuddyRuntime): string[] {
   const home = getUserHome();
-  const roots = [process.env.WORKBUDDY_CONFIG_DIR, path.join(home, '.workbuddy'), path.join(home, '.workbuddy-ai')];
+  const roots = [process.env.WORKBUDDY_CONFIG_DIR, path.join(home, '.workbuddy'), path.join(home, '.workbuddy-ai'), path.join(home, '.workbuddypro')];
 
   return roots.flatMap((root) => {
     if (!root) return [];
@@ -303,6 +303,7 @@ type BundledShellTool = { [T in ToolId]: DescriptorOf<T>['hooks']['shell'] exten
 /** How each tool with a bundled shell finds it. Every other tool falls back to the conservative /bin/sh gate. */
 const BUNDLED_SHELLS: Record<BundledShellTool, () => string | null> = {
   workbuddy: resolveWorkbuddyShell,
+  workbuddypro: resolveWorkbuddyShell,
   codebuddy: resolveCodebuddyShell,
 };
 
