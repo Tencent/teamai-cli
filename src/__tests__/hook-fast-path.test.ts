@@ -61,9 +61,9 @@ describe('argvVerdict', () => {
   });
 
   // The fast path cannot load the tool table, so its list of these tools is a copy of `hooks.needsBundle`.
-  it.each(TOOL_IDS)('takes the full dispatch for %s exactly when TOOLS says its hooks need the bundle', (tool) => {
+  it.each(TOOL_IDS)('takes the full dispatch for %s when the hook needs the bundle or answers the prompt', (tool) => {
     for (const event of ['post-tool-use', 'prompt-submit']) {
-      expect(argvVerdict(['hook-dispatch', event, '--tool', tool], {}, 'darwin').kind).toBe(TOOLS[tool].hooks.needsBundle ? 'full' : 'payload');
+      expect(argvVerdict(['hook-dispatch', event, '--tool', tool], {}, 'darwin').kind).toBe(TOOLS[tool].hooks.needsBundle || (tool === 'cursor' && event === 'prompt-submit') ? 'full' : 'payload');
     }
   });
 

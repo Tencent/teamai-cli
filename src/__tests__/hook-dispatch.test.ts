@@ -208,7 +208,7 @@ describe('hook-dispatch', () => {
       const overCursor = await dispatcher.dispatch('session-start', '*', {}, 'cursor');
       const claude = await dispatcher.dispatch('session-start', '*', {}, 'claude');
 
-      expect(JSON.parse(overCursor.output!).hookSpecificOutput.additionalContext).toBe('Team env variables in this scope: API_URL.');
+      expect(JSON.parse(overCursor.output!).additional_context).toBe('Team env variables in this scope: API_URL.');
       expect(JSON.parse(claude.output!).hookSpecificOutput.additionalContext).toContain('R'.repeat(9_990));
     });
 
@@ -221,7 +221,7 @@ describe('hook-dispatch', () => {
 
       const result = await dispatcher.dispatch('session-start', '*', {}, 'cursor');
 
-      expect(JSON.parse(result.output!).hookSpecificOutput.additionalContext).toContain('RULES');
+      expect(JSON.parse(result.output!).additional_context).toContain('RULES');
     });
 
     it('keeps a yielding handler\'s context when the merged reply fits Cursor\'s limit', async () => {
@@ -233,7 +233,22 @@ describe('hook-dispatch', () => {
 
       const result = await dispatcher.dispatch('session-start', '*', {}, 'cursor');
 
-      expect(JSON.parse(result.output!).hookSpecificOutput.additionalContext).toBe('RULES\nENV');
+      expect(JSON.parse(result.output!)).toEqual({ additional_context: 'RULES\nENV' });
+    });
+
+    it('formats Cursor prompt context for beforeSubmitPrompt (#1994)', async () => {
+      const output = JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'RULES' } });
+      const dispatcher = createDispatcher({ localConfig: null, handlers: [
+        { event: 'prompt-submit', matcher: '*', handler: createHandler('cursor-user-rules', output) },
+      ] });
+
+      const result = await dispatcher.dispatch('prompt-submit', '*', {}, 'cursor');
+
+      expect(JSON.parse(result.output!)).toEqual({
+        hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'RULES' },
+        continue: true,
+        additional_context: 'RULES',
+      });
     });
 
     it('merges additionalContext from concurrent handlers', async () => {
