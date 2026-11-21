@@ -134,8 +134,8 @@ function offered(can: Can, answersConfined: boolean): Can {
 /**
  * The client of an external step runtime: `command` spawned with `args`, speaking runtime protocol 1 over its stdio.
  * The process starts at `init`. Once it exits (its output read to the end, or for at most 1 s while a process it
- * started holds that output open), or writes a line the protocol does not have, no request reaches it
- * again: an exec or prompt in flight ends `lost`, since what it started may outlive the runtime, and every other
+ * started holds that output open), closes its protocol output, or writes a line the protocol does not have, no request
+ * reaches it again: an exec or prompt in flight ends `lost`, since what it started may outlive the runtime, and every other
  * request fails with `runtime_exited`. A `reattach`, `collect` or `close` ends with its own reply, or with the failure
  * reply for its handle. Every request still waiting fails `runtime_unanswered` when the runtime writes an error that
  * names no request (an exec or prompt ending `lost`), and so does an `init`, a `reattach` or a `close` with no reply
@@ -392,6 +392,12 @@ export function stdioStepRuntime({ name, command, args = [], cwd, secrets = {} }
       stdin.on('error', () => {});
       stderr.setEncoding('utf8').on('data', (data: string) => { stderrTail = `${stderrTail}${data}`.slice(-4000); });
       readline.createInterface({ input: stdout }).on('line', receive).on('error', (error) => die(`its output could not be read (${error.message})`));
+      stdout.once('end', () => {
+        // A normal exit can close stdout before its exit status arrives. Let that status supply the reason.
+        setTimeout(() => {
+          if (!stdin.writableEnded && started.exitCode === null && started.signalCode === null) die('it closed its protocol output');
+        }, EXITED_DRAIN_MS).unref();
+      });
 
       return new Promise<Initialized<DriverCan>>((resolve) => {
         const settle = (reply: Initialized<DriverCan>): void => {
