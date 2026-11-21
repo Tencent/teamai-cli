@@ -8,6 +8,9 @@ import {
     loadTeamConfig,
 } from './config.js';
 import { buildRolePullContext, resolveDesiredSkills } from './resources/desired.js';
+import { listRepoFilesRecursive } from './resources/repo-resource.js';
+import { RESOURCE_LAYOUTS } from './resources/resolver.js';
+import path from 'node:path';
 import { loadTagsConfig, collectTagStats, saveTagsConfig } from './utils/tags.js';
 import { log } from '@teamai/shared/log';
 import type { GlobalOptions, LocalConfig, TagsConfig } from './types.js';
@@ -194,6 +197,22 @@ export async function tagsUnsubscribe(tags: string[], options: GlobalOptions): P
  * Add tags to a skill or rule in tags.yaml (admin operation).
  * Creates tags.yaml if it doesn't exist.
  */
+/**
+ * Whether the team repo holds `type` `<name>`, as `tags.yaml` names it: a folder whose marker is the file, a skill kept
+ * as one file, or a rule `<name>.md`, at the root or in a namespace.
+ */
+async function teamHoldsResource(repoPath: string, type: 'skills' | 'rules', name: string): Promise<boolean> {
+    const marker = RESOURCE_LAYOUTS[type].marker;
+    const files = await listRepoFilesRecursive(path.join(repoPath, type));
+
+    return files.some((relative) => {
+        const segments = relative.split('/');
+
+        return segments[segments.length - 1] === `${name}.md`
+            || (segments[segments.length - 1] === marker && segments[segments.length - 2] === name);
+    });
+}
+
 export async function tagsAdd(
     resourceType: 'skills' | 'rules',
     name: string,
@@ -208,6 +227,11 @@ export async function tagsAdd(
 
     const localConfig = await resolveTagsScope(options);
     const repoPath = localConfig.repo.localPath;
+
+    // A tag on a resource the repo does not hold reaches nobody; say so, while the admin can still fix the name.
+    if (!await teamHoldsResource(repoPath, resourceType, name)) {
+        log.warn(`${resourceType}/${name} is not in the team repo, so its tags reach nobody until it is added.`);
+    }
 
     let tagsConfig = await loadTagsConfig(repoPath);
 
