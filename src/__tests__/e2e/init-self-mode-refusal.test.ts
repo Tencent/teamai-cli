@@ -13,6 +13,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import YAML from 'yaml';
 import { waitForDetachedChildren } from '../helpers/detached-processes.js';
+import { projectSlug } from '../../utils/partition.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(__dirname, '..', '..', '..', 'dist', 'index.js');
@@ -214,3 +215,85 @@ describe('init refuses self-mode team URL (#1500)', () => {
     expect(fs.existsSync(path.join(home, '.teamai', 'config.yaml'))).toBe(true);
   });
 });
+
+/** A project git repo, so init uses the ~/.teamai/projects/<slug> partition (#1881). */
+function projectMember(name: string, url: string, bare: string) {
+  const { home, env } = createMemberEnv(name);
+  delete env.GIT_CONFIG_SYSTEM;
+  delete env.CLAUDE_CONFIG_DIR;
+  delete env.CODEX_HOME;
+  delete env.TEAMAI_API_TOKEN;
+  delete env.TEAMAI_API_KEY;
+  const app = path.join(sandbox, `app-${name}`);
+  fs.mkdirSync(app, { recursive: true });
+  git(['config', '--global', `url.${pathToFileURL(bare).href}.insteadOf`, url], home, env);
+  fs.writeFileSync(path.join(app, 'README.md'), '# app\n');
+  git(['init', '-q', '-b', 'main'], app, env);
+  git(['add', '.'], app, env);
+  git(['commit', '-qm', 'app'], app, env);
+  const root = fs.realpathSync.native(app);
+  return { home, app: root, env, dataHome: path.join(home, '.teamai', 'projects', projectSlug(root)) };
+}
+
+function selfBare(name: string, url: string, env: NodeJS.ProcessEnv): { bare: string; head: string } {
+  const seed = path.join(sandbox, `${name}-seed`);
+  const bare = path.join(sandbox, `${name}.git`);
+  fs.mkdirSync(path.join(seed, '.teamai'), { recursive: true });
+  fs.writeFileSync(path.join(seed, '.teamai', 'teamai.yaml'), YAML.stringify({
+    team: 'biz-team',
+    mode: 'self',
+    repo: url,
+    provider: 'git',
+  }));
+  fs.writeFileSync(path.join(seed, 'README.md'), '# biz\n');
+  git(['init', '-q', '-b', 'main'], seed, env);
+  git(['add', '-A'], seed, env);
+  git(['commit', '-qm', 'biz'], seed, env);
+  git(['clone', '-q', '--bare', seed, bare], sandbox, env);
+  return { bare, head: git(['rev-parse', 'HEAD'], bare, env).trim() };
+}
+
+describe('init refusal of a self-mode repo removes only a project data folder this run created (#1881)', () => {
+  it('removes the empty project data folder a refused self-mode init created', () => {
+    const url = 'https://git.example.invalid/team/self-project.git';
+    const envProbe = { ...process.env, ...GIT_ENV, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(sandbox, 'unused-gitconfig-self-project') };
+    const { bare, head } = selfBare('self-project', url, envProbe);
+    const m = projectMember('self-project', url, bare);
+
+    const res = teamai(
+      ['init', url, '--provider', 'git', '--agent', 'claude', '--force'],
+      m.app,
+      m.env,
+    );
+
+    expect(res.code, res.output).toBe(1);
+    expect(res.output).toContain(
+      `${url} is a repo in self mode: its config is .teamai/teamai.yaml. Clone the repository and run \`teamai init --self\` in it.`,
+    );
+    expect(res.output).not.toContain('Creating default config');
+    expect(git(['rev-parse', 'HEAD'], bare, m.env).trim()).toBe(head);
+    expect(fs.existsSync(m.dataHome)).toBe(false);
+    expect(fs.existsSync(path.join(m.home, '.teamai', 'projects'))).toBe(false);
+    expect(fs.existsSync(path.join(m.home, '.teamai', 'team-repo'))).toBe(false);
+  });
+
+  it('keeps an empty project data folder that was there before the self-mode refusal', () => {
+    const url = 'https://git.example.invalid/team/self-kept.git';
+    const envProbe = { ...process.env, ...GIT_ENV, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(sandbox, 'unused-gitconfig-self-kept') };
+    const { bare } = selfBare('self-kept', url, envProbe);
+    const m = projectMember('self-kept', url, bare);
+    fs.mkdirSync(m.dataHome, { recursive: true });
+
+    const res = teamai(
+      ['init', url, '--provider', 'git', '--agent', 'claude', '--force'],
+      m.app,
+      m.env,
+    );
+
+    expect(res.code, res.output).toBe(1);
+    expect(res.output).toContain('is a repo in self mode');
+    expect(fs.existsSync(m.dataHome)).toBe(true);
+    expect(fs.readdirSync(m.dataHome)).toEqual([]);
+  });
+});
+
