@@ -225,9 +225,6 @@ describe('builtin-rules', () => {
         });
 
         it('still deploys to every installed tool when enabledAgents is unset', async () => {
-            fs.mkdirSync(path.join(tmpDir, '.workbuddy', 'rules'), { recursive: true });
-            fs.mkdirSync(path.join(tmpDir, '.hermes', 'rules'), { recursive: true });
-
             const teamConfig = {
                 toolPaths: {
                     workbuddy: { rules: '.workbuddy/rules' },
@@ -241,12 +238,40 @@ describe('builtin-rules', () => {
                 scope: 'user',
             } as any;
 
-            const { deployBuiltinRules } = await import('../builtin-rules.js');
-            const deployed = await deployBuiltinRules(teamConfig, localConfig);
+            // A tool whose home is `~/.hermes` on POSIX keeps it under
+            // %LOCALAPPDATA% on Windows, so the temp home has to cover that
+            // variable too, and each rules directory is made where the product
+            // says it is instead of at the POSIX one.
+            const previousLocalAppData = process.env.LOCALAPPDATA;
 
-            expect(deployed).toBe(2);
-            expect(fs.existsSync(path.join(tmpDir, '.workbuddy', 'rules', 'teamai-recall.md'))).toBe(true);
-            expect(fs.existsSync(path.join(tmpDir, '.hermes', 'rules', 'teamai-recall.md'))).toBe(true);
+            process.env.LOCALAPPDATA = tmpDir;
+
+            const ruleDirs: string[] = [];
+
+            try {
+                const { installOf, locate, ownOf } = await import('../locate.js');
+                const install = installOf(teamConfig, localConfig);
+
+                for (const tool of Object.keys(teamConfig.toolPaths)) {
+                    const own = ownOf(await locate(tool, 'rules', install));
+
+                    expect(own?.kind, tool).toBe('dir');
+                    if (own?.kind !== 'dir') continue;
+                    fs.mkdirSync(own.path, { recursive: true });
+                    ruleDirs.push(own.path);
+                }
+
+                const { deployBuiltinRules } = await import('../builtin-rules.js');
+                const deployed = await deployBuiltinRules(teamConfig, localConfig);
+
+                expect(deployed).toBe(2);
+                for (const dir of ruleDirs) {
+                    expect(fs.existsSync(path.join(dir, 'teamai-recall.md')), dir).toBe(true);
+                }
+            } finally {
+                if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+                else process.env.LOCALAPPDATA = previousLocalAppData;
+            }
         });
     });
 });
