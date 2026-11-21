@@ -395,6 +395,10 @@ export async function benchmarkFixture(options: BenchmarkFixtureOptions): Promis
   const bin = path.join(root, 'bin');
   const tmp = path.join(root, 'tmp');
   for (const dir of [path.join(home, '.claude'), bin, tmp]) fs.mkdirSync(dir, { recursive: true });
+  // A tool lookup falls back to a login shell when PATH has no match, and the contributor's login shell finds tools this
+  // fixture leaves out. Reset PATH there too, so a case about "no judge tool here" sees none.
+  const fixturePath = [bin, '/usr/bin', '/bin'].join(path.delimiter);
+  for (const profile of ['.bash_profile', '.zprofile', '.zshenv']) fs.writeFileSync(path.join(home, profile), `export PATH='${fixturePath}'\n`);
   git(root, ['init', '-q', '--bare', '-b', 'main', teamOrigin]);
   git(root, ['init', '-q', '--bare', '-b', 'main', productOrigin]);
   const productSeed = path.join(root, 'seed-app');
