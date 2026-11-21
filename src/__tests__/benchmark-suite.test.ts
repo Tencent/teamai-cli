@@ -204,6 +204,7 @@ describe('parseSuite', () => {
     ['a task with neither check nor successCriteria', taskText({ check: '' }), 'check', 'a task has check, successCriteria, or both; add at least one'],
     ['a task with an empty protect', taskText({ check: '{ run: node test.js, protect: [] }' }), 'check.protect', 'check.protect lists every path the check reads and the agent must not supply'],
     ['a short startingCommit', taskText({ startingCommit: 'abc1234' }), 'startingCommit', 'must be a full 40-character commit'],
+    ['a short startingCommit of digits, which YAML reads as a number', taskText({ startingCommit: '1234567' }), 'startingCommit', 'must be a full 40-character commit'],
     ['a scorer name with ":", which no scorer file has', taskText({ scorers: '[review-quality, "teamai:correctness:fix"]' }), 'scorers.1', 'names no scorer file, since a scorer file name has no ":"; list the name of a file in scorers/, without .md'],
     ['a short solutionCommit', taskText({ solutionCommit: '9a1d4e7' }), 'solutionCommit', 'must be a full 40-character commit'],
     ['a commit in source, which only says where the task came from', taskText({ source: `{ platform: claude-code, sessionId: s1, fix: ${'b'.repeat(40)} }` }), 'source', 'Unrecognized key: "fix"'],
