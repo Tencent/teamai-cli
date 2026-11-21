@@ -649,9 +649,10 @@ export async function resolveMcpTargets(
   /**
    * Also the tools not detected here, and in project scope the built-in
    * location of a tool the team dropped or moved: a file an earlier pull
-   * wrote outlives its tool and its mapping.
+   * wrote outlives its tool and its mapping. Folder cleanup also needs the
+   * local project scopes that can still name a delivered server.
    */
-  options: { includeUndetected?: boolean } = {},
+  options: { includeUndetected?: boolean; includeLocalScopes?: boolean } = {},
 ): Promise<McpTarget[]> {
   const projectScope = localConfig.scope === 'project';
   const install = installOf(teamConfig, localConfig);
@@ -733,6 +734,12 @@ export async function resolveMcpTargets(
 
     if (unmovedFile !== undefined && unmovedFile !== (lookup?.mapped ?? place.path)) target.unmovedFile = unmovedFile;
     targets.push(target);
+
+    if (options.includeLocalScopes && inTree) {
+      const local = own.projectKey !== undefined ? own : where.retired.find(({ was }) => was === 'other-scope')?.place;
+
+      if (local?.projectKey !== undefined) targets.push(mcpTargetAt(tool, channel.format, local, inProjectScope));
+    }
   }
 
   return [...targets, ...builtins];
@@ -1677,13 +1684,17 @@ export async function installedMcpEntries(
 /**
  * The entries some tool's MCP file holds once a reconcile is done, each as JSON, whoever the entry is: one teamai
  * wrote, kept (held, a secret not set here), or left in a tool the member excluded, and one the file holds as the
- * member's. The folder each names stays (#1787).
+ * member's. Returns null if any config cannot be read, so cleanup cannot assume its folders are unused.
  */
-export async function installedMcpEntryTexts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<Array<{ readonly file: string; readonly text: string }>> {
+export async function installedMcpEntryTexts(teamConfig: TeamaiConfig, localConfig: LocalConfig): Promise<Array<{ readonly file: string; readonly text: string }> | null> {
   const texts: Array<{ readonly file: string; readonly text: string }> = [];
 
-  for (const target of await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true })) {
-    for (const entry of (await installedMcpEntries(target))?.values() ?? []) texts.push({ file: target.file, text: JSON.stringify(entry) });
+  for (const target of await resolveMcpTargets(teamConfig, localConfig, { includeUndetected: true, includeLocalScopes: true })) {
+    const entries = await installedMcpEntries(target);
+
+    if (entries === null) return null;
+
+    for (const entry of entries.values()) texts.push({ file: target.file, text: JSON.stringify(entry) });
   }
 
   return texts;
@@ -3501,7 +3512,11 @@ async function reconcileTargets(
     settleFolders = async () => {
       await placed.commit();
 
-      if (held.size === 0) await pruneMcpFolders(localConfig, teamEntries, (await installedMcpEntryTexts(teamConfig, localConfig)).map(({ text }) => text));
+      if (unparsed || held.size > 0) return;
+
+      const installed = await installedMcpEntryTexts(teamConfig, localConfig);
+
+      if (installed !== null) await pruneMcpFolders(localConfig, teamEntries, installed.map(({ text }) => text));
     };
   }
 

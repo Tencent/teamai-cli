@@ -2462,7 +2462,11 @@ async function mcpEntriesLeft(teamConfig: TeamaiConfig, localConfig: LocalConfig
     const entries = new Map<string, TextLeft>();
 
     for (const config of await projectWorktreeConfigs(localConfig)) {
-      for (const entry of await installedMcpEntryTexts(teamConfig, config)) entries.set(`${entry.file}\0${entry.text}`, entry);
+      const installed = await installedMcpEntryTexts(teamConfig, config);
+
+      if (installed === null) return 'unread';
+
+      for (const entry of installed) entries.set(`${entry.file}\0${entry.text}`, entry);
     }
 
     return [...entries.values()];

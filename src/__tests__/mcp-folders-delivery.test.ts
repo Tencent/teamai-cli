@@ -145,6 +145,43 @@ describe('an MCP server folder in a workspace bound to a team repo', () => {
       .toEqual([false, `${rendered(dest)}/server.mjs`, 'console.log("v2")\n']);
   });
 
+  it.each([
+    { label: 'enabled tool config', excluded: false, local: false },
+    { label: 'excluded tool config', excluded: true, local: false },
+    { label: 'excluded tool local-scope config', excluded: true, local: true },
+  ])('keeps the prior folder until a malformed $label is repaired', async ({ excluded, local }) => {
+    const config = workspace('team', 'app');
+    const team = teamConfig();
+    const file = local ? path.join(home, '.claude.json') : path.join(sandbox, 'app', '.mcp.json');
+    if (local) {
+      execFileSync('git', ['init', '-q', path.join(sandbox, 'app')]);
+      team.sharing.gitExclude = { enabled: true };
+    }
+    const server = async (): Promise<unknown> => {
+      if (!local) return claudeServer('app', 'jira-lite');
+      const { projects }: { projects: Record<string, { mcpServers: Record<string, unknown> }> } = await fse.readJson(file);
+      return Object.values(projects)[0]?.mcpServers['jira-lite'];
+    };
+    await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("v1")\n' });
+    await reconcileMcpForConfig(team, config);
+    const previous = startedFile(await server());
+    const valid = await fse.readFile(file, 'utf8');
+    const malformed = valid + '{';
+    await fse.writeFile(file, malformed);
+    await write('team', { 'mcp/jira-lite/server.mjs': 'console.log("v2")\n' });
+
+    const result = await reconcileMcpForConfig(team, excluded ? { ...config, disabledAgents: ['claude', 'tclaude'] } : config);
+
+    expect(await fse.readFile(file, 'utf8')).toBe(malformed);
+    expect(await fse.pathExists(previous)).toBe(true);
+    expect(result.unparsed).toBe(excluded ? undefined : true);
+
+    await fse.writeFile(file, valid);
+    await reconcileMcpForConfig(team, config);
+    expect(await fse.readFile(startedFile(await server()), 'utf8')).toBe('console.log("v2")\n');
+    expect(await fse.pathExists(previous)).toBe(false);
+  });
+
   it('is removed, with its entry, once the team repo drops it', async () => {
     await write('team', { 'mcp/jira-lite/MCP.yaml': SERVER, 'mcp/jira-lite/server.mjs': 'console.log("jira")\n' });
     await reconcileMcpForConfig(teamConfig(), workspace('team', 'app'));
