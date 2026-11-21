@@ -1461,6 +1461,8 @@ async function carryWorkingTree(git: SimpleGit): Promise<CarriedWorkingTree | nu
     if (file.from && file.from !== relative && !changes.has(file.from)) changes.set(file.from, false);
   }
 
+  let resetStarted = false;
+
   try {
     for (const [relative, present] of changes) {
       if (present) {
@@ -1474,15 +1476,22 @@ async function carryWorkingTree(git: SimpleGit): Promise<CarriedWorkingTree | nu
     // only copy here, and debug.log then says where it went.
     if (entries.length > 0) log.debug(`Uncommitted team-repo changes set aside at ${root} while checking out a push destination.`);
 
+    resetStarted = true;
     await git.reset(['--hard', 'HEAD']);
     await git.clean('f', ['-d']);
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+
+    // Before the reset the originals are untouched, so the copies are only waste.
+    if (!resetStarted) {
+      await fse.remove(root);
+
+      throw new Error(`Could not set aside the team repo's uncommitted changes (${message}); nothing was reset, so they are where they were.`, { cause: e });
+    }
+
     // The reset may already have discarded the originals; their copies are the
     // only remaining source of the member's edits.
-    log.warn(
-      `Could not set aside the team repo's uncommitted changes (${e instanceof Error ? e.message : String(e)}). `
-      + `Their copies stay at ${root}.`,
-    );
+    log.warn(`Could not set aside the team repo's uncommitted changes (${message}). Their copies stay at ${root}.`);
     throw e;
   }
 
