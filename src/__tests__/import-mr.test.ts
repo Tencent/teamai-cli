@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 
 vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), dim: vi.fn() },
@@ -10,7 +10,21 @@ vi.mock('@teamai/shared/log', () => ({
   })),
 }));
 
-import { parseLearningDraft } from '../import-mr.js';
+vi.mock('../providers/github/mr-fetch.js', () => ({ fetchGitHubPR: vi.fn(async (url: string) => ({ title: 'PR', url })) }));
+
+import { extractRepoUrlFromMrUrl, fetchMR, parseLearningDraft } from '../import-mr.js';
+
+describe('a pull request on the GitHub Enterprise server GITHUB_SERVER_URL names', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('is fetched from GitHub, and its repository is on that server', async () => {
+    vi.stubEnv('GITHUB_SERVER_URL', 'https://ghe.example.com');
+    const url = 'https://ghe.example.com/acme/app/pull/7';
+
+    await expect(fetchMR(url, {})).resolves.toMatchObject({ url });
+    expect(extractRepoUrlFromMrUrl(url)).toBe('https://ghe.example.com/acme/app.git');
+  });
+});
 
 describe('parseLearningDraft', () => {
   it('parses well-formed frontmatter', () => {

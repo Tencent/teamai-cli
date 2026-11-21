@@ -3,9 +3,14 @@ import { parseMrUrl, formatComment, postOrUpdateMrComment, postIndividualComment
 import type { LearningDraft, CodebaseSuggestion } from '../types.js';
 
 describe('parseMrUrl', () => {
-  it('parses a GitHub PR URL', () => {
-    const result = parseMrUrl('https://github.com/owner/repo/pull/42');
-    expect(result).toEqual({ provider: 'github', owner: 'owner', repo: 'repo', number: '42' });
+  it.each([
+    ['https://github.com/owner/repo/pull/42', 'github.com'],
+    ['https://GHE.example.com/owner/repo/pull/42', 'ghe.example.com'],
+  ])('parses a GitHub PR URL on github.com or the GITHUB_SERVER_URL host: %s', (url, host) => {
+    vi.stubEnv('GITHUB_SERVER_URL', 'https://ghe.example.com');
+    const result = parseMrUrl(url);
+    vi.unstubAllEnvs();
+    expect(result).toEqual({ provider: 'github', host, owner: 'owner', repo: 'repo', number: '42' });
   });
 
   it('parses a TGit MR URL (single-level group)', () => {
@@ -83,17 +88,32 @@ describe('postOrUpdateMrComment API failures', () => {
     vi.unstubAllGlobals();
   });
 
-  it('fails without creating a duplicate GitHub comment when listing comments fails', async () => {
+  it('fails without creating a duplicate GitHub comment when listing comments on the GITHUB_SERVER_URL server fails', async () => {
     vi.stubEnv('GITHUB_TOKEN', 'test-token');
+    vi.stubEnv('GITHUB_SERVER_URL', 'https://ghe.example.com');
+    vi.stubEnv('GITHUB_API_URL', 'https://ghe.example.com/api/v3');
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(postOrUpdateMrComment(
-      'https://github.com/acme/app/pull/7', undefined, undefined,
-    )).rejects.toThrow('GitHub comment list request failed (503)');
+    await expect(postOrUpdateMrComment('https://ghe.example.com/acme/app/pull/7', undefined, undefined))
+      .rejects.toThrow('GitHub comment list request failed (503)');
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://ghe.example.com/api/v3/repos/acme/app/issues/7/comments?per_page=100&page=1');
     expect(fetchMock.mock.calls[0][1]?.method).toBe('GET');
+  });
+
+  it('sends no request for a github.com PR when the token belongs to the GITHUB_SERVER_URL server', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'enterprise-token');
+    vi.stubEnv('GITHUB_SERVER_URL', 'https://ghe.example.com');
+    vi.stubEnv('GITHUB_API_URL', 'https://ghe.example.com/api/v3');
+    const fetchMock = vi.fn(async () => new Response('[]', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(postOrUpdateMrComment('https://github.com/acme/app/pull/7', undefined, undefined))
+      .rejects.toThrow('GITHUB_TOKEN or GH_TOKEN environment variable is not set');
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('throws when neither GITHUB_TOKEN nor GH_TOKEN is set', async () => {

@@ -43,6 +43,7 @@ import {
   redactCredential,
   ghIsAuthenticated,
   getGitHubToken,
+  ensureGhAvailable,
   ensureGhAuthenticated,
   RepoNotFoundError,
 } from '../providers/github/gh-cli.js';
@@ -171,6 +172,14 @@ describe('ghIsAuthenticated', () => {
     delete process.env.GITHUB_TOKEN;
     delete process.env.GH_TOKEN;
     expect(ghIsAuthenticated()).toBe(false);
+  });
+
+  it('does not count a GITHUB_SERVER_URL server\'s token as available for github.com without gh', async () => {
+    process.env.GITHUB_TOKEN = 'ghp_xxx';
+    await expect(ensureGhAvailable()).resolves.toBeUndefined();
+
+    process.env.GITHUB_SERVER_URL = 'https://ghe.example.com';
+    await expect(ensureGhAvailable()).rejects.toThrow('GitHub authentication unavailable');
   });
 });
 
@@ -435,7 +444,12 @@ describe('ghCreateRepo', () => {
     expect(calls.some(([url]) => url.endsWith('/user/repos'))).toBe(true);
   });
 
-  it('creates repo under org when owner differs from login', async () => {
+  it.each([
+    [undefined, 'https://ghe.example.com/api/v3'],
+    ['https://ghe.example.com', 'https://api.github.com'],
+  ])('creates repo under org when owner differs from login, with GITHUB_SERVER_URL=%s through %s', async (server, api) => {
+    process.env.GITHUB_API_URL = 'https://ghe.example.com/api/v3/';
+    if (server) process.env.GITHUB_SERVER_URL = server;
     global.fetch = vi.fn(async (url: string) => {
       if (url.endsWith('/user')) {
         return new Response(JSON.stringify({ login: 'alice' }), { status: 200 });
@@ -449,7 +463,7 @@ describe('ghCreateRepo', () => {
     await expect(ghCreateRepo('teamai', 'cli')).resolves.toBeUndefined();
 
     const calls = (global.fetch as Mock).mock.calls;
-    expect(calls.some(([url]) => url.includes('/orgs/teamai/repos'))).toBe(true);
+    expect(calls.map(([url]) => url)).toEqual([`${api}/user`, `${api}/orgs/teamai/repos`]);
   });
 
   it('throws on non-OK response', async () => {
@@ -511,7 +525,8 @@ describe('ghPrCreate via REST API', () => {
     expect(url).toBe('https://github.com/org/repo/pull/42');
   });
 
-  it('requests reviewers in a separate call when provided', async () => {
+  it('requests reviewers in a separate call when provided, through the API GITHUB_API_URL names', async () => {
+    process.env.GITHUB_API_URL = 'https://ghe.example.com/api/v3';
     const calls: string[] = [];
     global.fetch = vi.fn(async (url: string) => {
       calls.push(url);
@@ -535,7 +550,10 @@ describe('ghPrCreate via REST API', () => {
       reviewers: ['alice', 'bob'],
     });
 
-    expect(calls.some((u) => u.includes('/requested_reviewers'))).toBe(true);
+    expect(calls).toEqual([
+      'https://ghe.example.com/api/v3/repos/org/repo/pulls',
+      'https://ghe.example.com/api/v3/repos/org/repo/pulls/7/requested_reviewers',
+    ]);
   });
 
   it('throws on non-OK response from pulls endpoint', async () => {

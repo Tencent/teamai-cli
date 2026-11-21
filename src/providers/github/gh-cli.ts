@@ -7,10 +7,7 @@ import { resolveCliPath } from '@teamai/shared/cli-path';
 import { isInteractive } from '../../utils/prompt.js';
 import { endedRequest, mergedAs, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
 import { signalChild } from '@teamai/shared/process-group';
-
-// ─── Constants ───────────────────────────────────────────
-
-const GITHUB_API = 'https://api.github.com';
+import { githubApiUrlFor, githubEnvToken, githubTokenFor } from './api-url.js';
 
 // ─── gh CLI detection ────────────────────────────────────
 
@@ -136,7 +133,7 @@ export async function ensureGhAvailable(): Promise<void> {
     return;
   }
 
-  if (getGitHubToken()) {
+  if (githubTokenFor('github.com')) {
     log.debug('GITHUB_TOKEN env var detected — will use REST API directly');
 
     return;
@@ -158,7 +155,7 @@ export async function ensureGhAvailable(): Promise<void> {
  * Returns null if neither is set.
  */
 export function getGitHubToken(): string | null {
-  return process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? null;
+  return githubEnvToken();
 }
 
 /**
@@ -210,7 +207,7 @@ export function ghIsAuthenticated(): boolean {
  */
 export async function ghFetchLogin(token: string): Promise<string | null> {
   try {
-    const resp = await fetch(`${GITHUB_API}/user`, {
+    const resp = await fetch(`${githubApiUrlFor('github.com')}/user`, {
       headers: {
         'Accept': 'application/vnd.github+json',
         'Authorization': `Bearer ${token}`,
@@ -244,7 +241,7 @@ export async function ghAuthWhoami(): Promise<string | null> {
     }
   }
 
-  const token = getGitHubToken();
+  const token = githubTokenFor('github.com');
 
   if (token) {
     return ghFetchLogin(token);
@@ -515,8 +512,8 @@ export async function ghCreateRepo(owner: string, repo: string): Promise<void> {
   const isOwnerSelf = login && login.toLowerCase() === owner.toLowerCase();
 
   const endpoint = isOwnerSelf
-    ? `${GITHUB_API}/user/repos`
-    : `${GITHUB_API}/orgs/${encodeURIComponent(owner)}/repos`;
+    ? `${githubApiUrlFor('github.com')}/user/repos`
+    : `${githubApiUrlFor('github.com')}/orgs/${encodeURIComponent(owner)}/repos`;
 
   const body = {
     name: repo,
@@ -571,7 +568,7 @@ export async function ghPrCreate(opts: GhPrCreateOptions): Promise<string> {
     return ghPrCreateViaCli(opts);
   }
 
-  if (getGitHubToken()) {
+  if (githubTokenFor('github.com')) {
     return ghPrCreateViaApi(opts);
   }
 
@@ -620,7 +617,7 @@ function ghPrCreateViaCli(opts: GhPrCreateOptions): string {
 }
 
 async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
-  const token = getGitHubToken();
+  const token = githubTokenFor('github.com');
 
   if (!token) {
     throw new Error('GITHUB_TOKEN is not set.');
@@ -634,7 +631,7 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
   };
 
   const resp = await fetch(
-    `${GITHUB_API}/repos/${opts.repo}/pulls`,
+    `${githubApiUrlFor('github.com')}/repos/${opts.repo}/pulls`,
     {
       method: 'POST',
       headers: authHeaders,
@@ -663,7 +660,7 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
   if (opts.reviewers && opts.reviewers.length > 0 && pr.number) {
     try {
       await fetch(
-        `${GITHUB_API}/repos/${opts.repo}/pulls/${pr.number}/requested_reviewers`,
+        `${githubApiUrlFor('github.com')}/repos/${opts.repo}/pulls/${pr.number}/requested_reviewers`,
         {
           method: 'POST',
           headers: authHeaders,
@@ -805,11 +802,11 @@ async function ghApiGet(path: string, timeoutMs: number, lookup: GhLookup): Prom
     }
   }
 
-  const token = getGitHubToken();
+  const token = githubTokenFor('github.com');
 
   if (!token) throw new Error('GitHub credentials are unavailable: install gh and log in, or set GITHUB_TOKEN or GH_TOKEN.');
 
-  const response = await fetch(`${GITHUB_API}/${path}`, {
+  const response = await fetch(`${githubApiUrlFor('github.com')}/${path}`, {
     headers: { 'Accept': 'application/vnd.github+json', 'Authorization': `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28' },
     redirect: 'manual',
     signal: AbortSignal.timeout(timeoutMs),

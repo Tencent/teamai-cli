@@ -14,13 +14,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../providers/github/gh-cli.js', () => ({
     isGhInstalled: vi.fn().mockReturnValue(false),
-    getGitHubToken: vi.fn().mockReturnValue('fake-token-xyz'),
 }));
 
 // ─── Imports (after mocks) ───────────────────────────────
 
 import { ghListOrgRepos } from '../providers/github/gh-org.js';
-import { isGhInstalled, getGitHubToken } from '../providers/github/gh-cli.js';
+import { isGhInstalled } from '../providers/github/gh-cli.js';
 
 // ─── Helpers ────────────────────────────────────────────
 
@@ -43,14 +42,14 @@ function makeGhRepoItem(overrides: Record<string, unknown> = {}): Record<string,
 describe('gh-org fetch 分支（使用 GITHUB_TOKEN）', () => {
     beforeEach(() => {
         vi.mocked(isGhInstalled).mockReturnValue(false);
-        vi.mocked(getGitHubToken).mockReturnValue('fake-token-xyz');
         vi.restoreAllMocks();
         // 每次重新 mock
         vi.mocked(isGhInstalled).mockReturnValue(false);
-        vi.mocked(getGitHubToken).mockReturnValue('fake-token-xyz');
+        vi.stubEnv('GITHUB_TOKEN', 'fake-token-xyz');
     });
 
     it('包含私有仓的响应 → 私有仓出现在结果中（不被过滤）', async () => {
+        vi.stubEnv('GITHUB_API_URL', 'https://ghe.example.com/api/v3');
         const items = [
             makeGhRepoItem({ full_name: 'org/public-repo', name: 'public-repo', clone_url: 'https://github.com/org/public-repo.git' }),
             makeGhRepoItem({ full_name: 'org/private-repo', name: 'private-repo', clone_url: 'https://github.com/org/private-repo.git' }),
@@ -86,8 +85,10 @@ describe('gh-org fetch 分支（使用 GITHUB_TOKEN）', () => {
         const names = result.map((r: { name: string }) => r.name);
         expect(names).toContain('public-repo');
         expect(names).toContain('private-repo');
+        expect(mockFetch.mock.calls[0][0]).toBe('https://ghe.example.com/api/v3/orgs/org/repos?per_page=100&page=1');
 
         vi.unstubAllGlobals();
+        vi.unstubAllEnvs();
     });
 
     it('/orgs/<x> 第一页返回 [] → fallback 到 /users/<x> 并拿到非空结果', async () => {

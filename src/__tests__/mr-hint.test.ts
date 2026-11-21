@@ -207,16 +207,19 @@ describe('a hint the session start leaves for the next prompt', () => {
     expect(await takePendingMrHint('s1')).toBeNull();
   });
 
-  it('honors GH_TOKEN in REST fallback when gh CLI fails', async () => {
+  it('honors GH_TOKEN and GITHUB_API_URL in REST fallback when gh CLI fails', async () => {
     vi.mocked(spawnSync).mockReturnValue({
       pid: 0, output: [null, '', 'error'], stdout: '', stderr: 'error', status: 1, signal: null,
     });
     vi.stubEnv('GITHUB_TOKEN', '');
     delete process.env.GITHUB_TOKEN;
     vi.stubEnv('GH_TOKEN', 'alias-token');
+    vi.stubEnv('GITHUB_API_URL', 'https://ghe.example.com/api/v3');
 
+    let requestedUrl: string | undefined;
     let requestedHeaders: Record<string, string> | undefined;
-    vi.stubGlobal('fetch', vi.fn().mockImplementation((_url, init) => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url, init) => {
+      requestedUrl = url;
       requestedHeaders = init?.headers;
       return Promise.resolve(new Response(JSON.stringify([
         { number: 7, title: 'Fix the login redirect', html_url: 'https://github.com/acme/shop/pull/7', merged_at: mergedAt },
@@ -226,5 +229,6 @@ describe('a hint the session start leaves for the next prompt', () => {
     const result = await computeMrHintOutput('en', null, at('s1'));
     expect(hintIn(result)?.additionalContext).toContain('- Fix the login redirect');
     expect(requestedHeaders?.Authorization).toBe('Bearer alias-token');
+    expect(requestedUrl?.split('?')[0]).toBe('https://ghe.example.com/api/v3/repos/acme/shop/pulls');
   });
 });
