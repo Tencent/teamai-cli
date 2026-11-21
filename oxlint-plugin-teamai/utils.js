@@ -32,12 +32,23 @@ export const PROCESS_STARTERS = new Set([
 ]);
 
 /**
+ * A path this plugin resolved with `/` separators, so a rule can compare it with one built from
+ * `lintedPath` on any platform: `path.resolve` answers with `\\` on Windows, and
+ * `path.posix.relative` on two such strings names the whole absolute path instead of the relative one.
+ * @param {string} file
+ * @returns {string}
+ */
+export function toPosix(file) {
+  return file.split('\\').join('/');
+}
+
+/**
  * The linted file's path with `/` separators, so a rule can scope itself on any platform.
  * @param {Context} context
  * @returns {string}
  */
 export function lintedPath(context) {
-  return context.filename.split('\\').join('/');
+  return toPosix(context.filename);
 }
 
 /**
