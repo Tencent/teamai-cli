@@ -33,12 +33,15 @@ export interface SyncScorerResult {
 
 /**
  * A scorer's `rubric.sourceHash`: sha256 of its text, and of each support file's path and text when it is a folder, so
- * an edit to its rubric or to a file beside it is a new rubric.
+ * an edit to its rubric or to a file beside it is a new rubric. Every part starts with its length, so no text can spell
+ * where the next part begins (`WorkflowFolder.hash` does the same for a workflow folder).
  */
 export function scorerSourceHash(content: string, files: readonly ScorerFolderFile[] = []): string {
-  const digest = createHash('sha256').update(content);
+  const digest = createHash('sha256').update(`${JSON.stringify([Buffer.byteLength(content)])}\n`).update(content);
 
-  for (const file of [...files].sort((a, b) => (a.path < b.path ? -1 : 1))) digest.update('\0').update(file.path).update('\0').update(file.content);
+  for (const file of [...files].sort((a, b) => (a.path < b.path ? -1 : 1))) {
+    digest.update(`${JSON.stringify([file.path, Buffer.byteLength(file.content)])}\n`).update(file.content);
+  }
 
   return digest.digest('hex');
 }
