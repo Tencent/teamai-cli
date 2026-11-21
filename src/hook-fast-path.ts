@@ -186,9 +186,14 @@ export function promptAnswersInForeground(sessionId: string, env: NodeJS.Process
   const file = sessionId.replace(/[^a-zA-Z0-9._-]/g, '_');
 
   return fs.existsSync(path.join(teamaiHome, 'package-hints', `${file}.pending.json`))
-    || fs.existsSync(path.join(teamaiHome, 'sessions', `${file}.mr-hint.pending.json`))
-    || (readTextFile(path.join(teamaiHome, 'sessions', `${file}.json`)) ?? '').includes('"pendingHint"')
+    || fs.existsSync(path.join(sessionStateDir(), `${file}.mr-hint.pending.json`))
+    || (readTextFile(path.join(sessionStateDir(), `${file}.json`)) ?? '').includes('"pendingHint"')
     || isHttpEnrolled(env);
+}
+
+/** `~/.teamai/sessions`, the same directory as getSessionStateDir. Copied: this file imports nothing outside UNCACHED. */
+function sessionStateDir(): string {
+  return path.join(getUserHome(), '.teamai', 'sessions');
 }
 
 /**
@@ -290,7 +295,7 @@ export async function runLoginDeferredHook(
 
 /** What a pass inside the login environment last saw of this session's HTTP enrolment (recordLoginEnrolment). */
 function loginEnrolmentFile(sessionId: string): string {
-  return path.join(getUserHome(), '.teamai', 'sessions', `${sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')}.http-enrolment.json`);
+  return path.join(sessionStateDir(), `${sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')}.http-enrolment.json`);
 }
 
 /**

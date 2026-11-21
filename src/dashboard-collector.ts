@@ -14,7 +14,7 @@ import { isCodexTool, normalizeToolName } from './utils/tool-names.js';
 import { redactWithEnv } from '@teamai/shared/redact';
 import { openRegularFile, readRegularFile } from '@teamai/shared/regular-file';
 import { acquireLock, releaseLock } from './update.js';
-import { DASHBOARD_COMPACTION_THRESHOLD, DASHBOARD_IDLE_TIMEOUT_MS, DASHBOARD_STALE_TIMEOUT_MS, DASHBOARD_STOPPED_DISPLAY_MS, CORRECTION_WINDOW_MS, CORRECTION_KEYWORDS, TRANSCRIPT_INTERRUPT_PREFIX, TRANSCRIPT_SYSTEM_PREFIXES, stripInjectedPrompt, TRANSCRIPT_REJECT_MARKERS, TRANSCRIPT_HOST_BLOCK_MARKERS, COPILOT_TOOL_ID, getDataHome, type DashboardEvent, type DashboardEventType, type DashboardSession, type SessionMetrics, type RequestCostMetrics, type LocalConfig } from './types.js';
+import { DASHBOARD_COMPACTION_THRESHOLD, DASHBOARD_IDLE_TIMEOUT_MS, DASHBOARD_STALE_TIMEOUT_MS, DASHBOARD_STOPPED_DISPLAY_MS, CORRECTION_WINDOW_MS, CORRECTION_KEYWORDS, TRANSCRIPT_INTERRUPT_PREFIX, TRANSCRIPT_SYSTEM_PREFIXES, stripInjectedPrompt, TRANSCRIPT_REJECT_MARKERS, TRANSCRIPT_HOST_BLOCK_MARKERS, COPILOT_TOOL_ID, getDataHome, getMachineDashboardDir, type DashboardEvent, type DashboardEventType, type DashboardSession, type SessionMetrics, type RequestCostMetrics, type LocalConfig } from './types.js';
 import type { JsonValue } from '@teamai/shared/json';
 import { INTERVENTION_SCAN_MAX_BYTES, emptyTokenUsage, addTokenUsage, totalTokens, type TokenUsage } from '@teamai/tool-core/tokens';
 import { getUserHome } from '@teamai/shared/home';
@@ -1371,13 +1371,13 @@ export async function parseHookEvent(
 
 // ─── JSONL persistence ──────────────────────────────────
 
-/** Get events path (evaluated at call time). */
-function getEventsPath(): string {
-  return path.join(getUserHome(), '.teamai', 'dashboard', 'events.jsonl');
+/** Events log path (evaluated at call time). */
+export function getEventsPath(): string {
+  return path.join(getMachineDashboardDir(), 'events.jsonl');
 }
 
 function getRequestsPath(): string {
-  return path.join(getUserHome(), '.teamai', 'dashboard', 'requests.jsonl');
+  return path.join(getMachineDashboardDir(), 'requests.jsonl');
 }
 
 /** A request log line, or undefined for a partial or malformed one. */

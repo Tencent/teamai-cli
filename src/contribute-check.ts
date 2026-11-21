@@ -11,9 +11,8 @@ import { deriveSessionId } from './utils/session-id.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { redactWithEnv } from '@teamai/shared/redact';
 import type { ContributeState, DashboardEvent, LocalConfig, SessionShareOffered, SessionFriction } from './types.js';
-import { CONTRIBUTE_FASTPATH_TTL_MS, CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT, SessionShareOfferedSchema } from './types.js';
+import { CONTRIBUTE_FASTPATH_TTL_MS, CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT, getSessionStateDir, SessionShareOfferedSchema } from './types.js';
 import { DefaultFolders, type DefaultFolder, type DefaultFolderParams, type TextLanguage } from './default-folders.js';
-import { getUserHome } from '@teamai/shared/home';
 import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js';
 
 // ─── Contribute check data flow (Stop hook) ────────────────
@@ -113,12 +112,7 @@ function normalizePromptSummary(raw?: string): string | undefined {
 
 /** Get session state file path: ~/.teamai/sessions/{sanitized-sessionId}.json */
 function getSessionPath(sessionId: string): string {
-  return path.join(
-    getUserHome(),
-    '.teamai',
-    'sessions',
-    `${sanitizeSessionId(sessionId)}.json`,
-  );
+  return path.join(getSessionStateDir(), `${sanitizeSessionId(sessionId)}.json`);
 }
 
 /** A persisted state file, read field by field: a field of the wrong type reads as absent. */
@@ -313,7 +307,7 @@ export async function cleanupStaleSessions(dir: string, currentSessionId: string
  * fired, since a session resumed after its sweep starts a new state file. A session with neither has no entry.
  */
 export async function readReminderDecisions(): Promise<Map<string, boolean>> {
-  const dir = path.join(getUserHome(), '.teamai', 'sessions');
+  const dir = getSessionStateDir();
 
   const read = async (folder: string, schema: typeof StateSchema | typeof SweptSchema) => (await Promise.all((await fs.promises.readdir(folder).catch(() => []))
     .filter((entry) => entry.endsWith('.json'))

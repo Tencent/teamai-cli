@@ -389,6 +389,8 @@ The requests are kept for 90 days in `~/.teamai/dashboard/requests.jsonl`, one l
 {"id":"6f1c…","timestamp":"2026-10-30T09:15:02.118Z","tool":"claude","sessionId":"c1a0de00-…","model":"claude-opus-5-5","inputTokens":40,"outputTokens":600,"cacheReadTokens":30000,"cacheCreationTokens":1500,"costMicros":25660,"costSource":"catalog","priceVersion":"litellm-2026-10-31-b264711","cacheSavingsMicros":114000}
 ```
 
+The last `teamai uninstall` removes this request log.
+
 The page reads `/api/tokens`, which scripts can read too. The models of the last 30 days that have no price yet:
 
 ```bash

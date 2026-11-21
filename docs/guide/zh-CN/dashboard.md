@@ -389,6 +389,8 @@ modelAliases:
 {"id":"6f1c…","timestamp":"2026-10-30T09:15:02.118Z","tool":"claude","sessionId":"c1a0de00-…","model":"claude-opus-5-5","inputTokens":40,"outputTokens":600,"cacheReadTokens":30000,"cacheCreationTokens":1500,"costMicros":25660,"costSource":"catalog","priceVersion":"litellm-2026-10-31-b264711","cacheSavingsMicros":114000}
 ```
 
+最后一次 `teamai uninstall` 会删除这份请求日志。
+
 页面读取 `/api/tokens`，脚本也可以读。最近 30 天还没有价格的模型：
 
 ```bash

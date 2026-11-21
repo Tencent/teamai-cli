@@ -13,7 +13,7 @@ import { log } from '@teamai/shared/log';
 import type { RequestCostMetrics } from './types.js';
 import { JsonObjectSchema } from '@teamai/shared/json';
 import type { TokenUsage } from '@teamai/tool-core/tokens';
-import { getDataHome, getTeamaiHomeDir } from './types.js';
+import { getDataHome, getMachineDashboardDir, getTeamaiHomeDir } from './types.js';
 import { emptyTokenUsage } from '@teamai/tool-core/tokens';
 import { projectsRootDir } from './utils/partition.js';
 import { parseDailySnapshot, SnapshotCountSchema, type DailySessionSnapshot, type ReportedDailySessions } from './session-trends.js';
@@ -39,7 +39,7 @@ export type ReportedSnapshotName = typeof REPORTED_SNAPSHOTS[number];
 
 /** The machine-level snapshot every scope shared before #786 (evaluated at call time for tests). */
 export function sharedSnapshotPath(name: ReportedSnapshotName): string {
-  return path.join(getTeamaiHomeDir(), 'dashboard', `reported-${name}.json`);
+  return path.join(getMachineDashboardDir(), `reported-${name}.json`);
 }
 
 /** The snapshot of the scope whose data home is `dataHome`; `outcomes` is the one only a scope's own report keeps (#1387). */
@@ -48,7 +48,7 @@ export function snapshotPathIn(dataHome: string, name: ReportedSnapshotName | 'o
 
   if (path.resolve(dataHome) !== path.resolve(getTeamaiHomeDir())) return path.join(dataHome, 'dashboard', file);
 
-  return path.join(dataHome, 'dashboard', `user-${file}`);
+  return path.join(getMachineDashboardDir(), `user-${file}`);
 }
 
 // ─── Session owners ─────────────────────────────────────
@@ -74,7 +74,7 @@ export function snapshotPathIn(dataHome: string, name: ReportedSnapshotName | 'o
 //
 
 function sessionOwnersPath(): string {
-  return path.join(getTeamaiHomeDir(), 'dashboard', 'session-owners.jsonl');
+  return path.join(getMachineDashboardDir(), 'session-owners.jsonl');
 }
 
 /** The data homes whose snapshots an earlier release may have written. */

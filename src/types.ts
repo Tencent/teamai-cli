@@ -1994,6 +1994,22 @@ export function getUserStatePath(): string {
   return path.join(getTeamaiHomeDir(), 'state.json');
 }
 
+/**
+ * `~/.teamai/dashboard`: the events log, the request log and the session-owner index. Hooks write them and the member
+ * writes none, so only the last uninstall removes the directory. Evaluated at call time.
+ */
+export function getMachineDashboardDir(): string {
+  return path.join(getTeamaiHomeDir(), 'dashboard');
+}
+
+/**
+ * `~/.teamai/sessions`: session state the hooks write and the member writes none of, so only the last uninstall removes
+ * it. Evaluated at call time.
+ */
+export function getSessionStateDir(): string {
+  return path.join(getTeamaiHomeDir(), 'sessions');
+}
+
 /** API token path, `~/.teamai/token` (machine-level). Evaluated at call time. */
 export function getTokenPath(): string {
   return path.join(getTeamaiHomeDir(), 'token');
@@ -2443,9 +2459,8 @@ export interface DashboardSession {
 }
 
 // DASHBOARD_EVENTS_DIR / DASHBOARD_EVENTS_PATH were module-load consts that no
-// code consumed — dashboard read/write go through runtime helpers that inline
-// getUserHome() (dashboard-collector.ts getEventsPath, dashboard.ts), so HOME
-// isolation already works there. Removed (issue #374 P3). The dashboard is an
+// code consumed — dashboard read/write go through getEventsPath, which reads
+// the home at call time, so HOME isolation already works there. Removed (issue #374 P3). The dashboard is an
 // A2 machine-level singleton keyed by sessionId, not per-project; each event
 // carries the key of the data home of the scope that recorded it, which is what
 // a scope's report filters on.
