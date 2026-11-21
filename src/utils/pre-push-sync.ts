@@ -11,6 +11,7 @@ import {
   readFileSafe,
   writeFile,
   syncFolders,
+  SYNC_SUFFIX,
 } from './fs.js';
 import { getFileContentAtRev, getFileContentWhenAdded } from './git.js';
 import { installOf, locate, ownOf, writable } from '../locate.js';
@@ -253,6 +254,7 @@ async function syncSkillsToLocal(
 
     if (skillsDir === null || !await pathExists(skillsDir)) continue;
 
+    for (const skillName of teamSkillPaths.keys()) await restoreCutShortSync(path.join(skillsDir, skillName));
     const localSkillNames = await listDirs(skillsDir);
 
     for (const skillName of localSkillNames) {
@@ -317,6 +319,57 @@ async function replaceSkillDir(teamSkill: TeamSkillSource, localSkillDir: string
   }
 
   await removeLeftover(previous);
+}
+
+/**
+ * Put back the skill a replaceSkillDir cut short between its two renames left
+ * in `.<name>.<pid>.<hex>.teamai-prev`, when nothing has taken its place, and
+ * drop the update it staged beside it. Called before anything reads or writes
+ * the skill, so the member's own files in it are not left hidden.
+ *
+ * Only a `-prev` with its `-sync` sibling proves the cut: a finished sync
+ * renames its `-sync` into place, so a lone `-prev` is a `removeLeftover` that
+ * failed after the skill was already whole, and restoring it would put back a
+ * version the member has since moved on from (#1880). Two pairs are as
+ * unprovable as none, and readdir order is not meaningful.
+ */
+/** Lists one directory's entry names; a test passes its own to fix `readdir` order. */
+type EntryNames = (dir: string) => Promise<string[]>;
+
+export async function restoreCutShortSync(localSkillDir: string, readdir: EntryNames = async (dir) => fse.readdir(dir)): Promise<void> {
+  const parent = path.dirname(localSkillDir);
+
+  // lstat, not pathExists: a dangling link has taken the skill's place too. No skills directory to look in (none, or a
+  // file pull reports as blocking it): nothing was cut short there.
+  if (await fse.lstat(localSkillDir).then(() => true, () => false) || !await fse.stat(parent).then((stat) => stat.isDirectory(), () => false)) return;
+  const prefix = `.${path.basename(localSkillDir)}.`;
+  const names = (await readdir(parent)).filter((name) => name.startsWith(prefix));
+
+  const pairs = names.flatMap((name) => {
+    const rest = name.slice(prefix.length);
+
+    if (!SYNC_SUFFIX.test(rest) || !rest.endsWith('.teamai-prev')) return [];
+    const sync = `${prefix}${rest.slice(0, -'.teamai-prev'.length)}.teamai-sync`;
+
+    return names.includes(sync) ? [{ previous: name, staged: sync }] : [];
+  });
+
+  if (pairs.length !== 1) {
+    const left = names.filter((name) => name.endsWith('.teamai-prev') || name.endsWith('.teamai-sync')).map((name) => path.join(parent, name));
+
+    if (left.length > 0) {
+      log.warn(`A push was cut short near skill ${path.basename(localSkillDir)}, and ${left.join(', ')} `
+        + 'cannot be told from a leftover. Nothing was put back: check them and move the one holding your skill into place.');
+    }
+
+    return;
+  }
+
+  const [{ previous, staged }] = pairs;
+
+  await fse.rename(path.join(parent, previous), localSkillDir);
+  await removeLeftover(path.join(parent, staged));
+  log.warn(`A push cut short left skill ${path.basename(localSkillDir)} in ${previous}; it is back at ${localSkillDir}.`);
 }
 
 /**

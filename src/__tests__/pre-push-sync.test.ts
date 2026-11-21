@@ -27,7 +27,8 @@ vi.mock('../utils/git.js', () => ({
   generateBranchName: vi.fn(),
 }));
 
-import { syncTeamUpdatesToLocal } from '../utils/pre-push-sync.js';
+import { log } from '@teamai/shared/log';
+import { restoreCutShortSync, syncTeamUpdatesToLocal } from '../utils/pre-push-sync.js';
 import { fileHash } from '../utils/fs.js';
 import { recordDelivered } from '../resources/delivered-copies.js';
 import { withSkillFrontmatter } from '../resources/skills.js';
@@ -35,6 +36,64 @@ import { teamRuleToCopilotInstructions } from '../resources/copilot-instructions
 import { teamRuleToOmpRule } from '../resources/omp-rule.js';
 import { teamRuleToKiroSteering } from '../resources/kiro-steering.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
+
+describe('restoreCutShortSync', () => {
+  /** A skills folder holding a stale backup beside a cut-short pair: `.teamai-prev` v1, and `-prev`/`-sync` for the v3. */
+  async function cutShortSkills(): Promise<string> {
+    const root = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-restore-'));
+    const skillsDir = path.join(root, 'skills');
+
+    await fse.outputFile(path.join(skillsDir, '.deploy.100.111111111111.teamai-prev', 'SKILL.md'), 'v1\n');
+    await fse.outputFile(path.join(skillsDir, '.deploy.200.222222222222.teamai-prev', 'SKILL.md'), 'notes\n');
+    await fse.outputFile(path.join(skillsDir, '.deploy.200.222222222222.teamai-sync', 'SKILL.md'), 'v3\n');
+
+    return skillsDir;
+  }
+
+  afterEach(() => {
+    vi.mocked(log.warn).mockClear();
+  });
+
+  it('puts back only the backup its staged update sits beside, whatever order readdir returns', async () => {
+    const stale = ['deploy', '.deploy.100.111111111111.teamai-prev', '.deploy.200.222222222222.teamai-prev', '.deploy.200.222222222222.teamai-sync'];
+
+    for (const order of [stale, stale.toReversed()]) {
+      const skillsDir = await cutShortSkills();
+      const skill = path.join(skillsDir, 'deploy');
+      await restoreCutShortSync(skill, async () => order);
+
+      // The stale backup holds an older version the member has moved past, so the member's files come back with the pair.
+      expect(await fse.readFile(path.join(skill, 'SKILL.md'), 'utf8')).toBe('notes\n');
+      expect(await fse.pathExists(path.join(skillsDir, '.deploy.200.222222222222.teamai-sync'))).toBe(false);
+      expect(await fse.pathExists(path.join(skillsDir, '.deploy.100.111111111111.teamai-prev'))).toBe(true);
+    }
+  });
+
+  it('puts nothing back when the only backup has no staged update beside it', async () => {
+    const skillsDir = await cutShortSkills();
+    const skill = path.join(skillsDir, 'deploy');
+    await fse.remove(path.join(skillsDir, '.deploy.200.222222222222.teamai-sync'));
+
+    await restoreCutShortSync(skill, async () => ['deploy', '.deploy.100.111111111111.teamai-prev']);
+
+    expect(await fse.pathExists(skill)).toBe(false);
+    expect(await fse.pathExists(path.join(skillsDir, '.deploy.100.111111111111.teamai-prev'))).toBe(true);
+  });
+
+  it('ignores a name readdir returns that is not a folder of its own', async () => {
+    const skillsDir = await cutShortSkills();
+    const skill = path.join(skillsDir, 'deploy');
+    const entered = vi.fn();
+
+    await restoreCutShortSync(skill, async () => {
+      entered();
+      return ['deploy', '..', '.deploy.100.111111111111.teamai-prev', 'nested/.deploy.200.222222222222.teamai-prev'];
+    });
+
+    expect(entered).toHaveBeenCalled();
+    expect(await fse.pathExists(skill)).toBe(false);
+  });
+});
 
 describe('syncTeamUpdatesToLocal — rules', () => {
   let tmpDir: string;
@@ -731,6 +790,98 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234', undefined, delivered);
 
     expect(delivered).toEqual({ [path.join(localSkillDir, 'SKILL.md')]: await fileHash(path.join(localSkillDir, 'SKILL.md')) });
+  });
+
+  it('puts a skill back that a cut-short sync left in a hidden sibling, so the member\'s files are not hidden (#1880)', async () => {
+    const teamSkillDir = path.join(repoPath, 'skills', 'my-skill');
+    await fse.ensureDir(teamSkillDir);
+    await fse.writeFile(path.join(teamSkillDir, 'SKILL.md'), 'v2 skill');
+
+    const skillsDir = path.join(homeDir, '.claude/skills');
+    // What a process killed between replaceSkillDir's two renames leaves: no skill folder, the copy in `-prev`, the
+    // staged update in `-sync`.
+    const tag = '.my-skill.39046.70ae504ae3d2';
+    await fse.outputFile(path.join(skillsDir, `${tag}.teamai-prev`, 'SKILL.md'), 'v1 skill');
+    await fse.outputFile(path.join(skillsDir, `${tag}.teamai-prev`, 'notes.md'), 'mine');
+    await fse.outputFile(path.join(skillsDir, `${tag}.teamai-sync`, 'SKILL.md'), 'v2 skill');
+
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v1 skill'));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+    const localSkillDir = path.join(skillsDir, 'my-skill');
+    expect(await fse.readFile(path.join(localSkillDir, 'notes.md'), 'utf-8')).toBe('mine');
+    expect(await fse.readFile(path.join(localSkillDir, 'SKILL.md'), 'utf-8')).toBe(withSkillFrontmatter('v2 skill', 'my-skill'));
+    expect((await fse.readdir(skillsDir)).filter((name) => name.includes('teamai-'))).toEqual([]);
+  });
+
+  it('restores the pair a cut-short sync left, not an older -prev that a failed cleanup left beside it (#1880)', async () => {
+    const teamSkillDir = path.join(repoPath, 'skills', 'my-skill');
+    await fse.ensureDir(teamSkillDir);
+    await fse.writeFile(path.join(teamSkillDir, 'SKILL.md'), 'v3 skill');
+
+    const skillsDir = path.join(homeDir, '.claude/skills');
+    // Only the pair proves the cut: a finished sync renamed its `-sync` into place, so this lone `-prev` is a
+    // removeLeftover that failed and holds a version the member moved on from.
+    await fse.outputFile(path.join(skillsDir, '.my-skill.32006.111111111111.teamai-prev', 'SKILL.md'), 'v1 skill');
+    await fse.outputFile(path.join(skillsDir, '.my-skill.38580.222222222222.teamai-prev', 'SKILL.md'), 'v2 skill');
+    await fse.outputFile(path.join(skillsDir, '.my-skill.38580.222222222222.teamai-prev', 'notes.md'), 'mine');
+    await fse.outputFile(path.join(skillsDir, '.my-skill.38580.222222222222.teamai-sync', 'SKILL.md'), 'v3 skill');
+
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v2 skill'));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+    const localSkillDir = path.join(skillsDir, 'my-skill');
+    expect(await fse.readFile(path.join(localSkillDir, 'notes.md'), 'utf-8')).toBe('mine');
+    expect(await fse.readFile(path.join(localSkillDir, 'SKILL.md'), 'utf-8')).toBe(withSkillFrontmatter('v3 skill', 'my-skill'));
+    // The lone `-prev` is left to the member, since nothing says which version it is.
+    expect(await fse.readFile(path.join(skillsDir, '.my-skill.32006.111111111111.teamai-prev', 'SKILL.md'), 'utf-8')).toBe('v1 skill');
+    expect((await fse.readdir(skillsDir)).filter((name) => name.startsWith('.my-skill.38580'))).toEqual([]);
+  });
+
+  it('restores nothing when two cut-short pairs leave no way to tell which is the skill (#1880)', async () => {
+    const teamSkillDir = path.join(repoPath, 'skills', 'my-skill');
+    await fse.ensureDir(teamSkillDir);
+    await fse.writeFile(path.join(teamSkillDir, 'SKILL.md'), 'v3 skill');
+
+    const skillsDir = path.join(homeDir, '.claude/skills');
+    for (const tag of ['.my-skill.100.111111111111', '.my-skill.200.222222222222']) {
+      await fse.outputFile(path.join(skillsDir, `${tag}.teamai-prev`, 'SKILL.md'), 'v1 skill');
+      await fse.outputFile(path.join(skillsDir, `${tag}.teamai-sync`, 'SKILL.md'), 'v3 skill');
+    }
+
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v1 skill'));
+    vi.mocked(log.warn).mockClear();
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+    // Neither is put back, and both are named so the member can choose.
+    expect(await fse.readdir(path.join(skillsDir, 'my-skill')).catch(() => null)).toBeNull();
+    const warnings = vi.mocked(log.warn).mock.calls.map(([line]) => line).join('\n');
+    expect(warnings).toContain('.my-skill.100.111111111111.teamai-prev');
+    expect(warnings).toContain('.my-skill.200.222222222222.teamai-prev');
+    expect(warnings).toContain('cannot be told from a leftover');
+  });
+
+  it('leaves a skill in place that a kill after the second rename left, with an old -prev beside it (#1880)', async () => {
+    const teamSkillDir = path.join(repoPath, 'skills', 'my-skill');
+    await fse.ensureDir(teamSkillDir);
+    await fse.writeFile(path.join(teamSkillDir, 'SKILL.md'), 'v2 skill');
+
+    const skillsDir = path.join(homeDir, '.claude/skills');
+    const localSkillDir = path.join(skillsDir, 'my-skill');
+    await fse.outputFile(path.join(localSkillDir, 'SKILL.md'), 'v1 skill');
+    // The skill folder is there, so the rename finished: this leftover is not proof of a cut-short sync.
+    await fse.outputFile(path.join(skillsDir, '.my-skill.39046.70ae504ae3d2.teamai-prev', 'SKILL.md'), 'older skill');
+
+    mockGetFileContentAtRev.mockResolvedValue(Buffer.from('v1 skill'));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+    expect(await fse.readFile(path.join(localSkillDir, 'SKILL.md'), 'utf-8')).toBe(withSkillFrontmatter('v2 skill', 'my-skill'));
+    // The old leftover is not the skill's copy and is not put back over it.
+    expect(await fse.readFile(path.join(skillsDir, '.my-skill.39046.70ae504ae3d2.teamai-prev', 'SKILL.md'), 'utf-8')).toBe('older skill');
   });
 
   it('should NOT sync skill dir when user edited any file', async () => {

@@ -145,6 +145,26 @@ describe('a pull and the homes the env moves', () => {
     expect(await fse.readFile(path.join(home, '.config', 'opencode', 'skills', 'deploy', 'SKILL.md'), 'utf8')).toContain('Deploy.');
   });
 
+  it('puts nothing back when two cut-short pushes leave no way to tell which holds the skill (#1880)', async () => {
+    await fse.ensureDir(path.join(home, '.config', 'opencode'));
+    await pull({});
+    const skills = path.join(home, '.config', 'opencode', 'skills');
+    await fse.rename(path.join(skills, 'deploy'), path.join(skills, '.deploy.100.111111111111.teamai-prev'));
+
+    for (const tag of ['.deploy.100.111111111111', '.deploy.200.222222222222']) {
+      await fse.outputFile(path.join(skills, `${tag}.teamai-prev`, 'notes.md'), 'mine\n');
+      await fse.outputFile(path.join(skills, `${tag}.teamai-sync`, 'SKILL.md'), '---\nname: deploy\ndescription: d\n---\nDeploy v2.\n');
+    }
+
+    // A pull restores the pair it can prove, and the skill it delivers is the team's, not a guess between two copies.
+    await pull({ force: true });
+
+    const warned = vi.mocked(log.warn).mock.calls.flat().join('\n');
+    expect(warned).toContain('.deploy.100.111111111111.teamai-prev');
+    expect(warned).toContain('.deploy.200.222222222222.teamai-prev');
+    expect(warned).toContain('cannot be told from a leftover');
+  });
+
   it('removes a staging folder a copy cut short left beside a skill, at once when its copy\'s process is gone, else an hour on, and keeps one its copy is still writing', async () => {
     const skills = path.join(home, '.config', 'opencode', 'skills');
     const [stale, fresh, orphaned, writing, own, contained] = ['.deploy.1a2b3c4d.staging', '.deploy.5e6f7a8b.staging', '.review.9c0d1e2f.staging', '.review.3a4b5c6d.staging', '.review.7e8f9a0b.staging', '.review.1f2e3d4c.staging']
