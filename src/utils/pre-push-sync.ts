@@ -18,7 +18,7 @@ import { ruleFileExtensionForTool, ruleFormatForTool, teamRuleNameForFile, usesC
 import { EXCLUDED_RULE_NAMES } from '../builtin-rules.js';
 import { log } from '@teamai/shared/log';
 import { placedResourcePath } from '../push-namespaces.js';
-import { recordDelivered, type DeliveredHashes } from '../resources/delivered-copies.js';
+import { membersLinkAt, recordDelivered, type DeliveredHashes } from '../resources/delivered-copies.js';
 import { copyRegularTree, readRegularFile } from '@teamai/shared/regular-file';
 import { ensureSkillFrontmatter, readTeamSkills, withSkillFrontmatter } from '../resources/skills.js';
 import { TeamSkillSource } from '../resources/team-skill-source.js';
@@ -264,6 +264,9 @@ async function syncSkillsToLocal(
       const teamFiles = (await TeamSkillSource.files(teamSkill)).filter((file) => path.basename(file) !== CONTRIBUTORS_FILE);
 
       if (await holdsTeamSkill(localSkillDir, teamSkill, teamFiles)) continue;
+
+      // A link is the member's: pull keeps it, and replaceSkillDir would replace it or write through it (#1880).
+      if (await membersLinkAt(localSkillDir) !== null) continue;
 
       // Differs — the whole skill must be at ONE base: a skill whose files
       // come from different revisions was edited.

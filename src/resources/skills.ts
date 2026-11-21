@@ -1208,6 +1208,18 @@ export class SkillsHandler extends ResourceHandler {
           continue;
         }
 
+        // A copy holding a link of the member's is theirs, as pull keeps it: proposing it would offer a push that
+        // removes the team's file (a folder skill) or the member's older one (a file skill) (#1880). Only a copy of a
+        // team skill is refused; a new skill of the member's pushes with the links left out (#993).
+        if (destination.kind !== 'new') {
+          const link = await membersLinkAt(localDirPath);
+
+          if (link !== null) {
+            warnOnce(describeMembersLink(link, `skills/${dir}`));
+            continue;
+          }
+        }
+
         if (destination.kind === 'new') {
           // Skill does not exist in team repo — candidate for "new"
           const existing = candidates.get(`name:${dir}`);
