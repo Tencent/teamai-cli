@@ -10,6 +10,7 @@ import { tgitGitCloneUrl } from './providers/tgit/rest-auth.js';
 import { log } from '@teamai/shared/log';
 import { sanitizeGitUrl } from '@teamai/shared/redact';
 import { assertSafeRepoCachePath } from './utils/repo-cache.js';
+import { longPathArgs } from './utils/git.js';
 import { signalChild } from '@teamai/shared/process-group';
 
 // ─── Types ──────────────────────────────────────────────
@@ -285,7 +286,7 @@ export async function shallowClone(
     const { cloneUrl, cloneMethod, extraAuthHeader } = resolveCloneAuth(url, provider, { forceSsh, forceAnonymous });
 
     // 构建 clone 参数：若有 token 则通过 http.extraHeader 注入，避免 token 出现在 URL 中
-    const cloneArgs: string[] = [];
+    const cloneArgs: string[] = [...longPathArgs()];
 
     if (extraAuthHeader) {
         cloneArgs.push('-c', `http.extraHeader=${extraAuthHeader}`);

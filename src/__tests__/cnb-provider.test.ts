@@ -120,6 +120,21 @@ describe('cnbRepoClone credential persistence', () => {
     expect(cfgCall[2]?.cwd).toBe('/tmp/clone');
   });
 
+  it('puts the long-path option ahead of the clone subcommand on Windows', () => {
+    process.env.CNB_TOKEN = 'tok123';
+    mockedSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+
+    try {
+      cnbRepoClone('acme/harness', '/tmp/clone');
+    } finally {
+      platformSpy.mockRestore();
+    }
+
+    const cloneCall = mockedSpawnSync.mock.calls[0];
+    expect(cloneCall[1].slice(0, 2)).toEqual(['-c', 'core.longpaths=true']);
+  });
+
   it('embeds the token in the clone URL and skips the helper-config step (CI path)', () => {
     process.env.CNB_TOKEN = 'tok123';
     mockedSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
