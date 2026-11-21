@@ -52,7 +52,8 @@ vi.mock('../roles.js', () => ({
 
 // Isolation: pull() takes a real ~/.teamai/.sync-lock. Parallel vitest workers
 // sharing that path race and skip/error, so these tests mock the lock.
-vi.mock('../update.js', () => ({
+vi.mock('../update.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../update.js')>(),
   acquireLock: vi.fn().mockResolvedValue(true),
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
