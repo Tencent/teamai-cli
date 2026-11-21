@@ -9,6 +9,9 @@ import type { BuildOptions, Plugin } from 'esbuild';
 import { z } from 'zod';
 import { entriesUnder } from '@teamai/shared/entries-under';
 
+// Re-exported for tests: the bound a stop, or a whole close, is answered within.
+export { BOUND_MS } from '../deadline.js';
+
 // ─── Test support: the runtime over its stdio, on a fake container engine ───
 //
 //  `bundleRuntime` builds the executable as the package ships it. `fakeEngine` lays out a `docker`, a `podman` and an
@@ -187,6 +190,9 @@ export function fakeEngine(dir: string): FakeEngine {
     isListingOwned: () => fs.existsSync(path.join(state, 'owned-listing')),
     ownedListings: () => (fs.existsSync(path.join(state, 'owned-listed')) ? fs.readFileSync(path.join(state, 'owned-listed'), 'utf8').length : 0),
     repair() {
+      // The directory can already be gone when an earlier teardown removed the test's dir; repairing is a no-op then.
+      if (!fs.existsSync(state)) return;
+
       for (const name of fs.readdirSync(state)) {
         if (['down', 'stop-lag', 'stop-delay', 'stop-hold', 'rm-hold', 'save-hold', 'format-fails', 'create-hold', 'exec-hold', 'owned-hold', 'rm-fails', 'filter-fails'].includes(name) || name.startsWith('delay-')) fs.rmSync(path.join(state, name), { force: true });
       }

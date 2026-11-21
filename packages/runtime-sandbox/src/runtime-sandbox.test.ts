@@ -9,7 +9,7 @@ import { parse } from 'yaml';
 import { z } from 'zod';
 import { EXITED_STDOUT_CHARS, STDOUT_CUT, UNAVAILABLE_REASON_MAX, type InitCredentials, type InitInstance } from '@teamai/runtime-protocol';
 import { BUILT_IN_TOOLS } from '@teamai/tool-definitions';
-import { bundleRuntime, connect, fakeEngine, tempDir, type Connection, type FakeEngine, type Message } from './testing/harness.js';
+import { BOUND_MS, bundleRuntime, connect, fakeEngine, tempDir, type Connection, type FakeEngine, type Message } from './testing/harness.js';
 import { closeLeftovers, expectNothingLeft } from './testing/leaks.js';
 import { signalPid } from '@teamai/shared/process-group';
 import { entriesUnder } from '@teamai/shared/entries-under';
@@ -43,7 +43,9 @@ beforeEach(() => {
 
 afterEach(async () => {
   const connections = open.splice(0);
-  await Promise.all(connections.map((connection) => connection.end()));
+  // The runtime's own close ends stdin and kills it if it outlives that (5 s), so a
+  // timed-out test cannot leave a runtime child behind and cascade into the next steps.
+  await Promise.all(connections.map((connection) => connection.runtime.close()));
   engine.repair();
   const { invalid, recovered } = await closeLeftovers(connections);
 
@@ -2242,7 +2244,10 @@ describe('a judge (a confined prompt) in a container of its own', () => {
     connection.send({ type: 'cancel', op });
 
     expect(await ended).toMatchObject({ op, event: 'failed', failure: { code: 'cancel_failed', message: expect.stringContaining('docker rm --force') } });
-    expect(Date.now() - sent).toBeLessThan(10_500);
+    const elapsed = Date.now() - sent;
+    // Measured against the runtime's own bound with a runner-scheduling margin, not the
+    // old 500 ms wall-clock margin: on a loaded CI runner the same run arrived at 11.1 s.
+    expect(elapsed).toBeLessThan(BOUND_MS + 3_000);
     engine.delay('rm', 0);
     connection.send({ type: 'close', handle: HANDLE });
     expect(await connection.next((message) => message.handle === HANDLE && message.event !== 'ready', 30_000)).toEqual({ event: 'closed', handle: HANDLE });
