@@ -140,8 +140,11 @@ export function importVisitors(
 export function sourceImport(/** @type {string} */ from, /** @type {string} */ specifier) {
   if (!specifier.startsWith('.')) return undefined;
   const stem = path.resolve(path.dirname(from), specifier).replace(/\.[cm]?js$/, '');
+  const file = [stem + '.ts', stem + '.tsx', path.join(stem, 'index.ts')].find((candidate) => fs.existsSync(candidate));
 
-  return [stem + '.ts', stem + '.tsx', path.join(stem, 'index.ts')].find((candidate) => fs.existsSync(candidate));
+  // `path.resolve` answers with the platform's separators, and callers compare the result with the `path.posix` paths
+  // they build from the repository root, which on Windows never meet a `\`.
+  return file?.split(path.sep).join('/');
 }
 
 /** @type {Map<string, { source: string; specifiers: string[] }>} */
