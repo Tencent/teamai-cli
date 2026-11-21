@@ -130,6 +130,18 @@ export async function tagsSubscribe(tags: string[], options: GlobalOptions): Pro
         return;
     }
 
+    // A tag nothing carries today matches no resource until one does; say so, so a typo is not a silent no-op.
+    const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
+
+    if (tagsConfig) {
+        const stats = collectTagStats(tagsConfig);
+        const unheld = newTags.filter((tag) => !stats.has(tag));
+
+        if (unheld.length > 0) {
+            log.warn(`No resource has ${unheld.map((tag) => `"${tag}"`).join(', ')} yet; the subscription applies when one does.`);
+        }
+    }
+
     if (options.dryRun) {
         log.info(`[dry-run] Would subscribe to: ${newTags.join(', ')}`);
 
