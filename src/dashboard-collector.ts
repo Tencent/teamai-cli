@@ -328,6 +328,7 @@ export const TranscriptEntrySchema = z.object({
   type: z.unknown().optional(),
   isMeta: z.unknown().optional(),
   isSidechain: z.unknown().optional(),
+  isCompactSummary: z.unknown().optional(),
   cwd: z.string().optional().catch(undefined),
   message: z.object({
     content: z.union([z.string(), z.array(TranscriptPartSchema)]).optional().catch(undefined),
@@ -339,13 +340,16 @@ export type TranscriptEntry = z.infer<typeof TranscriptEntrySchema>;
 /**
  * Whether a Claude transcript entry is a human turn, what the Stop scan counts
  * as a prompt: plain-string user content, or user content with text that is
- * neither an interrupt marker nor a system injection; never meta or sidechain.
- * One human turn per user entry (tool_result-only entries have no human text).
+ * neither an interrupt marker nor a system injection; never meta, sidechain or
+ * a compaction summary. A summary is the assistant's own earlier conversation
+ * written back in the user role, so counting it credits the member with a turn
+ * they never took (#1989). One human turn per user entry (tool_result-only
+ * entries have no human text).
  */
 export function isHumanPromptEntry(entry: TranscriptEntry): boolean {
   if (entry.type !== 'user') return false;
 
-  if (entry.isMeta === true || entry.isSidechain === true) return false;
+  if (entry.isMeta === true || entry.isSidechain === true || entry.isCompactSummary === true) return false;
   const content = entry.message?.content;
 
   if (content === undefined) return false;
