@@ -233,6 +233,7 @@ export class AgentsHandler extends ResourceHandler {
   ): Promise<AgentResourceItem[]> {
     const requestedNamespace = options?.namespace;
     const teamAgentsDir = path.join(localConfig.repo.localPath, 'agents');
+    const rawTombstones = await this.readTombstones(localConfig);
     const tombstones = await this.removedStems(teamConfig, localConfig);
     // Self mode: users drop canonical agent files straight into the repo's
     // own .teamai/agents/ (<name>.yaml, or legacy <name>.md) rather than authoring
@@ -291,7 +292,7 @@ export class AgentsHandler extends ResourceHandler {
             if (!isYaml && !isMd) continue;
             const stem = file.replace(/\.(yaml|md)$/, '');
 
-            if (tombstones.has(stem)) continue;
+            if (namespace ? rawTombstones.has(stem) || rawTombstones.has(`${namespace}/${stem}`) : tombstones.has(stem)) continue;
 
             if (!namespace && retiredCopy(stem)) {
               directStems.add(stem);
@@ -1101,17 +1102,28 @@ export class AgentsHandler extends ResourceHandler {
     // because agents deploy flattened (#649 review).
     if (isSelfMode(localConfig) && localConfig.projectRoot) {
       const activeAgentsDir = path.join(localConfig.projectRoot, '.teamai', 'agents');
+      const activeFiles = await findTeamAgentFiles(activeAgentsDir, name);
+
+      const activeFolders = (await listTeamAgentFolders(activeAgentsDir))
+        .filter((folder) => (stem === name ? folder.name === name : `${folder.namespace}/${folder.name}` === name));
+
+      const activeTargets = new Set([
+        ...activeFiles.map((file) => file.path),
+        ...activeFolders.map((folder) => folder.dir),
+      ]);
 
       for (const localName of localNames) {
         for (const ext of ['.yaml', '.md'] as const) {
           const filePath = path.join(activeAgentsDir, `${localName}${ext}`);
 
-          if (await pathExists(filePath)) {
-            // oxlint-disable-next-line teamai/remove-delivered -- the author's source in .teamai/agents, which pull never records
-            await remove(filePath);
-            removed.push(filePath);
-          }
+          if (await pathExists(filePath)) activeTargets.add(filePath);
         }
+      }
+
+      for (const target of activeTargets) {
+        // oxlint-disable-next-line teamai/remove-delivered -- the author's source in .teamai/agents, which pull never records
+        await remove(target);
+        removed.push(target);
       }
     }
 

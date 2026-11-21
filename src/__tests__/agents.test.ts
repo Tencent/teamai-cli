@@ -614,6 +614,44 @@ projects:
       // stem in every other namespace, because agents deploy flattened.
       expect(await fse.pathExists(path.join(tmpDir, '.teamai/agents/vr.yaml'))).toBe(false);
     });
+
+    it('skips a tombstoned namespaced canonical source when another namespace keeps the stem', async () => {
+      const self = selfConfig();
+      await fse.outputFile(path.join(repoPath, 'agents/.removed'), 'fe/vr\n');
+      await fse.outputFile(path.join(repoPath, 'agents/be/vr.yaml'), 'name: vr\ndescription: B\ninstructions: B.\n');
+      await fse.outputFile(path.join(tmpDir, '.teamai/agents/fe/vr.yaml'), 'name: vr\ndescription: A\ninstructions: A.\n');
+
+      expect(await handler.scanLocalForPush(teamConfig, self)).toEqual([]);
+    });
+
+    it('picks up a canonical source in another namespace after a same-stem namespaced removal', async () => {
+      const self = selfConfig();
+      await fse.outputFile(path.join(repoPath, 'agents/.removed'), 'fe/vr\n');
+      await fse.outputFile(path.join(tmpDir, '.teamai/agents/be/vr.yaml'), 'name: vr\ndescription: B\ninstructions: B.\n');
+
+      const items = await handler.scanLocalForPush(teamConfig, self);
+
+      expect(items.map((item) => [item.name, item.status, item.relativePath])).toEqual([['vr', 'new', 'agents/be/vr.yaml']]);
+    });
+
+    it('removes canonical agent folders and bare-stem namespaced files from .teamai/agents', async () => {
+      const self = selfConfig();
+      await fse.outputFile(path.join(repoPath, 'agents/fe/reviewer/AGENT.md'), '---\nname: reviewer\ndescription: A\n---\nA.\n');
+      await fse.outputFile(path.join(repoPath, 'agents/be/reviewer/AGENT.md'), '---\nname: reviewer\ndescription: B\n---\nB.\n');
+      await fse.outputFile(path.join(tmpDir, '.teamai/agents/fe/reviewer/AGENT.md'), '---\nname: reviewer\ndescription: A\n---\nA.\n');
+      await fse.outputFile(path.join(tmpDir, '.teamai/agents/be/reviewer/AGENT.md'), '---\nname: reviewer\ndescription: B\n---\nB.\n');
+      await fse.outputFile(path.join(repoPath, 'agents/fe/vr.yaml'), 'name: vr\ndescription: A\ninstructions: A.\n');
+      await fse.outputFile(path.join(tmpDir, '.teamai/agents/fe/vr.yaml'), 'name: vr\ndescription: A\ninstructions: A.\n');
+
+      await handler.removeItem('fe/reviewer', teamConfig, self);
+
+      expect(await fse.pathExists(path.join(tmpDir, '.teamai/agents/fe/reviewer'))).toBe(false);
+      expect(await fse.pathExists(path.join(tmpDir, '.teamai/agents/be/reviewer/AGENT.md'))).toBe(true);
+
+      await handler.removeItem('vr', teamConfig, self);
+
+      expect(await fse.pathExists(path.join(tmpDir, '.teamai/agents/fe/vr.yaml'))).toBe(false);
+    });
   });
 
   it('still removes a bare stem from every namespace', async () => {
