@@ -167,7 +167,7 @@ const NamespaceMergeDocSchema = z.object({
  * the one field is cheap and cycle-free; anything unreadable or not exactly
  * `intersect` keeps the default `union`.
  */
-async function readNamespaceMergeMode(repoPath: string): Promise<NamespaceMergeMode> {
+export async function readNamespaceMergeMode(repoPath: string): Promise<NamespaceMergeMode> {
   try {
     const content = await readFileSafe(path.join(repoPath, 'teamai.yaml'));
 
