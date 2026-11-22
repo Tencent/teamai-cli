@@ -204,3 +204,103 @@ describe('shallowClone — cache cleanup boundaries', () => {
     expect(fs.readFileSync(important, 'utf8')).toBe('User data\n');
   });
 });
+
+describe('shallowClone — credential redaction', () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-clone-redact-'));
+    vi.stubEnv('TEAMAI_CACHE_DIR', tmp);
+    vi.spyOn(log, 'debug').mockImplementation(() => {});
+    vi.mocked(spawn).mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function makeHangingProcess(): ChildProcess {
+    return {
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn() },
+      on: vi.fn(),
+      kill: vi.fn(),
+    } as unknown as ChildProcess;
+  }
+
+  function makeFailingProcess(stderrText: string, code = 128): ChildProcess {
+    let onStderr: ((chunk: Buffer) => void) | undefined;
+    return {
+      stdout: { on: vi.fn() },
+      stderr: { on: vi.fn((_event: string, cb: (chunk: Buffer) => void) => { onStderr = cb; }) },
+      on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+        if (event !== 'close') return;
+        void Promise.resolve().then(() => {
+          onStderr?.(Buffer.from(stderrText));
+          cb(code);
+        });
+      }),
+      kill: vi.fn(),
+    } as unknown as ChildProcess;
+  }
+
+  it('redacts http.extraHeader credentials when a clone times out', async () => {
+    const token = 'ghp_timeoutSecretToken123456';
+    const encoded = Buffer.from(`x-access-token:${token}`).toString('base64');
+    vi.stubEnv('GITHUB_TOKEN', token);
+    vi.mocked(spawn).mockImplementation(() => makeHangingProcess());
+
+    const err = await shallowClone(
+      'https://github.com/org/repo.git',
+      path.join(tmp, 'repo'),
+      'github',
+      { timeoutMs: 10 },
+    ).then(() => null, (e: unknown) => (e instanceof Error ? e : null));
+
+    expect(err).not.toBeNull();
+    expect(err!.message).toContain('Command timed out');
+    expect(err!.message).not.toContain(encoded);
+    expect(err!.message).not.toContain(token);
+  });
+
+  it('redacts embedded URL credentials when a clone times out', async () => {
+    const token = 'oauth_timeout_secret_987654';
+    vi.mocked(spawn).mockImplementation(() => makeHangingProcess());
+
+    const err = await shallowClone(
+      `https://oauth2:${token}@example.com/org/repo.git`,
+      path.join(tmp, 'repo-url'),
+      'git',
+      { timeoutMs: 10 },
+    ).then(() => null, (e: unknown) => (e instanceof Error ? e : null));
+
+    expect(err).not.toBeNull();
+    expect(err!.message).toContain('Command timed out');
+    expect(err!.message).not.toContain(token);
+    expect(err!.message).toContain('https://***@example.com/org/repo.git');
+  });
+
+  it('redacts echoed http.extraHeader credentials from stderr on failure', async () => {
+    const token = 'glpat_trace2SecretToken123456';
+    const encoded = Buffer.from(`oauth2:${token}`).toString('base64');
+    vi.stubEnv('GITLAB_TOKEN', token);
+    vi.mocked(spawn).mockImplementation(() => makeFailingProcess(
+      `start git -c 'http.extraHeader=Authorization: Basic ${encoded}' clone https://gitlab.com/org/repo.git\n`
+      + `{"event":"start","argv":["git","-c","http.extraHeader=Authorization: Basic ${encoded}","clone"]}\n`
+      + 'fatal: Authentication failed\n',
+    ));
+
+    const err = await shallowClone(
+      'https://gitlab.com/org/repo.git',
+      path.join(tmp, 'repo-trace2'),
+      'gitlab',
+    ).then(() => null, (e: unknown) => (e instanceof Error ? e : null));
+
+    expect(err).not.toBeNull();
+    expect(err!.message).toContain('git clone failed');
+    expect(err!.message).not.toContain(encoded);
+    expect(err!.message).not.toContain(token);
+  });
+});
