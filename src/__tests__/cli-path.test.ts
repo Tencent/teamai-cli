@@ -36,7 +36,7 @@ vi.mock('@teamai/shared/log', () => ({
   }),
 }));
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import crossSpawn from 'cross-spawn';
 import { pickWindowsCommand, resolveCliPath, resolvePathCommand } from '@teamai/shared/cli-path';
@@ -44,6 +44,7 @@ import { ghExec, isGhInstalled } from '../providers/github/gh-cli.js';
 import { cnbExec, isCnbInstalled } from '../providers/cnb/cnb-cli.js';
 
 const mockedExecFileSync = execFileSync as Mock;
+const mockedNodeSpawnSync = spawnSync as Mock;
 const mockedExistsSync = existsSync as Mock;
 const mockedCrossSpawnSync = crossSpawn.sync as unknown as Mock;
 
@@ -279,20 +280,45 @@ describe('cnb-cli launches the resolved executable', () => {
     vi.clearAllMocks();
     mockedExistsSync.mockReturnValue(true);
     mockedCrossSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+    // A `.cmd` shim is a batch file, which Windows starts under cmd.exe through
+    // node:child_process.spawnSync instead of cross-spawn (spawnCommandSync), so that launcher needs a result too.
+    mockedNodeSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
   });
 
-  it('starts the resolved .cmd shim through cross-spawn', () => {
+  // The shim is npm's only Windows entry point for cnb, and a batch file cannot be spawned: spawnCommandSync hands it
+  // to cmd.exe with its arguments escaped for the shim's own `%*` line. Everywhere else it is an ordinary file and
+  // cross-spawn starts it, which is the path CI (ubuntu/macos) has always exercised.
+  it('starts the resolved .cmd shim through the launcher that can run a batch file', () => {
     mockedExecFileSync.mockReturnValue(`${CNB_SHIM}\r\n`);
     cnbExec(['status']);
-    expect(mockedCrossSpawnSync).toHaveBeenCalledWith(CNB_SHIM, ['status'], expect.anything());
+
+    if (process.platform === 'win32') {
+      expect(mockedNodeSpawnSync).toHaveBeenCalledWith(
+        expect.stringMatching(/cmd\.exe$/i),
+        expect.arrayContaining([expect.stringContaining(CNB_SHIM.split('/').join('\\'))]),
+        expect.objectContaining({ windowsVerbatimArguments: true }),
+      );
+      expect(mockedCrossSpawnSync).not.toHaveBeenCalled();
+    } else {
+      expect(mockedCrossSpawnSync).toHaveBeenCalledWith(CNB_SHIM, ['status'], expect.anything());
+    }
   });
 
-  it('forwards inheritStdio through cross-spawn', () => {
+  it('forwards inheritStdio to the launcher that starts the shim', () => {
     mockedExecFileSync.mockReturnValue(`${CNB_SHIM}\r\n`);
     cnbExec(['login'], { inheritStdio: true });
-    expect(mockedCrossSpawnSync).toHaveBeenCalledWith(
-      CNB_SHIM, ['login'], expect.objectContaining({ stdio: 'inherit' }),
-    );
+
+    if (process.platform === 'win32') {
+      expect(mockedNodeSpawnSync).toHaveBeenCalledWith(
+        expect.stringMatching(/cmd\.exe$/i),
+        expect.any(Array),
+        expect.objectContaining({ stdio: 'inherit', windowsVerbatimArguments: true }),
+      );
+    } else {
+      expect(mockedCrossSpawnSync).toHaveBeenCalledWith(
+        CNB_SHIM, ['login'], expect.objectContaining({ stdio: 'inherit' }),
+      );
+    }
   });
 
   it('returns 127 with an explicit message rather than a bare status 1', () => {
