@@ -54,6 +54,7 @@ import {
   isTeamaiBareCopy,
   ownsJsonMcpEntry,
   writeJsonDoc,
+  withMcpLock,
   restoreMcpDoc,
   writeCodexAtomic,
   spliceCodexBlock,
@@ -5692,10 +5693,10 @@ async function runMcpCommand(
   // keeps its scope: the server's file is the user one (`locate` writes there),
   // while its ownership record stays the workspace's, as every other tool's.
   if (command.type === 'install_mcp') {
-    return installMcpServer(config, command, tool, slug, scope, workspacePath);
+    return withMcpLock(() => installMcpServer(config, command, tool, slug, scope, workspacePath));
   }
 
-  await uninstallMcpServer(config, tool, slug, scope, workspacePath);
+  await withMcpLock(() => uninstallMcpServer(config, tool, slug, scope, workspacePath));
 
   return command.version;
 }
@@ -5983,10 +5984,10 @@ async function protectWorkspaceMcpConfigs(config: LocalAgentConfig, cwd?: string
   const workspacePath = await resolveWorkspacePath(cwd);
 
   if (!workspacePath) return;
-  // First, what an earlier install left in a file the tool no longer gets it from (#915).
-  await moveWorkspaceMcpServers(config, workspacePath);
 
   try {
+    // First, what an earlier install left in a file the tool no longer gets it from (#915).
+    await withMcpLock(() => moveWorkspaceMcpServers(config, workspacePath));
     const { resolveDataHomeForScope } = await import('./config.js');
     const dataHome = await resolveDataHomeForScope('project', workspacePath);
     const localConfig = await createResourceLocalConfig(config, 'project', getUserHome(), workspacePath);

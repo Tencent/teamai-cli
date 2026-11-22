@@ -1082,6 +1082,29 @@ describe('session pull (gitPull + rebuildIndex) on a team checkout', () => {
     expect(git(alice, 'status', '--porcelain')).toBe('');
     expect(new SyncManager(alice).listSessions(identity).map((s) => s.sessionId)).toEqual(['s-1']);
   });
+
+  it.skipIf(process.platform === 'win32')('folds the %-escaped directory away when what is left there is a link', async () => {
+    const alice = path.join(repoRoot, 'alice');
+    git(repoRoot, 'init', '-q', '-b', 'main', alice);
+    initCheckout(alice, 'alice');
+    const first = new SyncManager(alice);
+    await first.saveSession(mkSession(), mkMeta());
+    expect(first.gitCommit('push').status).toBe('committed');
+    const older = path.join(repoRoot, 'older');
+    await new SyncManager(older).saveSession(mkSession({ sessionId: 's-3', title: 'add invoices' }), mkMeta({ sessionId: 's-3' }));
+    const percentDir = path.join(alice, 'sessions', 'repos', 'github.com%2Forg%2Falpha');
+    fs.cpSync(path.join(older, 'sessions', 'repos', encodeRepoIdentity(identity)), percentDir, { recursive: true });
+    git(alice, 'add', '-A');
+    git(alice, 'commit', '-qm', 'older CLI push');
+    fs.symlinkSync('missing', path.join(percentDir, 'gone'));
+
+    const second = new SyncManager(alice);
+    await second.saveSession(mkSession({ sessionId: 's-2', title: 'add refunds' }), mkMeta({ sessionId: 's-2' }));
+    expect(second.gitCommit('push').status).toBe('committed');
+
+    expect(fs.existsSync(percentDir)).toBe(false);
+    expect(new SyncManager(alice).listSessions(identity).map((s) => s.sessionId).sort()).toEqual(['s-1', 's-2', 's-3']);
+  });
 });
 
 describe('canonicalizeRemote', () => {

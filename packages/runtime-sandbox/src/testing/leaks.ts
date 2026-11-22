@@ -123,7 +123,7 @@ export async function closeLeftovers(connections: Connection[]): Promise<{ inval
       await recover.next((message) => message.handle === handle && (message.event === 'closed' || message.event === 'failed'), 60_000);
     }
 
-    await recover.end();
+    await recover.runtime.close();
     invalid.push(...recover.invalid);
   }
 
