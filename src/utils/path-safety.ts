@@ -3,6 +3,28 @@ import fs from 'node:fs';
 import { getUserHome } from '@teamai/shared/home';
 
 /**
+ * A path in the form the containment guards below compare, for a given host.
+ *
+ * A Windows filesystem is case-insensitive, so a drive letter or directory the
+ * caller spelled with different casing (`c:\kb` next to `C:\kb`) names the same
+ * tree and must not read as an escape. POSIX compares byte for byte, where the
+ * two spellings really are different files. `platform` is injectable so a test
+ * can exercise the win32 branch on any host.
+ */
+function comparablePath(p: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? p.toLowerCase() : p;
+}
+
+/**
+ * Whether `candidate` is `root` itself or lies below it. Both must already be in
+ * comparable form. A root that ends in a separator is the filesystem root
+ * (`C:\`, `/`), where appending another separator would match nothing.
+ */
+function isSelfOrInside(candidate: string, root: string): boolean {
+  return candidate === root || candidate.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
+}
+
+/**
  * Assert that a resolved target path is within one of the allowed root directories.
  *
  * Resolves symlinks on both sides before comparing, preventing symlink-escape attacks.
@@ -15,8 +37,9 @@ import { getUserHome } from '@teamai/shared/home';
 export function assertSafePath(target: string, allowedRoots: string[]): void {
   const resolvedTarget = resolveReal(target);
   const resolvedRoots = allowedRoots.map(resolveReal);
+  const foldedTarget = comparablePath(resolvedTarget);
 
-  if (resolvedRoots.some((root) => resolvedTarget === root || resolvedTarget.startsWith(root + path.sep))) {
+  if (resolvedRoots.some((root) => isSelfOrInside(foldedTarget, comparablePath(root)))) {
     return;
   }
 
@@ -40,10 +63,10 @@ export function assertSafePath(target: string, allowedRoots: string[]): void {
  * @throws Error if `candidate` resolves outside `root`.
  */
 export function assertWithinRoot(root: string, candidate: string, message?: string): void {
-  const resolvedRoot = path.resolve(root);
-  const resolvedCandidate = path.resolve(candidate);
+  const resolvedRoot = comparablePath(path.resolve(root));
+  const resolvedCandidate = comparablePath(path.resolve(candidate));
 
-  if (resolvedCandidate !== resolvedRoot && !resolvedCandidate.startsWith(resolvedRoot + path.sep)) {
+  if (!isSelfOrInside(resolvedCandidate, resolvedRoot)) {
     throw new Error(message ?? `path traversal detected: "${candidate}" is outside "${root}"`);
   }
 }
