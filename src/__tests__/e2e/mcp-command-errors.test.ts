@@ -177,6 +177,21 @@ describe('Codex TOML table boundaries (real CLI)', () => {
     expect(parseToml(original)).toMatchObject({ mcp_servers: { 'team-mcp': { command: 'personal-server' } } });
   });
 
+  it.each([false, true])('rejects an edit that would extend an inline MCP table (dry run: %s)', async (dryRun) => {
+    const { home, file } = fixture();
+    const original = 'mcp_servers = { personal = { command = "personal-server" } }\n';
+    const manifest = path.join(home, '.teamai', 'managed-mcp.json');
+    fs.writeFileSync(file, original);
+
+    const result = await runCLI(home, dryRun ? ['inject', '--dry-run'] : ['inject']);
+
+    expect(result.code, result.output).toBe(1);
+    expect(result.output).toContain('would produce invalid TOML');
+    expect(result.output).not.toMatch(/added\s+codex\/team-mcp/);
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
+    expect(fs.existsSync(manifest)).toBe(false);
+  });
+
   it.each(['"mcp_servers"', "'mcp_servers'"])('keeps a personal server under %s, replaces it only with --force and removes the managed copy', async (root) => {
     const { home, file } = fixture();
     const before = '# member settings\r\nmodel = "gpt-5"\r\n\r\n';

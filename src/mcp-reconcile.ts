@@ -4916,6 +4916,9 @@ async function applyCodex(
 
   let source = previous ?? '';
   const present = new Set(codexServerNames(source));
+  const plannedRecords: ManagedMcpRecord[] = [];
+  const plannedChanges: McpChange[] = [];
+  const previews: string[] = [];
   let dirty = false;
   let holdsResolvedValue = false;
 
@@ -4925,22 +4928,22 @@ async function applyCodex(
     const owner = unrecorded ? await judge(name, codexBlockIn(source, name)) : 'teamai';
 
     if (owner !== 'teamai') {
-      changes.push(unrecordedServerKept(target, name, owner));
+      plannedChanges.push(unrecordedServerKept(target, name, owner));
       continue;
     }
 
-    nextRecords.push({ name, hash });
+    plannedRecords.push({ name, hash });
     holdsResolvedValue ||= resolvedValue;
     const next = spliceCodexBlock(source, name, block!);
 
     if (next === source) {
-      if (unrecorded && options.dryRun) log.info(describeAdoptionPreview(target, name));
+      if (unrecorded && options.dryRun) previews.push(describeAdoptionPreview(target, name));
       continue;
     }
 
     source = next;
     dirty = true;
-    changes.push({ tool: target.tool, server: name, action: present.has(name) ? 'updated' : 'added' });
+    plannedChanges.push({ tool: target.tool, server: name, action: present.has(name) ? 'updated' : 'added' });
   }
 
   for (const name of ownedNames) {
@@ -4956,7 +4959,7 @@ async function applyCodex(
     const kept = keep.get(name);
 
     if (kept && present.has(name)) {
-      nextRecords.push(kept);
+      plannedRecords.push(kept);
       holdsResolvedValue = true;
       continue;
     }
@@ -4967,7 +4970,7 @@ async function applyCodex(
     if (next === source) continue;
     source = next;
     dirty = true;
-    changes.push({ tool: target.tool, server: name, action: 'removed' });
+    plannedChanges.push({ tool: target.tool, server: name, action: 'removed' });
   }
 
   // An unrecorded block of a server the team deleted is teamai's when it equals a render of that
@@ -4978,11 +4981,27 @@ async function applyCodex(
 
     if (next === source) continue;
 
-    if (options.dryRun) log.info(describeRemovedServerPreview(target, name));
+    if (options.dryRun) previews.push(describeRemovedServerPreview(target, name));
     source = next;
     dirty = true;
-    changes.push({ tool: target.tool, server: name, action: 'removed' });
+    plannedChanges.push({ tool: target.tool, server: name, action: 'removed' });
   }
+
+  if (dirty) {
+    try {
+      parseToml(withoutTomlBom(source));
+    } catch {
+      log.warn(`Editing ${target.file} would produce invalid TOML. Teamai left its MCP servers for ${target.tool} unchanged. `
+        + 'If mcp_servers is an inline table, expand it into [mcp_servers.<name>] tables and try again.');
+
+      return null;
+    }
+  }
+
+  nextRecords.push(...plannedRecords);
+  changes.push(...plannedChanges);
+
+  for (const preview of previews) log.info(preview);
 
   if (options.dryRun) return false;
 
