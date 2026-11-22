@@ -27,6 +27,7 @@ vi.mock('../utils/git.js', () => ({
   generateBranchName: vi.fn(),
 }));
 
+import { trySymlink } from './helpers/symlink.js';
 import { syncTeamUpdatesToLocal } from '../utils/pre-push-sync.js';
 import { fileHash } from '../utils/fs.js';
 import { recordDelivered } from '../resources/delivered-copies.js';
@@ -708,7 +709,8 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     await fse.outputFile(dotfiles, 'v1 skill');
     const localSkillDir = path.join(homeDir, '.claude/skills', 'my-skill');
     await fse.ensureDir(localSkillDir);
-    await fse.symlink(dotfiles, path.join(localSkillDir, 'SKILL.md'));
+    // The case is about a link, and Windows grants the privilege to create one only sometimes.
+    if (!trySymlink(dotfiles, path.join(localSkillDir, 'SKILL.md'))) return;
     await fse.writeFile(path.join(localSkillDir, 'notes.md'), 'team notes v1');
 
     // Every file of the copy is at the last pull's revision, so nothing here is the member's edit.
@@ -815,7 +817,7 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     const dotfile = path.join(tmpDir, 'dotfiles', 'nod.md');
     await fse.outputFile(dotfile, withSkillFrontmatter(v1('nod'), 'nod'));
     await fse.ensureDir(path.dirname(nod));
-    await fse.symlink(dotfile, nod);
+    const linked = trySymlink(dotfile, nod);
     mockGetFileContentAtRev.mockImplementation(async (_repo, _rev, file) => (
       file === './skills/greet.md' ? Buffer.from(v1('greet')) : file === './skills/ns/wave.md' ? Buffer.from(v1('wave')) : file === './skills/nod.md' ? Buffer.from(v1('nod')) : null
     ));
@@ -823,9 +825,11 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
 
     expect(await fse.readFile(greet, 'utf-8')).toBe(withSkillFrontmatter('---\ndescription: greet\n---\n# greet\n\nv2\n', 'greet'));
-    // The link stays a link: pull keeps it, and replacing it here would make the scan offer the member's old file.
-    expect(await fse.readFile(nod, 'utf-8')).toBe(withSkillFrontmatter(v1('nod'), 'nod'));
-    expect(await fse.readFile(dotfile, 'utf-8')).toBe(withSkillFrontmatter(v1('nod'), 'nod'));
+    if (linked) {
+      // The link stays a link: pull keeps it, and replacing it here would make the scan offer the member's old file.
+      expect(await fse.readFile(nod, 'utf-8')).toBe(withSkillFrontmatter(v1('nod'), 'nod'));
+      expect(await fse.readFile(dotfile, 'utf-8')).toBe(withSkillFrontmatter(v1('nod'), 'nod'));
+    }
     expect(await fse.readFile(wave, 'utf-8')).toBe(`${withSkillFrontmatter(v1('wave'), 'wave')}mine\n`);
   });
 
