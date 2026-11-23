@@ -248,15 +248,19 @@ describe('gitlabRepoClone', () => {
 
   it('sanitizes credentials from error output via the shared helper', () => {
     process.env.GITLAB_TOKEN = 'glpat_secret';
+    const encoded = Buffer.from('oauth2:glpat_secret').toString('base64');
     mockedSpawnSync.mockReturnValue({
       status: 128,
       stdout: '',
-      // git echoes the full URL (with any embedded userinfo) on access errors.
-      stderr: "fatal: unable to access 'https://oauth2:glpat_secret@gitlab.example.com/org/repo.git/': The requested URL returned error: 403",
+      // git echoes the full URL on access errors and argv (including -c http.extraHeader) when trace2 is enabled.
+      stderr:
+        `start git -c 'http.extraHeader=Authorization: Basic ${encoded}' clone https://gitlab.example.com/org/repo.git\n`
+        + "fatal: unable to access 'https://oauth2:glpat_secret@gitlab.example.com/org/repo.git/': The requested URL returned error: 403",
     });
     const err = (() => { try { gitlabRepoClone('org/repo', '/tmp/clone'); return null; } catch (e) { return e as Error; } })();
     expect(err).not.toBeNull();
     expect(err!.message).not.toContain('glpat_secret');
+    expect(err!.message).not.toContain(encoded);
     expect(err!.message).toContain('***@');
   });
 });
