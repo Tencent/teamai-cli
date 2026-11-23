@@ -1,6 +1,8 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -41,6 +43,118 @@ describe('local-agent rules (#993)', () => {
   afterEach(() => {
     for (const sandbox of sandboxes.splice(0)) fs.rmSync(sandbox, { recursive: true, force: true });
   });
+
+  it.skipIf(process.platform === 'win32')('reconciles scoped ClawPro A2A through a real CLI sync', async () => {
+    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-a2a-')));
+    sandboxes.push(sandbox);
+    const home = path.join(sandbox, 'home');
+    const agentDir = path.join(home, '.teamai', 'local-agent');
+    const cert = path.join(sandbox, 'cert.pem');
+    const key = path.join(sandbox, 'key.pem');
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=127.0.0.1',
+      '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', key, '-out', cert], { stdio: 'ignore' });
+    fs.mkdirSync(agentDir, { recursive: true });
+    const token = 'sk-a2a-fixture-openclaw';
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const instanceId = 'local-openclaw-ddeeff';
+    const marker = path.join(sandbox, 'a2a-lifecycle.log');
+    const pluginState = path.join(agentDir, 'plugins.json');
+    const reports: string[] = [];
+    const scopedRequests: Array<{ instanceId: string | null; token: string | undefined }> = [];
+    let revision = 'initial';
+    let fail = false;
+    let desired = true;
+    const cliEnv = { HOME: home, NODE_EXTRA_CA_CERTS: cert, TEAMAI_LOCAL_AGENT_ID: '0011223344DDEEFF' };
+    const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+    const command = (action: string) => {
+      const script = `
+        const token = process.env.TEAMAI_CLAWPRO_A2A_DEVICE_TOKEN;
+        if (require('node:crypto').createHash('sha256').update(token || '').digest('hex') !== ${JSON.stringify(tokenHash)}) {
+          console.error(token);
+          process.exit(1);
+        }
+        require('node:fs').appendFileSync(${JSON.stringify(marker)}, ${JSON.stringify(action + '\n')});
+      `;
+
+      return `node --eval ${quote(script)}`;
+    };
+    const server = createHttpsServer({ cert: fs.readFileSync(cert), key: fs.readFileSync(key) }, (req, res) => {
+      const url = new URL(req.url ?? '/', 'https://127.0.0.1');
+      res.setHeader('content-type', 'application/json');
+
+      switch (url.pathname) {
+        case '/api/local-agent/report':
+          reports.push(req.headers.authorization ?? '');
+          res.end(JSON.stringify({ instance_id: instanceId }));
+          break;
+        case '/api/local-agent/sync':
+          res.end(JSON.stringify({ ok: true, plugin_config_revision: revision, cmds: [] }));
+          break;
+        case '/api/local-agent/get-config':
+          if (url.searchParams.get('config_type') !== 'a2a') {
+            res.end('{}');
+            break;
+          }
+          scopedRequests.push({ instanceId: url.searchParams.get('instance_id'), token: req.headers.authorization });
+
+          if (fail) res.statusCode = 503;
+          res.end(JSON.stringify(fail ? { error: token } : desired ? { 'a2a-12': {
+            version: '1', install_cmd: command('install'), run_cmd: command('run'), uninstall_cmd: command('uninstall'),
+          } } : {}));
+          break;
+        default:
+          res.end('{}');
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const endpoint = `https://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const scope = createHash('sha256').update(endpoint + '\0' + instanceId).digest('hex');
+    const pullState = path.join(agentDir, `plugin-pull-a2a-${scope}.json`);
+    const runHook = async () => {
+      const result = await runCLI(['hook-dispatch', 'session-start', '--tool', 'openclaw'], cliEnv, home, JSON.stringify({
+        cwd: home, hook_event_name: 'SessionStart', session_id: 'a2a-fixture',
+      }));
+      expect(result.code, result.output).toBe(0);
+      await expect.poll(() => {
+        if (!fs.existsSync(pullState)) return undefined;
+
+        return JSON.parse(fs.readFileSync(pullState, 'utf8')).observedRevision;
+      }, { timeout: 6000 }).toBe(revision);
+    };
+
+    try {
+      fs.writeFileSync(path.join(agentDir, 'config.json'), JSON.stringify({
+        endpoint, token: 'sk-unused-shared-fixture', agentTokens: { openclaw: token, hermes: 'sk-other-tool' }, workspaceBindings: {},
+      }));
+      fs.writeFileSync(path.join(agentDir, 'plugin-pull.json'), JSON.stringify({ lastPullAt: Date.now() }));
+      fs.writeFileSync(pluginState, JSON.stringify({ cls: { slug: 'cls', ready: true, uninstallCmd: 'exit 9' } }));
+
+      await runHook();
+      expect(fs.readFileSync(marker, 'utf8')).toBe('install\nrun\n');
+      expect(reports).toContain(`Bearer ${token}`);
+      expect(scopedRequests).toEqual([{ instanceId, token: `Bearer ${token}` }]);
+
+      fail = true;
+      revision = 'failed-pull';
+      await runHook();
+      expect(fs.readFileSync(marker, 'utf8')).toBe('install\nrun\n');
+      expect(fs.readFileSync(pluginState, 'utf8')).toContain('clawpro-a2a-');
+      expect(fs.readFileSync(path.join(home, '.teamai', 'debug.log'), 'utf8')).not.toContain(token);
+
+      fail = false;
+      revision = 'restart';
+      await runHook();
+      expect(fs.readFileSync(marker, 'utf8')).toBe('install\nrun\nrun\n');
+
+      desired = false;
+      revision = 'removed';
+      await runHook();
+      expect(fs.readFileSync(marker, 'utf8')).toBe('install\nrun\nrun\nuninstall\n');
+      expect(JSON.parse(fs.readFileSync(pluginState, 'utf8'))).toEqual({ cls: { slug: 'cls', ready: true, uninstallCmd: 'exit 9' } });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  }, 40_000);
 
   /**
    * An HTTP source in `home` whose `operation` (a Stop hook sync or plugin reconciliation)

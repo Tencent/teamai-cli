@@ -60,6 +60,7 @@ export interface ReconcileDeps {
    * Callers must ensure the command string contains no secret material.
    */
   execCommand(cmd: string, timeoutMs: number): Promise<void>;
+  runTimeoutMs?: number;
   /** Return current epoch milliseconds. Injected so tests can control time. */
   now(): number;
   log: { debug(msg: string): void; warn(msg: string): void };
@@ -143,7 +144,7 @@ export async function reconcilePlugins(
 
         deps.log.debug(`plugin ${d.slug}: installing${d.version ? ' version ' + d.version : ''}`);
         await deps.execCommand(d.installCmd, INSTALL_TIMEOUT_MS);
-        await deps.execCommand(d.runCmd, RUN_TIMEOUT_MS);
+        await deps.execCommand(d.runCmd, deps.runTimeoutMs ?? RUN_TIMEOUT_MS);
         await deps.mutatePlugins((m) => {
           m[d.slug] = makeReadyState(d, deps);
         });
@@ -162,7 +163,7 @@ export async function reconcilePlugins(
 
           deps.log.debug(`plugin ${d.slug}: updating (${reason})`);
           await deps.execCommand(d.updateCmd ?? d.installCmd, UPDATE_TIMEOUT_MS);
-          await deps.execCommand(d.runCmd, RUN_TIMEOUT_MS);
+          await deps.execCommand(d.runCmd, deps.runTimeoutMs ?? RUN_TIMEOUT_MS);
           await deps.mutatePlugins((m) => {
             m[d.slug] = makeReadyState(d, deps);
           });

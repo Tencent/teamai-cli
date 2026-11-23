@@ -2,13 +2,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { promisify } from 'node:util';
 import fse from 'fs-extra';
 import { copyRegularFile, copyRegularTree, openRegularFile, readRegularFile, readRegularFileSync } from '@teamai/shared/regular-file';
 import { z } from 'zod';
 import { log } from '@teamai/shared/log';
-import { detachChild } from '@teamai/shared/exec';
+import { detachChild, probeBinary } from '@teamai/shared/exec';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import {
   ensureDir,
@@ -34,7 +35,7 @@ import { parseHookEvent } from './dashboard-collector.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { isInteractive } from './utils/prompt.js';
 import { getAgentVersion } from './agent-version.js';
-import { getMachineId, deriveLocalAgentId } from './machine-id.js';
+import { getMachineId, deriveInstanceId, deriveLocalAgentId } from './machine-id.js';
 import { EXCLUDED_RULE_NAMES } from './builtin-rules.js';
 import { getsRulesFromExtension, getsRulesFromSessionHook, ruleStemFromFilename } from './resources/rule-format.js';
 import { inlineRulesLocationOf, unreadableConfigOf } from './resources/rules.js';
@@ -89,7 +90,7 @@ import {
   retiredFilesOfReached, nativeProjectInstructions,
 } from './instruction-targets.js';
 import { opencodeV1ClaudeFile } from './resources/opencode-config.js';
-import { reconcilePlugins, teardownAllPlugins, parseGetConfig, substituteVars, unresolvedPlaceholders, type ReconcileDeps, type PluginState } from './plugin-lifecycle.js';
+import { commandFingerprint, reconcilePlugins, teardownAllPlugins, parseGetConfig, substituteVars, unresolvedPlaceholders, type ReconcileDeps, type PluginState } from './plugin-lifecycle.js';
 import {
   resolveBaseDir,
   scopedToolPaths,
@@ -880,7 +881,7 @@ async function withPluginStateLock(mutate: (m: Record<string, PluginState>) => v
   try {
     const m = await readPluginState();
     mutate(m);
-    await writeJson(statePath, m);
+    await writeJsonAtomic(statePath, m);
   } finally {
     await fs.promises.rm(lockPath, { force: true });
   }
@@ -1544,12 +1545,15 @@ function redactSecrets(s: string): string {
  * emit 'close', producing a false timeout even though the command itself finished.
  * Rejects on non-zero exit, termination by signal, or timeout.
  */
-export async function execPluginCommand(cmd: string, timeoutMs: number): Promise<void> {
+export async function execPluginCommand(cmd: string, timeoutMs: number, deviceToken?: string): Promise<void> {
   const { spawn } = await import('node:child_process');
   await new Promise<void>((resolve, reject) => {
+    const env = deviceToken ? { ...process.env, TEAMAI_CLAWPRO_A2A_DEVICE_TOKEN: deviceToken } : undefined;
+    const stdio = ['ignore', 'ignore', deviceToken ? 'ignore' : 'pipe'] as const;
+
     const child = process.platform === 'win32'
-      ? spawn('cmd', ['/c', cmd], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] })
-      : spawn('bash', ['-lc', cmd], { stdio: ['ignore', 'ignore', 'pipe'] });
+      ? spawn('cmd', ['/c', cmd], { windowsHide: true, stdio: [...stdio], env })
+      : spawn('bash', ['-lc', cmd], { stdio: [...stdio], env });
 
     let stderr = '';
     let settled = false;
@@ -1601,7 +1605,7 @@ function getPluginPullStatePath(): string {
   return path.join(getLocalAgentHome(), 'plugin-pull.json');
 }
 
-function buildReconcileDeps(config: LocalAgentConfig, tag: string): ReconcileDeps {
+function buildReconcileDeps(tag: string): ReconcileDeps {
   return {
     readPlugins: () => readPluginState(),
     mutatePlugins: (fn) => withPluginStateLock(fn),
@@ -1619,6 +1623,145 @@ function buildReconcileDeps(config: LocalAgentConfig, tag: string): ReconcileDep
   };
 }
 
+const A2A_PLUGIN_PREFIX = 'clawpro-a2a-';
+const A2A_PLUGIN_RETRY_MS = 60_000;
+const A2A_PLUGIN_RUN_TIMEOUT_MS = 180_000;
+const A2aPluginRevisionSchema = z.string().min(1).max(256);
+
+const A2aPluginRequestSchema = z.strictObject({
+  scope: z.string().regex(/^[a-f0-9]{64}$/),
+  instanceId: z.string().regex(/^local-openclaw-[a-f0-9]{6}$/),
+  revision: A2aPluginRevisionSchema,
+});
+
+type A2aPluginRequest = z.infer<typeof A2aPluginRequestSchema>;
+
+type A2aPullState = { observedRevision: string; nextCheckAt: number };
+
+function a2aPluginScope(endpoint: string, instanceId: string): string {
+  return createHash('sha256').update(endpoint + '\0' + instanceId).digest('hex');
+}
+
+function a2aPullStatePath(scope: string): string {
+  return path.join(getLocalAgentHome(), `plugin-pull-a2a-${scope}.json`);
+}
+
+async function a2aPullDue(request: A2aPluginRequest): Promise<boolean> {
+  const state = await readJson<A2aPullState>(a2aPullStatePath(request.scope));
+
+  return state?.observedRevision !== request.revision || state.nextCheckAt <= Date.now();
+}
+
+async function scheduleA2aPlugins(
+  config: LocalAgentConfig,
+  identity: AgentIdentityPayload,
+  revision: string,
+  reportedInstanceId?: string,
+): Promise<void> {
+  if (identity.agent_type !== 'openclaw' || !config.endpoint.startsWith('https://') || !tokenForAgent(config, 'openclaw')?.startsWith('sk-')) return;
+  const instanceId = reportedInstanceId ?? deriveInstanceId(identity.agent_type, identity.local_agent_id.toLowerCase());
+  const request = A2aPluginRequestSchema.safeParse({ scope: a2aPluginScope(config.endpoint, instanceId), instanceId, revision });
+
+  if (!request.success) return;
+
+  try {
+    if (!await a2aPullDue(request.data)) return;
+    await spawnPluginReconcile({ TEAMAI_PLUGIN_A2A_REQUEST: JSON.stringify(request.data) });
+  } catch (error) {
+    log.debug(`[local-agent] A2A plugin reconcile spawn skipped: ${messageOf(error)}`);
+  }
+}
+
+async function spawnPluginReconcile(env: Record<string, string>): Promise<void> {
+  if (!process.argv[1]) return;
+  const { spawn } = await import('node:child_process');
+
+  const child = spawn(process.execPath, [process.argv[1], 'source', 'reconcile-plugins'], {
+    detached: process.platform !== 'win32',
+    windowsHide: true,
+    stdio: 'ignore',
+    env: { ...process.env, ...env },
+  });
+
+  child.on('error', (error) => log.debug(`[local-agent] plugin worker failed to start: ${messageOf(error)}`));
+  child.unref();
+}
+
+async function reconcileA2aPlugins(config: LocalAgentConfig, tag: string, request: A2aPluginRequest): Promise<void> {
+  const tool = 'openclaw';
+  const token = tokenForAgent(config, tool);
+
+  if (!token?.startsWith('sk-') || !config.endpoint.startsWith('https://') || request.scope !== a2aPluginScope(config.endpoint, request.instanceId) || !await a2aPullDue(request)) return;
+  const slug = A2A_PLUGIN_PREFIX + request.scope;
+  const statePath = a2aPullStatePath(request.scope);
+  const deps = buildReconcileDeps(tag);
+
+  const scopedDeps: ReconcileDeps = {
+    ...deps,
+    readPlugins: async () => {
+      const state = (await readPluginState())[slug];
+
+      // The instance pull stamp controls retries, including after a new revision.
+      return state ? { [slug]: { ...state, lastAttemptAt: undefined } } : {};
+    },
+    execCommand: (command, timeout) => execPluginCommand(command, timeout, token),
+    runTimeoutMs: A2A_PLUGIN_RUN_TIMEOUT_MS,
+  };
+
+  try {
+    const route = resolveRoute(config, 'getConfig');
+    const query = new URLSearchParams({ config_type: 'a2a', instance_id: request.instanceId });
+    const getConfig = route + (route.includes('?') ? '&' : '?') + query.toString();
+
+    const response = await localAgentFetch({ ...config, routes: { ...config.routes, getConfig } }, tag, 'getConfig',
+      { method: 'GET', redirect: 'error' }, { redactResponseLog: true, tool });
+
+    if (!isJsonObject(response)) throw new Error('Invalid A2A plugin configuration');
+    const keys = Object.keys(response);
+    const desired = parseGetConfig(response).plugins.map((p) => ({ ...p, slug }));
+
+    if (keys.length > 1 || desired.length !== keys.length || keys.some((key) => !/^a2a-[1-9][0-9]*$/.test(key))) {
+      throw new Error('Invalid A2A plugin configuration');
+    }
+
+    const plugin = desired[0];
+    const previous = (await scopedDeps.readPlugins())[slug];
+
+    const isCurrent = (state: PluginState | undefined) =>
+      plugin && state?.ready && state.version === plugin.version && state.cmdFingerprint === commandFingerprint(plugin);
+
+    if (plugin) {
+      const commands = [plugin.installCmd, plugin.updateCmd, plugin.runCmd, plugin.uninstallCmd];
+
+      if (plugin.version?.includes(token) || commands.some((command) => command !== undefined && (command.trim() === '' || command.includes(token)))) {
+        throw new Error('Invalid A2A lifecycle command');
+      }
+
+      // Keep the cleanup command even if the worker is interrupted during first install.
+      if (!previous) {
+        await scopedDeps.mutatePlugins((states) => {
+          states[slug] = { slug, ready: false, uninstallCmd: plugin.uninstallCmd };
+        });
+      }
+    }
+
+    await reconcilePlugins(desired, scopedDeps);
+    const current = (await scopedDeps.readPlugins())[slug];
+
+    if (plugin ? !isCurrent(current) : current !== undefined) throw new Error('A2A plugin did not converge');
+
+    if (plugin && isCurrent(previous)) await scopedDeps.execCommand(plugin.runCmd, A2A_PLUGIN_RUN_TIMEOUT_MS);
+    await writeJsonAtomic<A2aPullState>(statePath, {
+      observedRevision: request.revision,
+      nextCheckAt: Date.now() + (plugin ? A2A_PLUGIN_RETRY_MS : PLUGIN_PULL_INTERVAL_MS),
+    });
+  } catch {
+    // Responses and process errors may contain sensitive data.
+    deps.log.warn('A2A plugin reconciliation failed and will retry');
+    await writeJsonAtomic<A2aPullState>(statePath, { observedRevision: request.revision, nextCheckAt: Date.now() + A2A_PLUGIN_RETRY_MS });
+  }
+}
+
 /** On session start, throttle-check and spawn a detached worker for plugin reconcile. Never blocks. */
 async function maybeReconcilePlugins(context: LocalAgentContext): Promise<void> {
   try {
@@ -1630,18 +1773,7 @@ async function maybeReconcilePlugins(context: LocalAgentContext): Promise<void> 
     if (state.lastFailAt && now - state.lastFailAt < PLUGIN_FAIL_BACKOFF_MS) return;
     const tool = context.tool ?? 'workbuddy';
     const localAgentId = `${tool}-${resolveLocalAgentId(context)}`;
-    const { spawn } = await import('node:child_process');
-
-    if (!process.argv[1]) {
-      log.debug('[local-agent] plugin reconcile: no CLI entrypoint (argv[1]), skipping');
-
-      return;
-    }
-
-    const child = spawn(process.execPath, [process.argv[1], 'source', 'reconcile-plugins'],
-      { detached: process.platform !== 'win32', windowsHide: true, stdio: 'ignore', env: { ...process.env, TEAMAI_PLUGIN_LOCAL_AGENT_ID: localAgentId, TEAMAI_PLUGIN_TOOL: tool } });
-
-    child.unref();
+    await spawnPluginReconcile({ TEAMAI_PLUGIN_LOCAL_AGENT_ID: localAgentId, TEAMAI_PLUGIN_TOOL: tool });
   } catch (e) { log.debug(`[local-agent] plugin reconcile spawn skipped: ${messageOf(e)}`); }
 }
 
@@ -1657,6 +1789,20 @@ export async function runPluginReconcileWorker(): Promise<void> {
 
     if (!config) return;
     const tag = '[local-agent] [plugin-reconcile]';
+    const a2aRequest = process.env.TEAMAI_PLUGIN_A2A_REQUEST;
+
+    if (a2aRequest) {
+      try {
+        const request = A2aPluginRequestSchema.safeParse(parseJson(a2aRequest));
+
+        if (request.success) await reconcileA2aPlugins(config, tag, request.data);
+      } catch {
+        log.debug(`${tag} A2A plugin worker failed`);
+      }
+
+      return;
+    }
+
     const statePath = getPluginPullStatePath();
 
     try {
@@ -1695,7 +1841,12 @@ export async function runPluginReconcileWorker(): Promise<void> {
         resolved.push(rp);
       }
 
-      await reconcilePlugins(resolved, buildReconcileDeps(config, tag));
+      const deps = buildReconcileDeps(tag);
+      const legacy = (slug: string) => !slug.startsWith(A2A_PLUGIN_PREFIX);
+      await reconcilePlugins(resolved.filter((p) => legacy(p.slug)), {
+        ...deps,
+        readPlugins: async () => Object.fromEntries(Object.entries(await readPluginState()).filter(([slug]) => legacy(slug))),
+      });
       log.debug(`${tag} reconcile complete (${resolved.length} plugin(s) processed)`);
       await writeJson(statePath, { lastPullAt: Date.now() });
     } catch (e) {
@@ -2661,6 +2812,7 @@ export type ReportPayload = AgentIdentityPayload & {
   agent_version: string;
   host_name: string;
   os: string;
+  default_workspace?: string;
   started_at?: string;
   last_status: string;
   user_level: { group_id: number | undefined } & ReportedScopeResources;
@@ -2683,6 +2835,33 @@ export function buildAgentIdentityPayload(
     local_agent_id: resolveLocalAgentId(context),
     machine_id: getMachineId(),
   };
+}
+
+const OpenclawAgentListSchema = z.array(z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),
+  workspace: z.string(),
+  isDefault: z.boolean().optional(),
+}));
+
+async function openclawDefaultWorkspace(): Promise<string> {
+  try {
+    // oxlint-disable-next-line teamai/launch-through-workflows -- This command reads the native roster without running an agent.
+    const listing = await probeBinary('openclaw', ['agents', 'list', '--json']);
+    const agents = OpenclawAgentListSchema.parse(parseJson(listing));
+    const defaults = agents.filter((agent) => agent.isDefault === true);
+    const main = agents[0];
+    const legacyMain = agents.length === 1 && main?.id === 'main' && main.isDefault === undefined ? main : undefined;
+    const selected = defaults.length === 1 ? defaults[0] : legacyMain;
+
+    if (!selected || !path.isAbsolute(selected.workspace)) return '';
+
+    // Match the recorded workspace identity without promoting an agent inside a checkout to its Git root.
+    const canonical = await fs.promises.realpath(selected.workspace);
+
+    return (await fs.promises.stat(canonical)).isDirectory() ? canonical : '';
+  } catch {
+    return '';
+  }
 }
 
 export async function buildReportPayload(
@@ -2712,7 +2891,12 @@ export async function buildReportPayload(
 
     if (!toolPath) return { skills: [], rules: [] };
     const install = installOf(teamConfig, localConfig);
-    const skillsDir = ownOf(await locate(tool, 'skills', install))?.path ?? null;
+
+    // OpenClaw's default workspace may belong to a different native agent.
+    const skillsDir = tool === 'openclaw' && workspacePath
+      ? path.join(workspacePath, 'skills')
+      : ownOf(await locate(tool, 'skills', install))?.path ?? null;
+
     const skills = skillsDir === null ? [] : await scanSkillsFromDisk(skillsDir, manifestSkillSlugs);
     const rulesDir = ownOf(await locate(tool, 'rules', install));
     const diskRules = rulesDir?.kind === 'dir' ? await scanRulesFromDisk(rulesDir.path) : [];
@@ -2729,7 +2913,11 @@ export async function buildReportPayload(
     return { skills, rules };
   };
 
-  const userScope = await scanScope();
+  const [userScope, defaultWorkspace, agentVersion] = await Promise.all([
+    scanScope(),
+    tool === 'openclaw' ? openclawDefaultWorkspace() : undefined,
+    getAgentVersion(tool),
+  ]);
 
   const userLevel: ReportPayload['user_level'] = { group_id: config.userGroupId };
 
@@ -2763,7 +2951,7 @@ export async function buildReportPayload(
 
   const payload: ReportPayload = {
     ...buildAgentIdentityPayload(context, tool),
-    agent_version: await getAgentVersion(tool),
+    agent_version: agentVersion,
     host_name: os.hostname(),
     os: os.platform(),
     started_at: config.createdAt,
@@ -2775,6 +2963,7 @@ export async function buildReportPayload(
     user_level: userLevel,
   };
 
+  if (defaultWorkspace !== undefined) payload.default_workspace = defaultWorkspace;
   const currentPath = await resolveWorkspacePath(context.cwd);
   const currentTool = normalizeAgentType(tool);
   const targetPaths = selectToolWorkspaces(config, currentPath, currentTool);
@@ -2792,7 +2981,7 @@ export async function buildReportPayload(
           project_id: wsBinding?.projectId,
         };
 
-        if (wsScope.skills.length > 0) workspace.skills = wsScope.skills;
+        if (wsScope.skills.length > 0 || currentTool === 'openclaw') workspace.skills = wsScope.skills;
 
         if (wsScope.rules.length > 0) workspace.rules = wsScope.rules;
         const wsMcps = await scanMcpFromManifest('project', tool, wsPath);
@@ -5904,14 +6093,18 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
 
   let changedProjectCopies = false;
   const tool = context.tool ?? 'workbuddy';
+  let reportedInstanceId: string | undefined;
 
   try {
     if (!skipReport) {
       const reportPayload = await buildReportPayload(config, context);
-      await localAgentFetch(config, tag, 'report', {
+
+      const report = await localAgentFetch<{ instance_id?: string }>(config, tag, 'report', {
         method: 'POST',
         body: JSON.stringify(reportPayload),
       }, { tool });
+
+      reportedInstanceId = report?.instance_id;
       log.debug(`${tag} report OK`);
     }
 
@@ -5921,6 +6114,7 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
       ok?: boolean;
       cmds?: LocalAgentCommand[];
       commands?: LocalAgentCommand[];
+      plugin_config_revision?: unknown;
     }>(
       config,
       tag,
@@ -5928,6 +6122,10 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
       { method: 'POST', body: JSON.stringify(syncPayload) },
       { redactResponseLog: true, tool },
     );
+
+    const a2aRevision = A2aPluginRevisionSchema.safeParse(syncResponse.plugin_config_revision).data;
+
+    if (!skipReport && a2aRevision) await scheduleA2aPlugins(config, syncPayload, a2aRevision, reportedInstanceId);
 
     // Prefer the unified cmds[] (source of truth). Fall back to the legacy
     // commands[] for older backends that do not yet emit cmds. An empty cmds[]
@@ -6538,7 +6736,7 @@ export async function teardownLocalAgentPlugins(): Promise<void> {
     const config = await loadLocalAgentConfig();
 
     if (!config) return;
-    await teardownAllPlugins(buildReconcileDeps(config, '[local-agent] [uninstall]'));
+    await teardownAllPlugins(buildReconcileDeps('[local-agent] [uninstall]'));
   } catch (e) {
     log.warn(`[local-agent] plugin teardown failed: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -6662,7 +6860,7 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
 
   // Tear down installed plugins before removing teamai's local-agent state.
   try {
-    await teardownAllPlugins(buildReconcileDeps(config, '[local-agent] [uninstall]'));
+    await teardownAllPlugins(buildReconcileDeps('[local-agent] [uninstall]'));
   } catch (e) { log.warn(`[local-agent] plugin teardown failed: ${messageOf(e)}`); }
 
   const kinds: CommandResourceKind[] = ['skill', 'rule', 'claudemd'];
@@ -6697,7 +6895,7 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
   const models = await removeWorkspaceModels();
 
   return finishAgentHookTeardown(retry, {
-    models, caches: cachesLeft, entries: entriesLeft, removing: entriesLeft.length > 0 ? config : undefined,
+    models, caches: cachesLeft, entries: entriesLeft, removing: config,
     // The lines of models files the teardown deleted, with any an earlier run could not write.
     blocks: [...blocks, ...await releaseModelKeyLines()],
   });
@@ -6760,6 +6958,8 @@ async function disabledSourceLeftovers(): Promise<boolean> {
   // A teardown keeps these only for what it could not remove.
   if (await pathExists(getModelManifestPath()) || await pathExists(getManifestPath())) return true;
 
+  if (Object.keys(await readPluginState()).some((slug) => slug.startsWith(A2A_PLUGIN_PREFIX))) return true;
+
   for (const owner of [localAgentGitExcludeOwner(), credentialsGitExcludeOwner()]) {
     // A record that cannot be read may name blocks still in place.
     const files = await owner.record?.files().then((list) => list, () => null);
@@ -6785,8 +6985,11 @@ async function finishAgentHookTeardown(
   const hooksLeft = await removeAllAgentHooks();
   const home = getLocalAgentHome();
   const keep = new Set([path.basename(getConfigPath())]);
+  const a2aLeft = Object.keys(await readPluginState()).some((slug) => slug.startsWith(A2A_PLUGIN_PREFIX));
 
   if (hooksLeft.length > 0) keep.add(path.basename(getAgentHookManifestPath()));
+
+  if (a2aLeft) keep.add(path.basename(getPluginStatePath()));
 
   if (left.models.length > 0) keep.add(path.basename(getModelManifestPath()));
 
@@ -6797,7 +7000,8 @@ async function finishAgentHookTeardown(
 
   // Only an empty object or array is a record with nothing left in it.
   if (!(recorded instanceof Object) || Object.keys(recorded).length > 0) keep.add(path.basename(gitExcludeRecord));
-  await writeJsonAtomic(getConfigPath(), left.removing ? { disabled: true, removing: left.removing } : { disabled: true });
+  const removing = a2aLeft || entries.length > 0 ? left.removing : undefined;
+  await writeJsonAtomic(getConfigPath(), removing ? { disabled: true, removing } : { disabled: true });
 
   for (const entry of await fse.readdir(home)) {
     if (!keep.has(entry)) await remove(path.join(home, entry));
@@ -6805,6 +7009,7 @@ async function finishAgentHookTeardown(
 
   const held = [
     ...hooksLeft.length > 0 ? [`agent hooks ${hooksLeft.map((h) => `${h.slug} (${h.tool})`).join(', ')}`] : [],
+    ...a2aLeft ? ['the ClawPro A2A plugin'] : [],
     ...left.models.length > 0 ? [`teamai's models in ${left.models.join(', ')}`] : [],
     ...left.caches.length > 0 ? [`the local agent's cache in ${left.caches.map((dir) => path.join(dir, '.teamai')).join(', ')}`] : [],
     ...entries.length > 0 ? [`the installs ${entries.join(', ')}`] : [],

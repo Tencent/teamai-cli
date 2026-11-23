@@ -295,6 +295,75 @@ describe('local-agent: buildReportPayload disk scan', () => {
     ]);
     for (const rule of payload.user_level.rules ?? []) expect(rule.version).toBeUndefined();
   });
+
+  it('reports OpenClaw skills from each bound workspace and retains the default user inventory', async () => {
+    const defaultWorkspace = path.join(tmpDir, 'default-openclaw');
+    const wsA = path.join(tmpDir, 'workspace-a');
+    const wsB = path.join(tmpDir, 'workspace-b');
+    const nativeConfig = path.join(tmpDir, 'openclaw.json');
+    vi.stubEnv('OPENCLAW_CONFIG_PATH', nativeConfig);
+    try {
+      await fse.writeJson(nativeConfig, { agents: { defaults: { workspace: defaultWorkspace } } });
+      for (const [workspace, slug] of [[defaultWorkspace, 'user-skill'], [wsA, 'alice-skill'], [wsB, 'bob-skill']]) {
+        const skillDir = path.join(workspace, 'skills', slug);
+        await fse.ensureDir(skillDir);
+        await fse.writeFile(path.join(skillDir, 'SKILL.md'), `---\nname: ${slug}\n---\n\n# Skill\n`);
+      }
+      await setupConfig({
+        [wsA]: { projectId: 14, projectName: 'A', boundAt: 'x', ideType: 'openclaw' },
+        [wsB]: { projectId: 26, projectName: 'B', boundAt: 'x', ideType: 'openclaw' },
+      });
+      const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+      const config = await loadLocalAgentConfig();
+      if (!config) throw new Error('expected the local-agent config setupConfig wrote');
+      const payload = await buildReportPayload(config, { tool: 'openclaw', cwd: wsA });
+
+      expect(payload.user_level.skills?.map(({ slug }) => slug)).toEqual(['user-skill']);
+      expect(payload.workspaces?.map(({ path: workspacePath, project_id, skills }) => [workspacePath, project_id, skills?.map(({ slug }) => slug)])).toEqual([
+        [wsA, 14, ['alice-skill']],
+        [wsB, 26, ['bob-skill']],
+      ]);
+
+      await fse.remove(path.join(wsB, 'skills', 'bob-skill'));
+      const afterRemoval = await buildReportPayload(config, { tool: 'openclaw', cwd: wsA });
+
+      expect(afterRemoval.workspaces?.find((workspace) => workspace.path === wsB)?.skills).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('reports the physical workspace of the native OpenClaw default agent', async () => {
+    const repo = path.join(tmpDir, 'git-project');
+    const nativeWorkspace = path.join(repo, 'native-workspace');
+    const alias = path.join(tmpDir, 'alias-workspace');
+    await fse.ensureDir(nativeWorkspace);
+    execFileSync('git', ['init', '-q', repo]);
+    await fse.ensureSymlink(nativeWorkspace, alias, 'junction');
+    await setupConfig({
+      [nativeWorkspace]: { projectId: 41, projectName: 'Native', boundAt: 'x', ideType: 'openclaw' },
+    });
+    const exec = await import('@teamai/shared/exec');
+    const listing = vi.spyOn(exec, 'probeBinary').mockImplementation(async (_binary, args) => {
+      if (args?.[0] !== 'agents') return '';
+
+      return JSON.stringify([{ id: 'main', workspace: repo, isDefault: false }, { id: 'primary', workspace: alias, isDefault: true }]);
+    });
+    const { buildReportPayload, loadLocalAgentConfig } = await import('../local-agent.js');
+    const config = await loadLocalAgentConfig();
+    if (!config) throw new Error('expected local-agent config');
+    const payload = await buildReportPayload(config, { tool: 'openclaw' });
+
+    expect(payload).toHaveProperty('default_workspace', nativeWorkspace);
+    expect(payload.workspaces?.map((workspace) => workspace.path)).toEqual([nativeWorkspace]);
+
+    listing.mockResolvedValue(JSON.stringify([{ id: 'main', workspace: alias }]));
+    expect(await buildReportPayload(config, { tool: 'openclaw' })).toHaveProperty('default_workspace', nativeWorkspace);
+
+    listing.mockResolvedValue(JSON.stringify([{ id: 'main', workspace: alias, isDefault: false }]));
+    expect(await buildReportPayload(config, { tool: 'openclaw' })).toHaveProperty('default_workspace', '');
+    expect(await buildReportPayload(config, { tool: 'hermes' })).not.toHaveProperty('default_workspace');
+  });
 });
 
 describe('local-agent: project MCP report is per-worktree (issue #374 P1-2C)', () => {
