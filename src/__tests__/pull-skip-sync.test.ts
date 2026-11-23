@@ -561,6 +561,9 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
   });
 
   it('should not skip sync in dryRun mode even if rev matches', async () => {
+    const submoduleUpdate = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(loadTeamConfig).mockResolvedValue({ ...baseTeamConfig, submodules: true });
+    vi.mocked(createGit).mockReturnValue({ submoduleUpdate } as unknown as ReturnType<typeof createGit>);
     vi.mocked(getHeadRev).mockResolvedValue('abc1234');
     vi.mocked(loadStateForScope).mockResolvedValue({
       lastPull: '2026-04-01',
@@ -576,10 +579,13 @@ describe('pull skip-sync when repo HEAD unchanged', () => {
 
     await pull({ dryRun: true });
 
-    // dryRun should show what would happen, not skip
+    // dryRun should show what would happen, not skip, without mutating the clone or fetch stamp
     expect(log.success).not.toHaveBeenCalledWith(
       expect.stringContaining('Already synced'),
     );
+    expect(pullRepo).not.toHaveBeenCalled();
+    expect(submoduleUpdate).not.toHaveBeenCalled();
+    expect(await fse.pathExists(path.join(tmpDir, 'last-fetch.json'))).toBe(false);
   });
 
   it('should proceed with full sync when getHeadRev fails', async () => {
