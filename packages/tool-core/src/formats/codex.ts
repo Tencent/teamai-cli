@@ -113,6 +113,8 @@ const CodexPayloadSchema = z
     model: OptionalString,
     role: JsonValueSchema.optional(),
     message: OptionalString,
+    turn_id: OptionalString,
+    internal_chat_message_metadata_passthrough: z.object({ turn_id: OptionalString }).optional().catch(undefined),
     content: JsonValueSchema.optional(),
     item: z.object({ type: JsonValueSchema.optional(), content: CodexItemListSchema }).optional().catch(undefined),
     name: JsonValueSchema.optional(),
@@ -702,6 +704,7 @@ export class CodexAdapter extends AgentAdapter {
     const messages: Message[] = [];
     const legacy = new Map<string, number>();
     const completed = new Map<string, number>();
+    const scoped = new Map<string, number>();
 
     for (const { type, payload } of records) {
       if (type !== 'event_msg') continue;
@@ -711,7 +714,10 @@ export class CodexAdapter extends AgentAdapter {
         legacy.set(text, (legacy.get(text) ?? 0) + 1);
       } else if (payload.type === 'item_completed' && payload.item?.type === 'UserMessage') {
         const text = joinedItemText(payload.item.content).trim();
-        completed.set(text, (completed.get(text) ?? 0) + 1);
+        const turn = payload.turn_id;
+        const counts = turn ? scoped : completed;
+        const key = turn ? JSON.stringify([turn, text]) : text;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
       }
     }
 
@@ -719,7 +725,7 @@ export class CodexAdapter extends AgentAdapter {
     const remaining = new Map(legacy);
 
     for (const [text, count] of completed) remaining.set(text, Math.max(remaining.get(text) ?? 0, count));
-    const hasPromptEvents = remaining.size > 0;
+    const hasPromptEvents = remaining.size > 0 || scoped.size > 0;
     // Images returned by tools go in a user message of their own after the round's tool results
     let toolImages: ContentBlock[] = [];
     let toolImagesTimestamp: string | undefined;
@@ -767,9 +773,13 @@ export class CodexAdapter extends AgentAdapter {
 
         if (irRole === 'user' && hasPromptEvents) {
           const text = joinedItemText(CodexItemListSchema.parse(payload.content)).trim();
+          const turn = payload.internal_chat_message_metadata_passthrough?.turn_id;
+          const key = JSON.stringify([turn, text]);
+          const matches = scoped.get(key) ?? 0;
           const count = remaining.get(text) ?? 0;
 
-          if (count > 0) remaining.set(text, count - 1);
+          if (matches > 0) scoped.set(key, matches - 1);
+          else if (count > 0) remaining.set(text, count - 1);
           else message.metadata = { synthetic: true };
         }
 

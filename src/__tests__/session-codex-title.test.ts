@@ -23,13 +23,13 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-function plantRollout(cwd: string, typed: string, events: object[] = []): void {
+function plantRollout(cwd: string, typed: string, events: object[] = [], injected?: string): void {
   const day = path.join(mocks.home, '.codex', 'sessions', '2026', '10', '20');
   fs.mkdirSync(day, { recursive: true });
   fs.writeFileSync(path.join(day, `rollout-2026-10-20T12-00-00-${ID}.jsonl`), [
     { type: 'session_meta', payload: { id: ID, timestamp: '2026-10-20T10:00:00.000Z', cwd, originator: 'codex_cli_rs', cli_version: '0.163.0' } },
-    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `# AGENTS.md instructions for ${cwd}\n\n<INSTRUCTIONS>\nAlways write tests.\n</INSTRUCTIONS>` }] } },
-    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: typed }] } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: injected ?? `# AGENTS.md instructions for ${cwd}\n\n<INSTRUCTIONS>\nAlways write tests.\n</INSTRUCTIONS>` }] } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', internal_chat_message_metadata_passthrough: { turn_id: 'typed-turn' }, content: [{ type: 'input_text', text: typed }] } },
     ...events,
     { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Fixed.' }] } },
   ].map((record) => `${JSON.stringify({ timestamp: '2026-10-20T10:00:01.000Z', ...record })}\n`).join(''));
@@ -47,6 +47,18 @@ describe('Codex session titles', () => {
     expect(read.messages[0]?.content[0]).toMatchObject({ type: 'text', text: expect.stringContaining('Always write tests.') });
     expect(read.messages.flatMap((message) => message.content.map((block) => typedIn(message, block))).filter(Boolean))
       .toEqual(['Fix the retry loop.']);
+  });
+
+  it('does not spend a typed turn match on earlier injected text with the same words', async () => {
+    const text = 'Continue.';
+    plantRollout(path.join(root, 'app'), text, [{
+      type: 'event_msg',
+      payload: { type: 'item_completed', turn_id: 'typed-turn', item: { type: 'UserMessage', content: [{ type: 'text', text }] } },
+    }], text);
+
+    const read = await getAdapter('codex').readSession({ sessionId: ID });
+
+    expect(read.messages.slice(0, 2).map((message) => message.metadata?.synthetic === true)).toEqual([true, false]);
   });
 
   it('are the member\'s own first line, also when it starts with the file it names', async () => {
