@@ -112,6 +112,7 @@ const CodexPayloadSchema = z
     model_provider: JsonValueSchema.optional(),
     model: OptionalString,
     role: JsonValueSchema.optional(),
+    message: OptionalString,
     content: JsonValueSchema.optional(),
     item: z.object({ type: JsonValueSchema.optional(), content: CodexItemListSchema }).optional().catch(undefined),
     name: JsonValueSchema.optional(),
@@ -699,6 +700,26 @@ export class CodexAdapter extends AgentAdapter {
 
   private buildMessages(records: CodexRecord[]): Message[] {
     const messages: Message[] = [];
+    const legacy = new Map<string, number>();
+    const completed = new Map<string, number>();
+
+    for (const { type, payload } of records) {
+      if (type !== 'event_msg') continue;
+
+      if (payload.type === 'user_message' && payload.message !== undefined) {
+        const text = payload.message.trim();
+        legacy.set(text, (legacy.get(text) ?? 0) + 1);
+      } else if (payload.type === 'item_completed' && payload.item?.type === 'UserMessage') {
+        const text = joinedItemText(payload.item.content).trim();
+        completed.set(text, (completed.get(text) ?? 0) + 1);
+      }
+    }
+
+    // A rollout can record both event formats for the same turn.
+    const remaining = new Map(legacy);
+
+    for (const [text, count] of completed) remaining.set(text, Math.max(remaining.get(text) ?? 0, count));
+    const hasPromptEvents = remaining.size > 0;
     // Images returned by tools go in a user message of their own after the round's tool results
     let toolImages: ContentBlock[] = [];
     let toolImagesTimestamp: string | undefined;
@@ -742,7 +763,17 @@ export class CodexAdapter extends AgentAdapter {
 
         const irRole = role === 'user' ? 'user' : 'assistant';
         const content = this.parseMessageContent(payload.content);
-        messages.push({ role: irRole, content, timestamp: parseCodexTimestamp(rec.timestamp) });
+        const message: Message = { role: irRole, content, timestamp: parseCodexTimestamp(rec.timestamp) };
+
+        if (irRole === 'user' && hasPromptEvents) {
+          const text = joinedItemText(CodexItemListSchema.parse(payload.content)).trim();
+          const count = remaining.get(text) ?? 0;
+
+          if (count > 0) remaining.set(text, count - 1);
+          else message.metadata = { synthetic: true };
+        }
+
+        messages.push(message);
       } else if (ptype === 'function_call' || ptype === 'custom_tool_call') {
         const name = String(payload.name ?? '');
         const irName = normalizeToolName(name);

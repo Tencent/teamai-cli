@@ -195,6 +195,7 @@ export function blockFromDict(record: JsonValue): ContentBlock {
 export interface MessageMetadata {
   model?: string;
   isMeta?: boolean;
+  synthetic?: boolean;
   promptId?: string;
   [key: string]: JsonValue | undefined;
 }
@@ -234,6 +235,7 @@ export const MessageMetadataSchema = z
   .object({
     model: OptionalString,
     isMeta: z.boolean().optional().catch(undefined),
+    synthetic: z.boolean().optional().catch(undefined),
     promptId: OptionalString,
   })
   .catchall(JsonValueSchema);

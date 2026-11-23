@@ -221,7 +221,7 @@ function promptCandidates(prompt: string, tool: string): SkillCandidate[] {
 
 /** What the member typed in a block of a session message, or '' when the block holds none. */
 export function typedIn(message: Message, block: ContentBlock): string {
-  return block.type === 'text' && message.role === 'user' && !message.metadata?.isMeta ? typedText(block.text) : '';
+  return block.type === 'text' && message.role === 'user' && !message.metadata?.isMeta && !message.metadata?.synthetic ? typedText(block.text) : '';
 }
 
 /** A string literal in a Codex code-mode script. */
