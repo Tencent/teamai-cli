@@ -227,7 +227,9 @@ async function locateExclude(dir: string): Promise<{ excludeFile: string; root: 
   if (!await pathExists(dir)) return { error: `${dir} does not exist` };
   const located = await checkoutLocation(dir);
 
-  if (located) return { excludeFile: located.excludeFile, root: located.toplevel, prefix: located.prefix };
+  // Git prints `--show-toplevel` with forward slashes even on Windows, while
+  // the paths reported next to it are native. Spell every root the same way.
+  if (located) return { excludeFile: located.excludeFile, root: path.resolve(located.toplevel), prefix: located.prefix };
   const result = await runGit(['rev-parse', '--show-toplevel', '--show-prefix', '--git-path', 'info/exclude'], dir);
   const [root = '', prefix = '', gitPath = ''] = result.code === 0 ? result.stdout.split(/\r?\n/) : [];
 
@@ -235,7 +237,7 @@ async function locateExclude(dir: string): Promise<{ excludeFile: string; root: 
   // Real path, so one repository reached through a symlink (macOS /var) is one file.
   const base = await fse.realpath(dir).catch(() => dir);
 
-  return { excludeFile: path.resolve(base, gitPath), root, prefix };
+  return { excludeFile: path.resolve(base, gitPath), root: path.resolve(root), prefix };
 }
 
 /** {@link locateExclude}, or null when git cannot say; asked through `context` when given. */
