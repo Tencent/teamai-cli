@@ -438,6 +438,22 @@ describe('session search --all', () => {
     expect(text).not.toMatch(CJK);
   });
 
+  it.each([
+    ['2', 2],
+    ['2oops', 3],
+    ['2.5', 3],
+    ['1e3', 3],
+    ['0', 3],
+  ])('uses the expected result limit for %s', async (limit, expected) => {
+    await seed('github.com/org/alpha', 'alice', 'a-1', 'payment alpha', 'alpha payment retry');
+    await seed('gitlab.company.com/g/beta', 'bob', 'b-1', 'payment beta', 'beta payment retry');
+    await seed(null, 'carol', 'c-1', 'payment plain', 'plain payment notes');
+
+    await runSession('search', 'payment', '--all', '--repo-root', repoRoot, '--limit', limit);
+
+    expect(out.join('\n')).toContain(`${expected} result(s) found`);
+  });
+
   it('prints a nonzero score for a session that matches only in tool output', async () => {
     await seed('github.com/org/alpha', 'alice', 'a-1', 'docs', 'fix the readme');
     await new SyncManager(repoRoot).saveSession(

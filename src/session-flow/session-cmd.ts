@@ -972,8 +972,9 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const workCwd = opts.cwd ?? process.cwd();
       const archives = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
       const repoIdentity = resolveRepoIdentity(workCwd);
-      const limitRaw = parseInt(opts.limit, 10);
-      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 10;
+      const limitInput = opts.limit.trim();
+      const limitRaw = /^\+?\d+$/.test(limitInput) ? Number(limitInput) : NaN;
+      const limit = Number.isSafeInteger(limitRaw) && limitRaw > 0 ? limitRaw : 10;
 
       const loadedSessions: LoadedSession[] = [];
 
