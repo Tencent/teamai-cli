@@ -32,6 +32,8 @@ export type CodexTrust = (
   | { kind: 'project-untrusted'; hooks: number; project: string }
   /** The member turned it off (`codexTrustEnabled: false`). */
   | { kind: 'disabled' }
+  /** The person at the terminal declined to record the trust this pass would have written. */
+  | { kind: 'declined' }
   /** No Codex build: no `codex` on PATH and no desktop app. */
   | { kind: 'unavailable'; reason: string }
   /** A team instance of Codex whose command no one accepted here: only that command trusts its hooks, so none ran. */

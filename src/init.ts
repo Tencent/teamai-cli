@@ -1194,7 +1194,16 @@ async function reconcileHooksForInit(
     return;
   } finally {
     // Git-hook installation can fail after the Codex hooks were written.
-    reportCodexTrust(await trustCodexForScope(teamConfig, localConfig, { filterAgents, force: true }), 'all');
+    reportCodexTrust(await trustCodexForScope(teamConfig, localConfig, {
+      filterAgents,
+      force: true,
+      // Codex runs a hook only once it is trusted, and that is the host's decision to keep (#1991). A run without a
+      // terminal cannot ask, so it keeps trusting as before.
+      consent: () => askConfirmation(
+        'Trust teamai\'s Codex hooks in Codex? Answer no to approve them yourself with /hooks. [y/N] ',
+        true,
+      ),
+    }), 'all');
   }
 
   if (!reconciled.ok) log.warn(describeUnappliedTeamHooks(reconciled));

@@ -325,9 +325,10 @@ export function reportCodexTrust(trust: CodexTrust | undefined, mode: 'all' | 'p
 
       return;
     case 'disabled':
+    case 'declined':
     case 'unavailable':
       if (mode === 'all') log.warn(codexTrustReminder());
-      else log.debug(`Codex hooks not trusted: ${trust.kind === 'disabled' ? 'codexTrustEnabled is false' : trust.reason}`);
+      else log.debug(`Codex hooks not trusted: ${trust.kind === 'disabled' ? 'codexTrustEnabled is false' : trust.kind === 'declined' ? 'the person declined' : trust.reason}`);
 
       return;
     case 'failed':
@@ -4992,13 +4993,14 @@ async function codexTrustFingerprint(targets: readonly CodexTrustTargets[]): Pro
  * Codex build listed the hooks or the same builds failed to list them in the
  * pass before too, and none of its inputs changed since (see
  * State.codexTrustFingerprint), and then reports the build skew that pass
- * found; `force` runs it anyway. Undefined when there is nothing of teamai's to
- * trust.
+ * found; `force` runs it anyway. `consent` runs once before a pass that would
+ * write trust, so a caller with a terminal can let the person keep Codex's
+ * choice (#1991). Undefined when there is nothing of teamai's to trust.
  */
 export async function trustCodexForScope(
   teamConfig: TeamaiConfig,
   localConfig: LocalConfig,
-  opts: { filterAgents?: string[]; force?: boolean; ask?: (question: string) => Promise<string | undefined> } = {},
+  opts: { filterAgents?: string[]; force?: boolean; ask?: (question: string) => Promise<string | undefined>; consent?: () => Promise<boolean> } = {},
 ): Promise<CodexTrust | undefined> {
   const targets = await codexTrustTargetsOfScope(teamConfig, localConfig, opts.filterAgents);
 
@@ -5018,6 +5020,8 @@ export async function trustCodexForScope(
 
     return trusted;
   }
+
+  if (opts.consent && !(await opts.consent())) return { kind: 'declined' };
 
   const passes: Array<{ tool: string; trust: CodexTrust }> = [];
 

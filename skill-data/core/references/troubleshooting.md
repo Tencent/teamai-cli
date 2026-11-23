@@ -373,13 +373,14 @@ session.
 Codex's `/hooks` list labels team hooks by ID, HTTP agent hooks by slug, built-ins as
 `teamai-<Event>`, and shared team-hook dispatchers as `teamai-team-<Event>`.
 
-Codex runs a non-managed hook only once it is **trusted**. `teamai init`, `pull`
-and `teamai hooks inject` trust the hooks they write (and, in a project, the main
+Codex runs a non-managed hook only once it is **trusted**. `teamai init` asks
+before trusting the hooks it writes when a terminal is there; `pull` and
+`teamai hooks inject` trust the hooks they write (and, in a project, the main
 checkout, or the current worktree when Git cannot locate a main checkout) through `codex app-server`.
 Trust written by a session-start pull applies from the next Codex session. `teamai doctor` names any teamai hook Codex will not
 run. Then: run `teamai pull`; if teamai finds no Codex (neither `codex` on PATH nor
-the desktop app's bundled one) or `codexTrustEnabled: false`
-is set in `config.yaml`, guide the user to trust the teamai hooks in Codex `/hooks`,
+the desktop app's bundled one), or `codexTrustEnabled: false`
+is set in `config.yaml`, or the person declined the question at `init`, guide the user to trust the teamai hooks in Codex `/hooks`,
 then reopen a session. When pull or doctor says `Codex builds disagree:`, teamai trusted
 with the newest build and the older one skips the hooks it hashes differently: have the
 user update or remove the older build it names, then run `teamai pull`. A new linked worktree gets the team hooks from its second
