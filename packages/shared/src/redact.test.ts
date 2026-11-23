@@ -111,8 +111,18 @@ describe('redact', () => {
       expect(out).toBe('password = <REDACTED:kv>');
     });
 
+    it('masks key=value when the value holds punctuation', () => {
+      const out = redact('password=hunter2!@#$%^longlonglong');
+      expect(out).toBe('password=<REDACTED:kv>');
+    });
+
     it('masks bearer tokens but keeps the scheme', () => {
       const out = redact('Authorization: Bearer abcdefghijklmnopqrstuvwx');
+      expect(out).toBe('Authorization: Bearer <REDACTED:authz>');
+    });
+
+    it('masks a bearer token that is standard base64', () => {
+      const out = redact('Authorization: Bearer abc+def/ghi1234567890==');
       expect(out).toBe('Authorization: Bearer <REDACTED:authz>');
     });
 
