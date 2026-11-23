@@ -816,9 +816,11 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     await fse.outputFile(dotfile, withSkillFrontmatter(v1('nod'), 'nod'));
     await fse.ensureDir(path.dirname(nod));
     await fse.symlink(dotfile, nod);
-    mockGetFileContentAtRev.mockImplementation(async (_repo, _rev, file) => (
-      file === './skills/greet.md' ? Buffer.from(v1('greet')) : file === './skills/ns/wave.md' ? Buffer.from(v1('wave')) : file === './skills/nod.md' ? Buffer.from(v1('nod')) : null
-    ));
+    mockGetFileContentAtRev.mockImplementation(async (_repo, _rev, file) => {
+      const relative = file.split(path.sep).join('/');
+
+      return relative === './skills/greet.md' ? Buffer.from(v1('greet')) : relative === './skills/ns/wave.md' ? Buffer.from(v1('wave')) : relative === './skills/nod.md' ? Buffer.from(v1('nod')) : null;
+    });
 
     await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
 
