@@ -561,18 +561,19 @@ describe('codebase deep-enrich', () => {
     expect((await DeepEnrich.graph({ project: 'faketest', wikiRoot: path.join(root, 'teamwiki') })).scenarios.needed).toBe(false);
   });
 
-  it('covers only the first max-modules components, in every step', async () => {
+  it.each([0, 1, Number.MAX_SAFE_INTEGER])('respects max-modules %i in every step', async (maxModules) => {
     const root = createEnrichFixture();
     const manifestPath = path.join(root, 'teamwiki', 'evidence', 'code', 'faketest', '_manifest.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { components: Array<{ slug: string }> };
     manifest.components.push({ ...manifest.components[0], slug: 'Store' });
     fs.writeFileSync(manifestPath, JSON.stringify(manifest));
-    const target = { project: 'faketest', wikiRoot: path.join(root, 'teamwiki'), maxModules: 1 };
+    const target = { project: 'faketest', wikiRoot: path.join(root, 'teamwiki'), maxModules };
+    const components = maxModules === 1 ? ['Auth'] : ['Auth', 'Store'];
 
-    expect((await DeepEnrich.plan(target))?.components.map((component) => component.slug)).toEqual(['Auth']);
+    expect((await DeepEnrich.plan(target))?.components.map((component) => component.slug)).toEqual(components);
     await DeepEnrich.graph(target);
 
-    expect(await DeepEnrich.finish(target, { text: '', failure: '' })).toMatchObject({ missing_components: ['Auth'] });
+    expect(await DeepEnrich.finish(target, { text: '', failure: '' })).toMatchObject({ missing_components: components });
   });
 
   it('starts teamai-codebase-deep-enrich on an --output teamwiki', async () => {
