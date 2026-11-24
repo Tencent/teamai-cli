@@ -27,7 +27,21 @@ async function configAt(home: string): Promise<LocalConfig | null> {
   catch { return null; }
 }
 
-const inside = (cwd: string, root: string) => cwd === root || cwd.startsWith(root + path.sep);
+/**
+ * `cwd` under `root`, both resolved first: a root git printed keeps `/` on
+ * Windows (`git rev-parse --show-toplevel` answers `C:/…/proj`, as the
+ * checkout in #2035 was reported), while an event's cwd arrives from Node with
+ * `\`. Compared as written, the two never share a prefix, so worktree roots
+ * matched nothing and their sessions fell to `unassigned`. Resolving also
+ * collapses `.`/`..` and any trailing separator, which `root + path.sep` read
+ * as an empty segment.
+ */
+const inside = (cwd: string, root: string): boolean => {
+  const target = path.resolve(cwd);
+  const base = path.resolve(root);
+
+  return target === base || target.startsWith(base.endsWith(path.sep) ? base : base + path.sep);
+};
 
 /**
  * The project workspace that owns an event, or null: the project rooted at the

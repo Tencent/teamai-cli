@@ -93,6 +93,20 @@ describe('workspaceEvents ownership', () => {
     expect(workspaceEvents(events, p, ws).map(e => e.sessionId)).toEqual(['s1', 's1']);
     expect(workspaceEvents(events, unassigned, ws)).toEqual([]);
   });
+
+  // Windows only: the two spellings of one directory that `path.sep` cannot
+  // compare. `git rev-parse --show-toplevel` prints `C:/repo/a` (git always
+  // uses `/`), and the same directory reaches an event as `C:\repo\a` because
+  // Node reports the cwd with the platform's separator. Read as written, the
+  // worktree root matched no event and its sessions fell to `unassigned`.
+  it.runIf(process.platform === 'win32')('matches a root git printed with forward slashes against the cwd Node reported', () => {
+    const p = project('p1', ['C:/repo/a']);
+    const ws = [user, p, unassigned];
+    const events = [ev('s1', 'C:\\repo\\a\\src')];
+
+    expect(workspaceEvents(events, p, ws).map(e => e.sessionId)).toEqual(['s1']);
+    expect(workspaceEvents(events, unassigned, ws)).toEqual([]);
+  });
 });
 
 describe('dashboardWorkspaces discovery (#809)', () => {
