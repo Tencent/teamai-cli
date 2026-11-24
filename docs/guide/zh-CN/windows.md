@@ -34,14 +34,14 @@ Git Bash、Windows PowerShell 和 Node 都能读正斜杠路径。命令在各�
 
 ## 拉取时的长路径
 
-TeamAI 在 Windows 上为共享 Git 客户端启用 `core.longpaths`，不会修改全局或仓库的 Git 配置。
-团队仓库刷新先检出文件，再按角色过滤，因此未启用的命名空间中层级很深的 skill 资源也需要长路径支持。
+TeamAI 在 Windows 上为它启动的每个 Git 进程启用 `core.longpaths`——共享客户端与每次克隆——
+不会修改全局或仓库的 Git 配置。团队仓库刷新先检出文件，再按角色过滤，因此未启用的命名空间中
+层级很深的 skill 资源也需要长路径支持；首次 `teamai init` 克隆同样需要它，才能检出团队仓库里
+已有的长路径。
+
 其他 Git 命令和工具可能仍需要单独配置长路径支持。
 
 如果 Git 配置显式设置了 `core.longpaths=false`，部分 Git 版本仍需要将该设置改为 `true`。
-
-首次 `teamai init` 克隆使用独立的 provider 路径。如果团队仓库已有长路径，请先运行
-`git config --global core.longpaths true` 启用支持。
 
 ## 钩子仍不触发
 

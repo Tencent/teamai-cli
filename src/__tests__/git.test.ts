@@ -80,7 +80,7 @@ vi.mock('@teamai/shared/log', () => ({
 
 import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pullRepoFastForward, pushLearningToOrigin, gitCommonDir, unusedBranchName } from '../utils/git.js';
 import fse from 'fs-extra';
-import { createGit, createGitWithBlockTimeout, disableGitTerminalPrompt } from '../utils/git.js';
+import { createGit, createGitWithBlockTimeout, disableGitTerminalPrompt, longPathArgs } from '../utils/git.js';
 
 describe('createGit', () => {
   // The init-hang bug: a push with missing credentials opened an invisible
@@ -116,6 +116,9 @@ describe('createGit', () => {
           expect(options.config.includes('core.longpaths=true')).toBe(platform === 'win32');
         }
       }
+      // A clone started without simple-git takes the same override as arguments.
+      expect(longPathArgs(platform as NodeJS.Platform))
+        .toEqual(platform === 'win32' ? ['-c', 'core.longpaths=true'] : []);
     } finally {
       platformSpy.mockRestore();
     }

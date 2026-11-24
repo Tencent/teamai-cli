@@ -5,6 +5,7 @@ import type { JsonValue } from '@teamai/shared/json';
 import { log } from '@teamai/shared/log';
 import { resolveCliPath } from '@teamai/shared/cli-path';
 import { isInteractive } from '../../utils/prompt.js';
+import { longPathArgs } from '../../utils/git.js';
 import { endedRequest, mergedAs, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
 import { signalChild } from '@teamai/shared/process-group';
 
@@ -432,7 +433,7 @@ export function ghRepoClone(repo: string, localPath: string): void {
   const cloneUrl = `https://github.com/${repo}.git`;
 
   // `-c <key>=<val>` is a git-level option, so it must precede `clone`.
-  const args: string[] = [];
+  const args: string[] = [...longPathArgs()];
 
   if (token) {
     args.push('-c', `http.extraHeader=${ghAuthHeader(token)}`);

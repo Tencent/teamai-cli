@@ -6,6 +6,7 @@ import { endedRequest, type PullRequestRecord, type PullRequestRef } from '../ty
 import { GITCODE_HOST } from './repo-url.js';
 import { getUserHome, legacyUserHome } from '@teamai/shared/home';
 import { sanitizeGitUrl } from '@teamai/shared/redact';
+import { longPathArgs } from '../../utils/git.js';
 import { readRegularFileSync } from '@teamai/shared/regular-file';
 
 /**
@@ -232,7 +233,7 @@ function redactCloneOutput(output: string): string {
 export function gitcodeRepoClone(repo: string, localPath: string): void {
   const token = getGitCodeToken();
 
-  const result = spawnSync('git', ['clone', cloneUrl(repo, token), localPath], {
+  const result = spawnSync('git', [...longPathArgs(), 'clone', cloneUrl(repo, token), localPath], {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: 120_000,
