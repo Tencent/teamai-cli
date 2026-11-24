@@ -128,6 +128,25 @@ describe('HermesAdapter', () => {
     ]);
   });
 
+  it('keeps only human-authored Hermes user messages', async () => {
+    const { adapter, cwd, id } = fixture();
+    mocks.messages = [
+      { id: 20, role: 'user', content: 'Fix the parser', display_kind: null, _compressed_summary: 0,
+        tool_call_id: null, tool_calls: null, tool_name: null, timestamp: 200, finish_reason: null, reasoning: null, reasoning_content: null },
+      { id: 21, role: 'user', content: 'Switched model', display_kind: 'model_switch', _compressed_summary: 0,
+        tool_call_id: null, tool_calls: null, tool_name: null, timestamp: 201, finish_reason: null, reasoning: null, reasoning_content: null },
+      { id: 22, role: 'user', content: 'Earlier conversation summary', display_kind: null, _compressed_summary: 1,
+        tool_call_id: null, tool_calls: null, tool_name: null, timestamp: 202, finish_reason: null, reasoning: null, reasoning_content: null },
+      { id: 23, role: 'assistant', content: 'Done', display_kind: null, _compressed_summary: 0,
+        tool_call_id: null, tool_calls: null, tool_name: null, timestamp: 203, finish_reason: 'stop', reasoning: null, reasoning_content: null },
+    ];
+
+    const session = await adapter.readSession({ sessionId: id, projectPath: cwd });
+
+    expect(session.messages.map((message) => message.messageId)).toEqual(['20', '23']);
+    expect(mocks.sql.at(-1)).toContain('display_kind, _compressed_summary');
+  });
+
   it('matches a symlinked cwd and rejects unsafe non-Hermes ids', async () => {
     const { adapter, cwd, id } = fixture();
     const linked = path.join(path.dirname(cwd), 'linked-app');
