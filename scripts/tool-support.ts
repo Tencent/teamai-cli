@@ -175,7 +175,7 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 function agentsRead(d: ShippedDescriptor, scope: 'user' | 'project'): string {
   const value = d.agents[scope];
 
-  if (value === 'none') return '—';
+  if (value === 'none') return d === descriptorOf('pi') ? 'Not delivered: Pi prompt templates are slash commands, not isolated subagents; teamai does not map team agents to templates.' : '—';
 
   if (value === 'unknown') return '?';
   const result = reads(value.reads);

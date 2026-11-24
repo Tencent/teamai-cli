@@ -14,8 +14,7 @@
  * second escape: on the session-start path that process already left the
  * host's job object (see hook-dispatch-cli.ts), so the script survives the
  * host by construction and inherits the child's hidden console. How the pull
- * launches it depends on who triggered the pull — see the two launch shapes
- * below.
+ * attaches it depends on who triggered the pull — see below.
  */
 
 import fs from 'node:fs';
@@ -67,9 +66,9 @@ function resolvePostPullScript(teamConfig: TeamaiConfig, repoPath: string): stri
  * Never throws: a team script rides on the pull, so a bad path, a missing file
  * or a failed spawn is one log line — not a failed sync.
  *
- * `interactive` picks the launch shape: the hook path (a headless pull) passes
- * nothing and waits the script out under the budget; a human-triggered pull
- * passes true and gets the fire-and-forget shape.
+ * `interactive` picks the launch shape: the hook path (a headless pull) captures
+ * the script's output and reports it in a log line; a human-triggered pull
+ * streams it to the terminal. Both wait the script out under the budget.
  */
 export async function runDeclaredPostPull(
   repoPath: string,
@@ -106,28 +105,10 @@ export async function runDeclaredPostPull(
       ? await (await import('./team-scripts.js')).teamScriptEnv(localConfig)
       : undefined;
 
-    if (interactive) {
-      runPostPullInteractive(scriptPath, repoPath, env);
-    } else {
-      await runPostPull(scriptPath, repoPath, POST_PULL_BUDGET_SEC, env);
-    }
+    await runPostPull(scriptPath, repoPath, POST_PULL_BUDGET_SEC, env, interactive);
   } catch (e) {
     log.debug(`postPull: skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
-}
-
-/**
- * Interactive `teamai pull`: launch the script fire-and-forget into the user's
- * terminal and return at once — the deploy's output streams where the user can
- * see it, and there is nothing here that must outlive the prompt. Safe because
- * this pull was spawned by the user's shell, not by a kill-on-exit hook host:
- * no job object to escape, and no deadline to fit. The script still self-limits
- * its heavy step against the exported budget.
- */
-function runPostPullInteractive(scriptPath: string, repoPath: string, env?: NodeJS.ProcessEnv): void {
-  const child = spawnScript(scriptPath, repoPath, ['ignore', 'inherit', 'inherit'], POST_PULL_BUDGET_SEC, env);
-  detachChild(child);
-  log.debug(`postPull: launched path=${scriptPath} budget=${POST_PULL_BUDGET_SEC}s (unawaited, terminal attached)`);
 }
 
 /**
@@ -164,8 +145,14 @@ function spawnScript(
 }
 
 /**
- * Headless launch shape: run the script and wait for it under the budget.
- * Never throws — the log line is the whole point.
+ * Run the script and wait for it under the budget. Never throws — the log line
+ * is the whole point.
+ *
+ * `interactive` picks the stdio shape: a human-triggered pull streams the
+ * script's output to the terminal; the headless (hook) path captures it and
+ * reports a failed run's tail. Both wait: an unawaited child is killed with
+ * the launcher's process tree on Windows — measured under agent hosts that
+ * close their job object when the pull returns — before it can run.
  *
  * The budget only bounds how long the pull waits. On expiry the waiter gives
  * up, not the worker: killing a deploy mid-flight strands the machine it was
@@ -182,10 +169,13 @@ export async function runPostPull(
   repoPath: string,
   budgetSec: number = POST_PULL_BUDGET_SEC,
   env?: NodeJS.ProcessEnv,
+  interactive = false,
 ): Promise<void> {
-  log.debug(`postPull: launched path=${scriptPath} budget=${budgetSec}s`);
+  const stdio: StdioOptions = interactive ? ['ignore', 'inherit', 'inherit'] : ['ignore', 'pipe', 'pipe'];
+
+  log.debug(`postPull: launched${interactive ? ' (interactive)' : ''} path=${scriptPath} budget=${budgetSec}s`);
   const startedAt = Date.now();
-  const child = spawnScript(scriptPath, repoPath, ['ignore', 'pipe', 'pipe'], budgetSec, env);
+  const child = spawnScript(scriptPath, repoPath, stdio, budgetSec, env);
   const readTail = captureTail(child, TAIL_CHARS);
 
   const exited = new Promise<number | null>((resolve) => {

@@ -8,7 +8,7 @@ import { getGitLabToken } from './providers/gitlab/gitlab-api.js';
 import { getGitCodeToken } from './providers/gitcode/gitcode-api.js';
 import { tgitGitCloneUrl } from './providers/tgit/rest-auth.js';
 import { log } from '@teamai/shared/log';
-import { sanitizeGitUrl } from '@teamai/shared/redact';
+import { redactGitCredentials, sanitizeGitUrl } from '@teamai/shared/redact';
 import { assertSafeRepoCachePath } from './utils/repo-cache.js';
 import { signalChild } from '@teamai/shared/process-group';
 
@@ -70,7 +70,7 @@ export { sanitizeGitUrl };
  * 对日志/错误信息中的 token 进行脱敏。
  */
 function redactToken(msg: string): string {
-    return sanitizeGitUrl(msg);
+    return redactGitCredentials(msg);
 }
 
 /**
@@ -112,7 +112,7 @@ function runCommand(
 
         const timer = setTimeout(() => {
             signalChild(child);
-            reject(new Error(`Command timed out after ${opts.timeoutMs}ms: ${cmd} ${args.join(' ')}`));
+            reject(new Error(`Command timed out after ${opts.timeoutMs}ms: ${redactToken(`${cmd} ${args.join(' ')}`)}`));
         }, opts.timeoutMs);
 
         child.on('close', (code) => {

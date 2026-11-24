@@ -36,6 +36,7 @@ export async function runHeadless({ start, stdin, timeoutMs, idleTimeoutMs, sign
   const stderr: string[] = [];
   let stopped: HeadlessRun['stopped'];
   let idleTimer: NodeJS.Timeout | undefined;
+  let stopping: Promise<void> | undefined;
   let stop = async (): Promise<void> => {};
 
   // Each chunk the tool prints restarts the idle limit, so a tool that streams lives and a silent one is stopped.
@@ -49,7 +50,15 @@ export async function runHeadless({ start, stdin, timeoutMs, idleTimeoutMs, sign
   const started = start({ stdin, onOutput: (text, stream) => { (stream === 'stdout' ? stdout : stderr).push(text); active(); } });
 
   if ('notStarted' in started) return { stdout: '', stderr: started.notStarted, code: 1 };
-  stop = () => started.stop();
+
+  stop = () => {
+    stopping ??= started.stop();
+    // The timer cannot await cleanup. Its rejection is observed again in finally.
+    void stopping.catch(() => {});
+
+    return stopping;
+  };
+
   const timer = timeoutMs > MAX_TIMER_MS ? undefined : setTimeout(() => { stopped ??= 'timeout'; void stop(); }, timeoutMs);
 
   active();
@@ -70,6 +79,7 @@ export async function runHeadless({ start, stdin, timeoutMs, idleTimeoutMs, sign
     clearTimeout(timer);
     clearTimeout(idleTimer);
     signal?.removeEventListener('abort', onAbort);
+    await stopping;
   }
 }
 
