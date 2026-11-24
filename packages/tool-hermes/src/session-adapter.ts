@@ -190,10 +190,22 @@ export class HermesAdapter extends AgentAdapter {
   }
 
   private async messages(sessionId: string): Promise<MessageRow[]> {
-    const raw = await this.query(
-      'SELECT id, role, content, tool_call_id, tool_calls, tool_name, timestamp, finish_reason, reasoning, reasoning_content, display_kind, _compressed_summary ' +
-      `FROM messages WHERE session_id = '${sessionId}' AND (active = 1 OR compacted = 1) ORDER BY id;`,
-    );
+    const from = `FROM messages WHERE session_id = '${sessionId}' AND (active = 1 OR compacted = 1) ORDER BY id;`;
+    let raw: unknown[];
+
+    try {
+      raw = await this.query(
+        'SELECT id, role, content, tool_call_id, tool_calls, tool_name, timestamp, finish_reason, reasoning, reasoning_content, display_kind, _compressed_summary ' + from,
+      );
+    } catch (error) {
+      // Older Hermes stores predate both classification columns. Keep those
+      // sessions readable; their user rows were all ordinary prompts because
+      // the operational row kinds did not exist in that schema yet.
+      if (!(error instanceof Error) || !/no such column: (?:display_kind|_compressed_summary)/.test(error.message)) throw error;
+      raw = await this.query(
+        'SELECT id, role, content, tool_call_id, tool_calls, tool_name, timestamp, finish_reason, reasoning, reasoning_content, NULL AS display_kind, 0 AS _compressed_summary ' + from,
+      );
+    }
 
     return raw.flatMap((value) => {
       const row = MessageRow.safeParse(value);
