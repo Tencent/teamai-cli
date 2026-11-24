@@ -88,6 +88,12 @@ async function teamRepoEditable(localPath: string): Promise<boolean> {
   }
 }
 
+/** A refusal changed nothing, so the command exits 1 and a script can stop. */
+function refuse(message: string): void {
+  log.error(message);
+  process.exitCode = 1;
+}
+
 function getSourceDir(sourceName: string): string {
   assertSafeResourceName(sourceName);
 
@@ -460,7 +466,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   const name = options.name ?? deriveSourceName(repoUrl);
 
   if (!name) {
-    log.error('Could not derive source name from URL. Use --name to specify one.');
+    refuse('Could not derive source name from URL. Use --name to specify one.');
 
     return;
   }
@@ -468,7 +474,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   try {
     assertSafeResourceName(name);
   } catch (e) {
-    log.error(`Invalid source name "${name}": ${e instanceof Error ? e.message : String(e)}`);
+    refuse(`Invalid source name "${name}": ${e instanceof Error ? e.message : String(e)}`);
 
     return;
   }
@@ -477,13 +483,13 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   const existing = teamConfig.sources ?? [];
 
   if (existing.some((s) => s.name === name)) {
-    log.error(`Source "${name}" already exists. Use a different name or remove it first.`);
+    refuse(`Source "${name}" already exists. Use a different name or remove it first.`);
 
     return;
   }
 
   if (existing.some((s) => s.repo === repoUrl)) {
-    log.error(`Source repo "${repoUrl}" already configured (as "${existing.find((s) => s.repo === repoUrl)!.name}").`);
+    refuse(`Source repo "${repoUrl}" already configured (as "${existing.find((s) => s.repo === repoUrl)!.name}").`);
 
     return;
   }
@@ -498,7 +504,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   const cloneResult = await ensureSourceRepo({ name, repo: repoUrl }, true);
 
   if (!cloneResult) {
-    log.error('Could not access the source repo. Check the URL and your git credentials.');
+    refuse('Could not access the source repo. Check the URL and your git credentials.');
 
     return;
   }
@@ -518,7 +524,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   const content = await readFileSafe(yamlPath);
 
   if (!content) {
-    log.error('Could not read teamai.yaml');
+    refuse('Could not read teamai.yaml');
 
     return;
   }
@@ -527,7 +533,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   const sources = isJsonObject(raw) ? raw.sources ?? [] : null;
 
   if (!isJsonObject(raw) || !Array.isArray(sources)) {
-    log.error(`${yamlPath} is not a YAML mapping whose sources is a list, so the source was not added. Fix the file, then run the command again.`);
+    refuse(`${yamlPath} is not a YAML mapping whose sources is a list, so the source was not added. Fix the file, then run the command again.`);
 
     return;
   }
@@ -560,7 +566,7 @@ async function sourceRemoveLocked(name: string, options: GlobalOptions, localCon
   const manifest = await loadSourceManifest(name, localConfig);
 
   if (!source && !manifest) {
-    log.error(`Source "${name}" not found. Run \`teamai source list\` to see configured sources.`);
+    refuse(`Source "${name}" not found. Run \`teamai source list\` to see configured sources.`);
 
     return;
   }
@@ -635,7 +641,7 @@ async function sourceRemoveLocked(name: string, options: GlobalOptions, localCon
     const content = await readFileSafe(yamlPath);
 
     if (!content) {
-      log.error('Could not read teamai.yaml');
+      refuse('Could not read teamai.yaml');
 
       return;
     }
@@ -644,7 +650,7 @@ async function sourceRemoveLocked(name: string, options: GlobalOptions, localCon
     const sources = isJsonObject(raw) ? raw.sources ?? [] : null;
 
     if (!isJsonObject(raw) || !Array.isArray(sources)) {
-      log.error(`${yamlPath} is not a YAML mapping whose sources is a list, so the subscription was not removed from it. Fix the file, then run the command again.`);
+      refuse(`${yamlPath} is not a YAML mapping whose sources is a list, so the subscription was not removed from it. Fix the file, then run the command again.`);
 
       return;
     }
@@ -746,7 +752,7 @@ export async function sourceAddHttp(
   const trimmed = endpoint.trim();
 
   if (!trimmed) {
-    log.error('Endpoint is required. Usage: teamai source add-http <endpoint> --token <key>');
+    refuse('Endpoint is required. Usage: teamai source add-http <endpoint> --token <key>');
 
     return;
   }
@@ -757,7 +763,7 @@ export async function sourceAddHttp(
     ?? (await loadLocalConfig({ dryRun: options.dryRun }));
 
   if (mainConfig?.repo.kind === 'http') {
-    log.error('Your main team repo is already an HTTP backend, which owns the HTTP source config.');
+    refuse('Your main team repo is already an HTTP backend, which owns the HTTP source config.');
     log.info('An HTTP bypass is only for git-based main repos. Nothing changed.');
 
     return;
@@ -802,7 +808,7 @@ export async function sourceBrowse(name: string, options: GlobalOptions): Promis
   const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: true });
 
   if (!(teamConfig.sources ?? []).some((source) => source.name === name)) {
-    log.error(`Source "${name}" not found. Run \`teamai source list\` to see configured sources.`);
+    refuse(`Source "${name}" not found. Run \`teamai source list\` to see configured sources.`);
 
     return;
   }
@@ -816,7 +822,7 @@ async function sourceBrowseLocked(name: string, options: GlobalOptions, localCon
   const source = sources.find((s) => s.name === name);
 
   if (!source) {
-    log.error(`Source "${name}" not found. Run \`teamai source list\` to see configured sources.`);
+    refuse(`Source "${name}" not found. Run \`teamai source list\` to see configured sources.`);
 
     return;
   }
@@ -825,7 +831,7 @@ async function sourceBrowseLocked(name: string, options: GlobalOptions, localCon
   const repoDir = await ensureSourceRepo(source, !!options.force, !!options.dryRun, !!options.inline);
 
   if (!repoDir) {
-    if (!options.dryRun) log.error(`Could not access source "${name}".`);
+    if (!options.dryRun) refuse(`Could not access source "${name}".`);
 
     return;
   }
