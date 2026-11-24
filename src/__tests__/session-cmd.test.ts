@@ -440,14 +440,14 @@ describe('session search --all', () => {
 
   it.each([
     ['2', 2],
-    ['2oops', 3],
-    ['2.5', 3],
-    ['1e3', 3],
-    ['0', 3],
+    ['2oops', 10],
+    ['2.5', 10],
+    ['1e3', 10],
+    ['0', 10],
   ])('uses the expected result limit for %s', async (limit, expected) => {
-    await seed('github.com/org/alpha', 'alice', 'a-1', 'payment alpha', 'alpha payment retry');
-    await seed('gitlab.company.com/g/beta', 'bob', 'b-1', 'payment beta', 'beta payment retry');
-    await seed(null, 'carol', 'c-1', 'payment plain', 'plain payment notes');
+    for (let i = 0; i < 12; i++) {
+      await seed('github.com/org/alpha', 'alice', `a-${i}`, `payment ${i}`, 'payment retry');
+    }
 
     await runSession('search', 'payment', '--all', '--repo-root', repoRoot, '--limit', limit);
 
