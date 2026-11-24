@@ -1429,6 +1429,12 @@ export function tokenForAgent(config: Pick<LocalAgentConfig, 'token' | 'agentTok
   return config.token ?? Object.values(config.agentTokens ?? {})[0];
 }
 
+export function canRunOpenClawA2aControl(config: LocalAgentConfig): boolean {
+  return os.platform() === 'linux' && config.endpoint.startsWith('https://')
+    && tokenForAgent(config, 'openclaw')?.startsWith('sk-') === true
+    && (!isCloudStudioSandbox() || process.env.TEAMAI_ALLOW_SANDBOX_REPORT === '1');
+}
+
 /** Request headers by name. */
 interface HttpHeaders {
   [name: string]: string;
@@ -2299,6 +2305,16 @@ async function resolveWorkspacePath(cwd?: string): Promise<string | undefined> {
   return await canonicalizeWorkspacePath(absolute);
 }
 
+async function resolveAgentWorkspacePath(config: LocalAgentConfig, tool?: string, cwd?: string): Promise<string | undefined> {
+  if (tool === 'openclaw' && cwd) {
+    const exact = await canonicalizeWorkspacePath(path.resolve(cwd));
+
+    if (config.workspaceBindings[exact]?.ideType === 'openclaw') return exact;
+  }
+
+  return resolveWorkspacePath(cwd);
+}
+
 interface ReportedResource {
   slug: string;
   version?: string;
@@ -2864,9 +2880,145 @@ async function openclawDefaultWorkspace(): Promise<string> {
   }
 }
 
+const A2aWorkspaceBindingSchema = z.object({
+  id: z.number().int().positive(),
+  project_id: z.number().int().positive(),
+  workspace: z.string().min(1).max(512),
+});
+
+async function reportA2aWorkspace(
+  config: LocalAgentConfig,
+  tag: string,
+  context: LocalAgentContext,
+  workspace: string,
+  instanceId: string,
+  bindingTaskId?: number,
+): Promise<void> {
+  const body = await buildReportPayload(config, context, workspace);
+
+  const response = await localAgentFetch<{ instance_id?: string }>(config, tag, 'report', {
+    method: 'POST', body: JSON.stringify({ ...body, a2a_binding_task_id: bindingTaskId }), redirect: 'error',
+  }, { tool: 'openclaw' });
+
+  if (response?.instance_id !== instanceId) throw new Error('OpenClaw A2A report returned a different instance');
+}
+
+async function readA2aControl(config: LocalAgentConfig, tag: string, identity: AgentIdentityPayload) {
+  return localAgentFetch<{
+    ok?: boolean;
+    plugin_config_revision?: unknown;
+    a2a_workspace_binding?: unknown;
+  }>(config, tag, 'sync', {
+    method: 'POST',
+    body: JSON.stringify({ ...identity, status: 'running', a2a_control: true }),
+    redirect: 'error',
+  }, { redactResponseLog: true, tool: 'openclaw' });
+}
+
+/** One Gateway tick, independent of per-workspace/session enrollment. */
+export async function runOpenClawA2aControl(refreshReport: boolean): Promise<boolean> {
+  const stored = await loadLocalAgentConfig({ dryRun: true, envFallback: false });
+
+  if (!stored || !canRunOpenClawA2aControl(stored)) return true;
+
+  if (!await acquireLocalAgentLock()) return false;
+
+  try {
+    const config = await loadLocalAgentConfig({ envFallback: false });
+
+    if (!config || !canRunOpenClawA2aControl(config)) return true;
+
+    const context: LocalAgentContext = { tool: 'openclaw' };
+    const tag = localAgentTag(context);
+    const identity = buildAgentIdentityPayload(context);
+    const instanceId = deriveInstanceId('openclaw', identity.local_agent_id.toLowerCase());
+    let workspace = refreshReport ? await openclawDefaultWorkspace() : undefined;
+
+    if (workspace) await reportA2aWorkspace(config, tag, context, workspace, instanceId);
+
+    let response = await readA2aControl(config, tag, identity);
+
+    if (response?.ok !== true) return false;
+
+    const binding = A2aWorkspaceBindingSchema.safeParse(response.a2a_workspace_binding).data;
+
+    if (binding) {
+      workspace ??= await openclawDefaultWorkspace();
+
+      // Native discovery can transiently fail while the Gateway is changing.
+      if (!workspace) return false;
+
+      const { projected, error } = await prepareA2aWorkspaceBinding(config, binding, workspace);
+
+      if (projected) {
+        // Let the server verify the intent is still current before changing
+        // local state. The acknowledgement attests that it reached disk.
+        await reportA2aWorkspace(projected, tag, context, workspace, instanceId, binding.id);
+
+        if (projected !== config) await saveLocalAgentConfig(projected);
+      }
+
+      await localAgentFetch(config, tag, 'ack', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: binding.id, type: 'bind_a2a_workspace', local_agent_id: identity.local_agent_id,
+          status: error ? 'failed' : 'success', error,
+        }),
+        redirect: 'error',
+      }, { tool: 'openclaw' });
+
+      // Read the revision created by a successful acknowledgement, since
+      // the previous revision could still be 'absent'.
+      if (!error) response = await readA2aControl(config, tag, identity);
+    }
+
+    const revision = A2aPluginRevisionSchema.safeParse(response?.plugin_config_revision).data;
+
+    if (response?.ok === true && revision) await scheduleA2aPlugins(config, identity, revision, instanceId);
+
+    return response?.ok === true && (!refreshReport || Boolean(workspace));
+  } catch (error) {
+    log.debug(`[local-agent] OpenClaw A2A control tick failed: ${messageOf(error)}`);
+
+    return false;
+  } finally {
+    await releaseLock(localAgentLockPath());
+  }
+}
+
+async function prepareA2aWorkspaceBinding(
+  config: LocalAgentConfig,
+  binding: z.infer<typeof A2aWorkspaceBindingSchema>,
+  workspace: string,
+): Promise<
+  { projected: LocalAgentConfig; error?: undefined }
+  | { projected?: undefined; error: 'default_workspace_changed' | 'workspace_binding_conflict' }
+> {
+  if (binding.workspace !== workspace) return { error: 'default_workspace_changed' };
+
+  const existing = config.workspaceBindings[workspace];
+  const checkout = await resolveWorkspacePath(workspace);
+  const checkoutBinding = checkout ? config.workspaceBindings[checkout] : undefined;
+  const conflictingProject = [existing, checkoutBinding].some((row) => row && row.projectId > 0 && row.projectId !== binding.project_id);
+
+  if (conflictingProject || (existing?.ideType && existing.ideType !== 'openclaw')) return { error: 'workspace_binding_conflict' };
+
+  if (existing?.projectId === binding.project_id && existing.ideType === 'openclaw') return { projected: config };
+
+  // The default agent executes in this physical directory even when it sits
+  // inside a checkout. Leave the checkout's general TeamAI binding as written.
+  const workspaceBinding: WorkspaceBinding = {
+    projectId: binding.project_id, ideType: 'openclaw', boundAt: new Date().toISOString(),
+    projectName: existing?.projectId === binding.project_id ? existing.projectName : undefined,
+  };
+
+  return { projected: { ...config, workspaceBindings: { ...config.workspaceBindings, [workspace]: workspaceBinding } } };
+}
+
 export async function buildReportPayload(
   config: LocalAgentConfig,
   context: LocalAgentContext,
+  a2aDefaultWorkspace?: string,
 ): Promise<ReportPayload> {
   const manifest = await loadManifest();
 
@@ -2915,7 +3067,7 @@ export async function buildReportPayload(
 
   const [userScope, defaultWorkspace, agentVersion] = await Promise.all([
     scanScope(),
-    tool === 'openclaw' ? openclawDefaultWorkspace() : undefined,
+    tool === 'openclaw' ? a2aDefaultWorkspace ?? openclawDefaultWorkspace() : undefined,
     getAgentVersion(tool),
   ]);
 
@@ -2964,13 +3116,15 @@ export async function buildReportPayload(
   };
 
   if (defaultWorkspace !== undefined) payload.default_workspace = defaultWorkspace;
-  const currentPath = await resolveWorkspacePath(context.cwd);
+  const currentPath = a2aDefaultWorkspace ?? await resolveAgentWorkspacePath(config, tool, context.cwd);
   const currentTool = normalizeAgentType(tool);
-  const targetPaths = selectToolWorkspaces(config, currentPath, currentTool);
+  const targetPaths = new Set(selectToolWorkspaces(config, currentPath, currentTool));
 
-  if (targetPaths.length > 0) {
+  if (defaultWorkspace && (a2aDefaultWorkspace || canRunOpenClawA2aControl(config))) targetPaths.add(defaultWorkspace);
+
+  if (targetPaths.size > 0) {
     const workspaceResults = await Promise.all(
-      targetPaths.map(async (wsPath) => {
+      Array.from(targetPaths, async (wsPath) => {
         const wsScope = await scanScope(wsPath);
         const wsBinding = config.workspaceBindings[wsPath];
 
@@ -2978,7 +3132,7 @@ export async function buildReportPayload(
           path: wsPath,
           name: path.basename(wsPath),
           ide_type: currentTool,
-          project_id: wsBinding?.projectId,
+          project_id: !wsBinding?.ideType || wsBinding.ideType === currentTool ? wsBinding?.projectId : undefined,
         };
 
         if (wsScope.skills.length > 0 || currentTool === 'openclaw') workspace.skills = wsScope.skills;
@@ -3010,7 +3164,7 @@ export async function buildSyncPayload(
     status: context.status ?? 'running',
   };
 
-  const currentPath = await resolveWorkspacePath(context.cwd);
+  const currentPath = await resolveAgentWorkspacePath(config, context.tool, context.cwd);
   const currentTool = normalizeAgentType(context.tool ?? 'workbuddy');
   const targetPaths = selectToolWorkspaces(config, currentPath, currentTool);
 
@@ -4909,7 +5063,7 @@ async function applyModelConfig(
     ? 'user' : normalizeScope(command.scope);
 
   const workspacePath = scope === 'project'
-    ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
+    ? await resolveAgentWorkspacePath(config, context.tool, command.workspace_path ?? context.cwd)
     : undefined;
 
   if (scope === 'project' && !workspacePath) {
@@ -5870,7 +6024,7 @@ async function runMcpCommand(
   const scope = normalizeScope(command.scope);
 
   const workspacePath = scope === 'project'
-    ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
+    ? await resolveAgentWorkspacePath(config, tool, command.workspace_path ?? context.cwd)
     : undefined;
 
   if (scope === 'project' && !workspacePath) {
@@ -5925,7 +6079,7 @@ async function executeCommand(
   const scope = normalizeScope(command.scope);
 
   const workspacePath = scope === 'project'
-    ? await resolveWorkspacePath(command.workspace_path ?? context.cwd)
+    ? await resolveAgentWorkspacePath(config, context.tool, command.workspace_path ?? context.cwd)
     : undefined;
 
   if (scope === 'project' && !workspacePath) {
@@ -6030,7 +6184,7 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
   // its main checkout's entry, and a workspace an earlier release delivered to
   // is enrolled. A session outside any workspace (HOME, a task dir) runs user
   // scope.
-  const currentPath = await resolveWorkspacePath(context.cwd);
+  const currentPath = await resolveAgentWorkspacePath(config, context.tool, context.cwd);
 
   if (currentPath && !await enrollWorkspace(config, context.cwd, currentPath)) {
     log.debug(`[local-agent] workspace not enrolled, skipping: ${currentPath}`);
@@ -6165,7 +6319,7 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
   // one that removed teamai's servers and records leaves nothing to list, and one that failed or kept the
   // shared files (another agent remains) leaves what still needs keeping out of git.
   await moveAgentHooksToBridge(config);
-  await protectWorkspaceMcpConfigs(config, context.cwd);
+  await protectWorkspaceMcpConfigs(config, currentPath);
   await keepLocalAgentGitExclude(config, context.event?.type === 'session_start' || changedProjectCopies);
 
   return true;
@@ -6178,9 +6332,7 @@ async function syncLocalAgent(context: LocalAgentContext): Promise<boolean> {
  * already in place. The workspace and its files resolve as `install_mcp`
  * resolves them.
  */
-async function protectWorkspaceMcpConfigs(config: LocalAgentConfig, cwd?: string): Promise<void> {
-  const workspacePath = await resolveWorkspacePath(cwd);
-
+async function protectWorkspaceMcpConfigs(config: LocalAgentConfig, workspacePath?: string): Promise<void> {
   if (!workspacePath) return;
 
   try {
@@ -6857,6 +7009,14 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
   // No sync or plugin worker can write after this point until teardown finishes.
   // The marker keeps the config until every entry is uninstalled, for a retry.
   await writeJsonAtomic(getConfigPath(), { disabled: true, removing: config });
+
+  try {
+    const { removeOpenClawA2aControl } = await import('./openclaw-hooks.js');
+
+    await removeOpenClawA2aControl();
+  } catch (error) {
+    log.warn(`[local-agent] Failed to remove the OpenClaw A2A control service: ${messageOf(error)}`);
+  }
 
   // Tear down installed plugins before removing teamai's local-agent state.
   try {

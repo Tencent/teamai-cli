@@ -65,12 +65,12 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function setupConfig(bindings: Record<string, unknown> = {}) {
+async function setupConfig(bindings: Record<string, unknown> = {}, token = 'test-token', endpoint = 'https://test.example.com/api') {
   const configDir = path.join(tmpDir, '.teamai', 'local-agent');
   await fse.ensureDir(configDir);
   await fse.writeJson(path.join(configDir, 'config.json'), {
-    endpoint: 'https://test.example.com/api',
-    token: 'test-token',
+    endpoint,
+    token,
     localAgentId: 'test-agent-id',
     createdAt: '2026-01-01T00:00:00.000Z',
     workspaceBindings: bindings,
@@ -81,6 +81,129 @@ async function setupConfig(bindings: Record<string, unknown> = {}) {
 function enrolled(...dirs: string[]): Record<string, unknown> {
   return Object.fromEntries(dirs.map((dir) => [dir, { projectId: 0, projectName: '__pending__', boundAt: '2026-01-01T00:00:00.000Z' }]));
 }
+
+describe('local-agent: OpenClaw A2A Gateway control', () => {
+  const reportedInstance = (localAgentId: unknown) => ({ instance_id: `local-openclaw-${String(localAgentId).toLowerCase().slice(-6)}` });
+
+  async function setupControl(projectId?: number) {
+    const checkout = path.join(tmpDir, 'checkout');
+    const workspace = path.join(checkout, 'runtime');
+    const sibling = path.join(tmpDir, 'sibling');
+    await fse.ensureDir(path.join(workspace, 'skills', 'local-example'));
+    await fse.outputFile(path.join(workspace, 'skills', 'local-example', 'SKILL.md'), '---\nname: local-example\n---\n# Example');
+    await fse.ensureDir(sibling);
+    execFileSync('git', ['init', '-q', checkout]);
+    await setupConfig({
+      [sibling]: { projectId: 6, boundAt: 'x', ideType: 'openclaw' },
+      ...(projectId ? { [checkout]: { projectId, boundAt: 'x', ideType: 'openclaw' } } : {}),
+    }, 'sk-test-openclaw', 'https://control.example.com');
+    vi.spyOn(os, 'platform').mockReturnValue('linux');
+    const exec = await import('@teamai/shared/exec');
+    vi.spyOn(exec, 'probeBinary').mockImplementation(async (_command, args) => args?.[0] === 'agents'
+      ? JSON.stringify([{ id: 'native', workspace, isDefault: true }])
+      : '');
+    return { checkout, workspace, sibling };
+  }
+
+  it('reports an unbound native workspace, persists a binding, and reports it before acknowledging', async () => {
+    const { checkout, workspace, sibling } = await setupControl();
+    const calls: Array<{ route: string; body: Record<string, unknown>; authorization?: string }> = [];
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const route = new URL(String(input)).pathname;
+      const body: Record<string, unknown> = JSON.parse(String(init?.body));
+      calls.push({ route, body, authorization: new Headers(init?.headers).get('Authorization') ?? undefined });
+
+      return route.endsWith('/sync')
+        ? Response.json({ ok: true, a2a_workspace_binding: { id: 7, project_id: 4, workspace } })
+        : Response.json({ ok: true, ...reportedInstance(body.local_agent_id) });
+    });
+    const { runOpenClawA2aControl, loadLocalAgentConfig, buildSyncPayload } = await import('../local-agent.js');
+
+    expect(await runOpenClawA2aControl(true)).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(5);
+    expect(calls.map(({ route }) => route)).toEqual([
+      '/api/local-agent/report', '/api/local-agent/sync', '/api/local-agent/report', '/api/local-agent/commands/ack',
+      '/api/local-agent/sync',
+    ]);
+    expect(calls.every(({ authorization }) => authorization === 'Bearer sk-test-openclaw')).toBe(true);
+    expect(calls[0]!.body).toMatchObject({
+      default_workspace: workspace,
+      workspaces: expect.arrayContaining([{ path: workspace, name: 'runtime', ide_type: 'openclaw', skills: [{ slug: 'local-example', display_name: 'local-example', source: 'local' }] }]),
+    });
+    expect(calls[0]!.body).not.toHaveProperty('a2a_binding_task_id');
+    expect(calls[1]!.body).toMatchObject({ agent_type: 'openclaw', a2a_control: true });
+    expect(calls[2]!.body).toMatchObject({
+      default_workspace: workspace,
+      a2a_binding_task_id: 7,
+      workspaces: expect.arrayContaining([
+        expect.objectContaining({ path: workspace, project_id: 4 }),
+        expect.objectContaining({ path: sibling, project_id: 6 }),
+      ]),
+    });
+    expect(calls[3]!.body).toMatchObject({
+      id: 7, type: 'bind_a2a_workspace', status: 'success', local_agent_id: calls[1]!.body.local_agent_id,
+    });
+    const config = (await loadLocalAgentConfig())!;
+    expect(config.workspaceBindings[workspace]).toMatchObject({ projectId: 4, ideType: 'openclaw' });
+    expect(config.workspaceBindings[checkout]).toBeUndefined();
+    const sync = await buildSyncPayload(config, { tool: 'openclaw', cwd: workspace });
+    expect(sync.workspaces?.map((entry) => entry.path)).toEqual([sibling, workspace]);
+
+    const boundAt = config.workspaceBindings[workspace]?.boundAt;
+    expect(await runOpenClawA2aControl(false)).toBe(true);
+    expect((await loadLocalAgentConfig())?.workspaceBindings[workspace]?.boundAt).toBe(boundAt);
+  });
+
+  it('rejects a competing checkout binding without changing either scope', async () => {
+    const { workspace, checkout } = await setupControl(99);
+    const fetch = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(Response.json({ ok: true, a2a_workspace_binding: { id: 7, project_id: 4, workspace } }))
+      .mockResolvedValueOnce(Response.json({ ok: true }));
+    const { runOpenClawA2aControl, loadLocalAgentConfig } = await import('../local-agent.js');
+    expect(await runOpenClawA2aControl(false)).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toMatchObject({
+      id: 7, status: 'failed', error: 'workspace_binding_conflict',
+    });
+    const bindings = (await loadLocalAgentConfig())!.workspaceBindings;
+    expect(bindings[checkout]).toMatchObject({ projectId: 99 });
+    expect(bindings[workspace]).toBeUndefined();
+  });
+
+  it('leaves a binding pending when its report failed and acknowledges the retry', async () => {
+    const { workspace } = await setupControl();
+    const pending = { ok: true, a2a_workspace_binding: { id: 7, project_id: 4, workspace } };
+    const fetch = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(Response.json(pending))
+      .mockResolvedValueOnce(Response.json({ ok: false }, { status: 503 }));
+    const { runOpenClawA2aControl, loadLocalAgentConfig } = await import('../local-agent.js');
+    expect(await runOpenClawA2aControl(false)).toBe(false);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect((await loadLocalAgentConfig())?.workspaceBindings[workspace]).toBeUndefined();
+
+    const sync: Record<string, unknown> = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
+    fetch
+      .mockResolvedValueOnce(Response.json(pending))
+      .mockResolvedValueOnce(Response.json(reportedInstance(sync.local_agent_id)))
+      .mockResolvedValueOnce(Response.json({ ok: true }))
+      .mockResolvedValueOnce(Response.json({ ok: true }));
+    expect(await runOpenClawA2aControl(false)).toBe(true);
+    expect(fetch.mock.calls[4]?.[0]).toMatch(/\/commands\/ack$/);
+    expect(JSON.parse(String(fetch.mock.calls[4]?.[1]?.body))).toMatchObject({ id: 7, status: 'success' });
+  });
+
+  it('keeps local state unchanged when the tagged report rejects a canceled binding', async () => {
+    const { workspace } = await setupControl();
+    const fetch = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(Response.json({ ok: true, a2a_workspace_binding: { id: 7, project_id: 4, workspace } }))
+      .mockResolvedValueOnce(Response.json({ error: 'binding_canceled' }, { status: 409 }));
+    const { runOpenClawA2aControl, loadLocalAgentConfig } = await import('../local-agent.js');
+    expect(await runOpenClawA2aControl(false)).toBe(false);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toMatchObject({ a2a_binding_task_id: 7 });
+    expect((await loadLocalAgentConfig())?.workspaceBindings[workspace]).toBeUndefined();
+  });
+});
 
 describe('local-agent: buildReportPayload disk scan', () => {
   async function writeSkill(baseDir: string, tool: string, dir: string, name: string, version?: string): Promise<void> {

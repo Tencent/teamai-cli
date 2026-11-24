@@ -35,6 +35,15 @@ function runCLI(args: string[], env: Record<string, string>, cwd: string, stdin 
 /** Bindings enrolling `dir`, as `teamai bind-project` there does: the local agent stays silent in a workspace without one. */
 const enrolled = (dir: string) => ({ [dir]: { projectId: 0, projectName: '__pending__', boundAt: '2026-01-01T00:00:00.000Z' } });
 
+function fixtureCertificate(sandbox: string) {
+  const cert = path.join(sandbox, 'cert.pem');
+  const key = path.join(sandbox, 'key.pem');
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=127.0.0.1',
+    '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', key, '-out', cert], { stdio: 'ignore' });
+
+  return { cert, tls: { cert: fs.readFileSync(cert), key: fs.readFileSync(key) } };
+}
+
 describe('local-agent rules (#993)', () => {
   const sandboxes: string[] = [];
   beforeAll(() => {
@@ -49,10 +58,7 @@ describe('local-agent rules (#993)', () => {
     sandboxes.push(sandbox);
     const home = path.join(sandbox, 'home');
     const agentDir = path.join(home, '.teamai', 'local-agent');
-    const cert = path.join(sandbox, 'cert.pem');
-    const key = path.join(sandbox, 'key.pem');
-    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=127.0.0.1',
-      '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', key, '-out', cert], { stdio: 'ignore' });
+    const { cert, tls } = fixtureCertificate(sandbox);
     fs.mkdirSync(agentDir, { recursive: true });
     const token = 'sk-a2a-fixture-openclaw';
     const tokenHash = createHash('sha256').update(token).digest('hex');
@@ -78,7 +84,7 @@ describe('local-agent rules (#993)', () => {
 
       return `node --eval ${quote(script)}`;
     };
-    const server = createHttpsServer({ cert: fs.readFileSync(cert), key: fs.readFileSync(key) }, (req, res) => {
+    const server = createHttpsServer(tls, (req, res) => {
       const url = new URL(req.url ?? '/', 'https://127.0.0.1');
       res.setHeader('content-type', 'application/json');
 
@@ -155,6 +161,105 @@ describe('local-agent rules (#993)', () => {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   }, 40_000);
+
+  it.skipIf(process.platform === 'win32')('binds and installs A2A through the Gateway worker CLI without a session', async () => {
+    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-a2a-control-')));
+    sandboxes.push(sandbox);
+    const home = path.join(sandbox, 'home');
+    const agentDir = path.join(home, '.teamai', 'local-agent');
+    const checkout = path.join(sandbox, 'checkout');
+    const workspace = path.join(checkout, 'runtime');
+    const bin = path.join(sandbox, 'bin');
+    const preload = path.join(sandbox, 'platform.cjs');
+    const marker = path.join(sandbox, 'a2a-control-installed');
+    const token = 'sk-test-control-openclaw';
+    const deviceId = '0011223344ddeeff';
+    const instanceId = 'local-openclaw-ddeeff';
+    const { cert, tls } = fixtureCertificate(sandbox);
+    const roster = JSON.stringify([{ id: 'default-agent', workspace, isDefault: true }]);
+    const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+    fs.mkdirSync(agentDir, { recursive: true });
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.mkdirSync(bin);
+    execFileSync('git', ['init', '-q', checkout]);
+    fs.writeFileSync(path.join(bin, 'openclaw'), `#!/bin/sh\nprintf '%s\\n' ${quote(roster)}\n`, { mode: 0o755 });
+    // The worker is Linux-only. The real CLI and its subprocesses run against
+    // the same fixture on both Linux and macOS test hosts.
+    fs.writeFileSync(preload, "require('node:os').platform = () => 'linux'; require('node:module').syncBuiltinESMExports();\n");
+    const calls: Array<{ pathname: string; body: Record<string, unknown>; authorization?: string }> = [];
+    let applied = false;
+
+    const server = createHttpsServer(tls, async (req, res) => {
+      const { pathname, searchParams } = new URL(req.url ?? '/', 'https://127.0.0.1');
+      let content = '';
+
+      for await (const chunk of req) content += String(chunk);
+
+      const body: Record<string, unknown> = JSON.parse(content || '{}');
+
+      calls.push({ pathname, body, authorization: req.headers.authorization });
+      res.setHeader('content-type', 'application/json');
+
+      switch (pathname) {
+        case '/api/local-agent/report':
+          res.end(JSON.stringify({ instance_id: instanceId }));
+          break;
+        case '/api/local-agent/sync':
+          res.end(JSON.stringify(applied ? { ok: true, plugin_config_revision: 'after-bind' } : {
+            ok: true, plugin_config_revision: 'absent', a2a_workspace_binding: { id: 25, project_id: 14, workspace },
+          }));
+          break;
+        case '/api/local-agent/commands/ack':
+          applied = body.status === 'success' && body.local_agent_id === deviceId && body.id === 25
+            && calls.some((call) => call.pathname === '/api/local-agent/report' && call.body.a2a_binding_task_id === 25);
+          res.statusCode = applied ? 200 : 409;
+          res.end(JSON.stringify({ ok: applied }));
+          break;
+        case '/api/local-agent/get-config':
+          res.end(JSON.stringify(applied && searchParams.get('config_type') === 'a2a' && searchParams.get('instance_id') === instanceId ? {
+            'a2a-14': { version: 'after-bind', install_cmd: `touch ${quote(marker)}`, run_cmd: 'true', uninstall_cmd: 'true' },
+          } : {}));
+          break;
+        default:
+          res.statusCode = 404;
+          res.end('{}');
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const endpoint = `https://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const configPath = path.join(agentDir, 'config.json');
+
+    try {
+      fs.writeFileSync(configPath, JSON.stringify({ endpoint, agentTokens: { openclaw: token }, workspaceBindings: {} }));
+      const result = await runCLI(['source', 'a2a-control', '--report'], {
+        HOME: home,
+        NODE_EXTRA_CA_CERTS: cert,
+        NODE_OPTIONS: `--require=${preload}`,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        TEAMAI_LOCAL_AGENT_ID: deviceId,
+      }, home);
+      expect(result.code, result.output).toBe(0);
+      await expect.poll(() => fs.existsSync(marker), { timeout: 6000 }).toBe(true);
+      expect(calls.map(({ pathname }) => pathname)).toEqual([
+        '/api/local-agent/report', '/api/local-agent/sync', '/api/local-agent/report',
+        '/api/local-agent/commands/ack', '/api/local-agent/sync', '/api/local-agent/get-config',
+      ]);
+      expect(calls.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
+      expect(calls[0]!.body).toMatchObject({ default_workspace: workspace, workspaces: [expect.objectContaining({ path: workspace })] });
+      expect(calls[0]!.body).not.toHaveProperty('a2a_binding_task_id');
+      expect(calls[1]!.body).toMatchObject({ a2a_control: true, local_agent_id: deviceId });
+      expect(calls[2]!.body).toMatchObject({
+        default_workspace: workspace, a2a_binding_task_id: 25,
+        workspaces: [expect.objectContaining({ path: workspace, project_id: 14 })],
+      });
+      expect(calls[3]!.body).toMatchObject({ id: 25, type: 'bind_a2a_workspace', status: 'success', local_agent_id: deviceId });
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).workspaceBindings).toEqual({
+        [workspace]: expect.objectContaining({ projectId: 14, ideType: 'openclaw' }),
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  }, 25_000);
 
   /**
    * An HTTP source in `home` whose `operation` (a Stop hook sync or plugin reconciliation)

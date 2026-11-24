@@ -4316,12 +4316,13 @@ export async function reconcileHooksToAllTools(
         await reconcileBridged(tool);
 
         if (opts.removeAll) {
-          const { removeOpenClawHooks, removeOpenClawHookEntry, removeOpenClawTeamHooks } = await import('./openclaw-hooks.js');
+          const { removeOpenClawA2aControl, removeOpenClawHooks, removeOpenClawHookEntry, removeOpenClawTeamHooks } = await import('./openclaw-hooks.js');
           const wsDir = await openclawWorkspaceDir();
 
           if (wsDir) await removeOpenClawHooks(path.join(wsDir, 'hooks'));
           await removeOpenClawHookEntry();
           await removeOpenClawTeamHooks();
+          await removeOpenClawA2aControl();
         } else {
           const { injectOpenClawHooks } = await import('./openclaw-hooks.js');
           await injectOpenClawHooks(tool);
