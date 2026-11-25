@@ -228,7 +228,7 @@ export async function scanRoleAwareSkills(
   // Two directories that differ only by case match the same declaration; the
   // resolver reports them as the conflict they are.
   const items = namespaces.skills.flatMap((namespace) =>
-    skills.filter((item) => item.namespace !== null && isActiveNamespace([namespace], item.namespace)),
+    skills.filter((item) => item.namespace !== undefined && isActiveNamespace([namespace], item.namespace)),
   );
   const resolution = resolveNamespacedItems(items.map(itemCandidate), namespaces.skills);
 
