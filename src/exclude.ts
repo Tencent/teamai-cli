@@ -9,6 +9,23 @@ import {
 import { log } from '@teamai/shared/log';
 import type { GlobalOptions, LocalConfig } from './types.js';
 
+/**
+ * Trim the skill and MCP server names a command was given and refuse a blank
+ * one: it matches nothing but would be stored and listed as an exclusion.
+ */
+function excludedNames(skills: string[]): string[] | null {
+  const trimmed = skills.map((skill) => skill.trim());
+
+  if (trimmed.includes('')) {
+    log.error('Skill and MCP server names must not be empty or only whitespace.');
+    process.exitCode = 1;
+
+    return null;
+  }
+
+  return trimmed;
+}
+
 async function resolveExcludeScope(options: GlobalOptions = {}): Promise<LocalConfig> {
   const projectConfig = await detectProjectConfig(undefined, undefined, options);
 
@@ -50,10 +67,14 @@ export async function excludeList(_options: GlobalOptions): Promise<void> {
 }
 
 export async function excludeAdd(skills: string[], options: GlobalOptions): Promise<void> {
+  const names = excludedNames(skills);
+
+  if (!names) return;
+
   const config = await resolveExcludeScope(options);
   const existing = new Set(config.excludedSkills ?? []);
 
-  const added = skills.filter((skill) => {
+  const added = names.filter((skill) => {
     if (existing.has(skill)) return false;
     existing.add(skill);
 
@@ -78,9 +99,13 @@ export async function excludeAdd(skills: string[], options: GlobalOptions): Prom
 }
 
 export async function excludeRemove(skills: string[], options: GlobalOptions): Promise<void> {
+  const names = excludedNames(skills);
+
+  if (!names) return;
+
   const config = await resolveExcludeScope(options);
   const existing = new Set(config.excludedSkills ?? []);
-  const removed = skills.filter((skill) => existing.delete(skill));
+  const removed = names.filter((skill) => existing.delete(skill));
 
   if (removed.length === 0) {
     log.info('None of those were excluded.');
