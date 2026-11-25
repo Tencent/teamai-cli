@@ -351,10 +351,18 @@ async function roleAllowedSkills(teamConfig: TeamaiConfig, localConfig: LocalCon
   const allowed = new Set(roles.length === ids.length ? roles.flatMap((role) => role.resources.skills) : []);
   const skipped = new Set<string>();
 
+  // Ownership, not folding: `required` and `allowed` are declarations while
+  // `item.namespace` is a directory read from disk. A folded sibling no
+  // declaration owns must not count as required (the skill would be skipped) nor
+  // as allowed (it would be kept) on another namespace's behalf.
+  const skillDirs = await listDirs(path.join(localConfig.repo.localPath, 'skills'));
+  const requiredOwned = declaredDirectories([...required], skillDirs);
+  const allowedOwned = declaredDirectories([...allowed], skillDirs);
+
   const eligible = items.filter((item) => {
     if (!item.namespace
-      || !isActiveNamespace([...required], item.namespace)
-      || isActiveNamespace([...allowed], item.namespace)) return true;
+      || !requiredOwned.has(item.namespace)
+      || allowedOwned.has(item.namespace)) return true;
     skipped.add(item.namespace);
 
     return false;
