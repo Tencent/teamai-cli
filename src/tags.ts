@@ -16,6 +16,37 @@ import type { GlobalOptions, LocalConfig, TagsConfig } from './types.js';
 import { readWorkspaceChildren } from './workspace-children.js';
 
 /**
+ * Trim the tags a command was given and refuse a blank one: a whitespace-only
+ * tag matches nothing but would be stored and shown as if it named a tag.
+ */
+function taggedValues(tags: string[]): string[] | null {
+    const trimmed = tags.map((tag) => tag.trim());
+
+    if (trimmed.includes('')) {
+        log.error('Tags must not be empty or only whitespace.');
+        process.exitCode = 1;
+
+        return null;
+    }
+
+    return trimmed;
+}
+
+/** The skill or rule name a tag command was given, or null when it is blank. */
+function taggedResourceName(name: string): string | null {
+    const trimmed = name.trim();
+
+    if (!trimmed) {
+        log.error('Specify the name of the skill or rule to tag.');
+        process.exitCode = 1;
+
+        return null;
+    }
+
+    return trimmed;
+}
+
+/**
  * Resolve the active scope for tag operations: project scope when the cwd has
  * a project-scope install, otherwise user scope. Mirrors recall.ts/contribute.ts
  * so `tags list/subscribe/unsubscribe` agree with what `recall` actually queries
@@ -115,12 +146,16 @@ export async function tagsSubscribe(tags: string[], options: GlobalOptions): Pro
         return;
     }
 
+    const requested = taggedValues(tags);
+
+    if (!requested) return;
+
     const localConfig = await resolveTagsScope(options);
     const existing = new Set(localConfig.subscribedTags ?? []);
 
     const newTags: string[] = [];
 
-    for (const tag of tags) {
+    for (const tag of requested) {
         if (!existing.has(tag)) {
             existing.add(tag);
             newTags.push(tag);
@@ -160,12 +195,16 @@ export async function tagsUnsubscribe(tags: string[], options: GlobalOptions): P
         return;
     }
 
+    const requested = taggedValues(tags);
+
+    if (!requested) return;
+
     const localConfig = await resolveTagsScope(options);
     const existing = new Set(localConfig.subscribedTags ?? []);
 
     const removed: string[] = [];
 
-    for (const tag of tags) {
+    for (const tag of requested) {
         if (existing.has(tag)) {
             existing.delete(tag);
             removed.push(tag);
@@ -211,6 +250,11 @@ export async function tagsAdd(
         return;
     }
 
+    const requested = taggedValues(tags);
+    const resourceName = taggedResourceName(name);
+
+    if (!requested || !resourceName) return;
+
     const localConfig = await resolveTagsScope(options);
     const repoPath = localConfig.repo.localPath;
 
@@ -230,22 +274,22 @@ export async function tagsAdd(
     }
 
     const map = resourceType === 'skills' ? tagsConfig.skills : tagsConfig.rules;
-    const existing = new Set(map[name] ?? []);
+    const existing = new Set(map[resourceName] ?? []);
 
-    for (const tag of tags) {
+    for (const tag of requested) {
         existing.add(tag);
     }
 
-    map[name] = [...existing].sort();
+    map[resourceName] = [...existing].sort();
 
     if (options.dryRun) {
-        log.info(`[dry-run] Would set ${resourceType}/${name} tags to: ${map[name].join(', ')}`);
+        log.info(`[dry-run] Would set ${resourceType}/${resourceName} tags to: ${map[resourceName].join(', ')}`);
 
         return;
     }
 
     await saveTagsConfig(repoPath, tagsConfig);
-    log.success(`Set ${resourceType}/${name} tags: ${map[name].join(', ')}`);
+    log.success(`Set ${resourceType}/${resourceName} tags: ${map[resourceName].join(', ')}`);
     log.dim('Commit and push the team repo to share with the team.');
 }
 
@@ -265,6 +309,11 @@ export async function tagsRemove(
         return;
     }
 
+    const requested = taggedValues(tags);
+    const resourceName = taggedResourceName(name);
+
+    if (!requested || !resourceName) return;
+
     const localConfig = await resolveTagsScope(options);
     const repoPath = localConfig.repo.localPath;
 
@@ -282,37 +331,37 @@ export async function tagsRemove(
     }
 
     const map = resourceType === 'skills' ? tagsConfig.skills : tagsConfig.rules;
-    const existing = map[name];
+    const existing = map[resourceName];
 
     if (!existing || existing.length === 0) {
-        log.info(`${resourceType}/${name} has no tags.`);
+        log.info(`${resourceType}/${resourceName} has no tags.`);
 
         return;
     }
 
-    const toRemove = new Set(tags);
+    const toRemove = new Set(requested);
     const remaining = existing.filter((t) => !toRemove.has(t));
 
     if (remaining.length === existing.length) {
-        log.info(`None of the specified tags were found on ${resourceType}/${name}.`);
+        log.info(`None of the specified tags were found on ${resourceType}/${resourceName}.`);
 
         return;
     }
 
     if (remaining.length === 0) {
-        delete map[name];
+        delete map[resourceName];
     } else {
-        map[name] = remaining;
+        map[resourceName] = remaining;
     }
 
     if (options.dryRun) {
-        log.info(`[dry-run] Would update ${resourceType}/${name} tags to: ${remaining.join(', ') || '(none)'}`);
+        log.info(`[dry-run] Would update ${resourceType}/${resourceName} tags to: ${remaining.join(', ') || '(none)'}`);
 
         return;
     }
 
     await saveTagsConfig(repoPath, tagsConfig);
-    log.success(`Updated ${resourceType}/${name} tags: ${remaining.join(', ') || '(removed all)'}`);
+    log.success(`Updated ${resourceType}/${resourceName} tags: ${remaining.join(', ') || '(removed all)'}`);
 }
 
 /**
