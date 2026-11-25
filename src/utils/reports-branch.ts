@@ -29,7 +29,7 @@ import {
   type PublishResult,
   type RefreshResult,
 } from './branch-worktree.js';
-import { acquireLock, releaseLock } from './update.js';
+import { acquireLock, releaseLock } from '../update.js';
 import {
   REPORTS_BRANCH,
   REPORTS_WORKTREE_DIRNAME,
