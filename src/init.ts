@@ -17,7 +17,7 @@ import { queueOwner, sameQueueOwner, setAsideQueueOnModeSwitch } from './utils/p
 import { dropAllSearchIndexes } from './utils/search-index.js';
 import { reportsBranch } from './utils/reports-branch.js';
 import { learningsBranch } from './utils/learnings-branch.js';
-import { validateLocalAgentTokenReplacement } from './local-agent.js';
+import { assertHttpEndpoint, validateLocalAgentTokenReplacement } from './local-agent.js';
 
 /**
  * The member's AI tool, which an answer step, a prompt step and teamai's own AI calls run on: the first of `agents`,
@@ -938,6 +938,17 @@ export async function initHttp(
   options: GlobalOptions & { scope?: string; role?: string; project?: string; agent?: string | string[]; force?: boolean; token?: string; replaceToken?: boolean; inheritUserScope?: boolean },
 ): Promise<void> {
   const { resolveApiKey, saveApiKey, getApiKeyPath } = await import('./api-key.js');
+
+  // Before any write: a bad endpoint would otherwise be stored as the team
+  // remote and reported as a finished init.
+  try {
+    assertHttpEndpoint(url);
+  } catch (e) {
+    log.error((e instanceof Error ? e.message : String(e)));
+    process.exitCode = 1;
+
+    return;
+  }
 
   log.info('Initializing teamai (HTTP read-only consumer)...');
   const requestedAgents = normalizeAgentList(options.agent);

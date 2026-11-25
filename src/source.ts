@@ -751,6 +751,19 @@ export async function sourceAddHttp(
     return;
   }
 
+  // Before the scope read or a --dry-run preview: only an http(s) URL can be
+  // a source endpoint.
+  const { assertHttpEndpoint } = await import('./local-agent.js');
+
+  try {
+    assertHttpEndpoint(trimmed);
+  } catch (e) {
+    log.error(e instanceof Error ? e.message : String(e));
+    process.exitCode = 1;
+
+    return;
+  }
+
   // Guard: if the main repo is already an HTTP backend, it owns the single
   // local-agent config — refuse rather than overwrite its endpoint.
   const mainConfig = (await detectProjectConfig(undefined, undefined, { dryRun: options.dryRun }))
