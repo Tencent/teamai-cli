@@ -10,7 +10,7 @@
 
 import path from 'node:path';
 import { chmod, lstat } from 'node:fs/promises';
-import { generatedFileState, writeIfChanged, pathExists, readFileSafe, remove } from './utils/fs.js';
+import { generatedFileState, writeIfChanged, writeFileAtomic, pathExists, readFileSafe, remove } from './utils/fs.js';
 import { log } from '@teamai/shared/log';
 import { resolveCliEntry } from './builtin-hooks.js';
 import { hookAdapterDirIn } from './locate.js';
@@ -105,7 +105,20 @@ function statA2aHookPath(file: string) {
 async function a2aHookFileState(file: string) {
   const stat = await statA2aHookPath(file);
 
-  return stat && !stat.isFile() ? 'foreign' : generatedFileState(file, A2A_HOOK_MARKER);
+  if (!stat) return 'absent';
+
+  if (!stat.isFile()) return 'foreign';
+
+  const firstLine = (await readFileSafe(file))?.split(/\r?\n/, 1)[0];
+
+  return firstLine === A2A_HOOK_MARKER ? 'teamai' : 'foreign';
+}
+
+async function writeA2aHookFile(file: string, content: string): Promise<boolean> {
+  if (await readFileSafe(file) === content) return false;
+  await writeFileAtomic(file, content);
+
+  return true;
 }
 
 function buildA2aHookHandler(entry: string): string {
@@ -118,13 +131,25 @@ import time
 from pathlib import Path
 
 _task = None
-_manifest = Path(__file__).with_name("HOOK.yaml")
+_handler = Path(__file__)
+_manifest = _handler.with_name("HOOK.yaml")
+_marker = ${JSON.stringify(A2A_HOOK_MARKER)}
+
+
+def _teamai_file(file):
+    try:
+        if file.is_symlink() or not file.is_file():
+            return False
+        with file.open(encoding="utf-8") as source:
+            return source.readline(len(_marker) + 2).rstrip("\\r\\n") == _marker
+    except (OSError, UnicodeError):
+        return False
 
 
 async def _poll():
     env = dict(os.environ, HERMES_HOME=str(_manifest.parent.parent.parent.resolve()))
     last_report_at = None
-    while _manifest.is_file():
+    while _teamai_file(_manifest) and _teamai_file(_handler):
         report = last_report_at is None or time.monotonic() - last_report_at >= 300
         args = [${JSON.stringify(process.execPath)}, ${JSON.stringify(entry)}, "source", "a2a-control", "--agent", "hermes"]
         if report:
@@ -157,34 +182,45 @@ def handle(event, context):
 }
 
 async function refreshHermesA2aControl(entry: string, home = toolHome('hermes')): Promise<boolean> {
-  const { canRunHermesA2aControl, loadLocalAgentConfig } = await import('./local-agent.js');
-  const config = await loadLocalAgentConfig({ dryRun: true, envFallback: false });
-
-  if (!config || !canRunHermesA2aControl(config)) return false;
-
+  const { claimHermesA2aProfile } = await import('./local-agent.js');
   const { directory, manifest, handler } = a2aHookFiles(home);
-  const directoryStat = await statA2aHookPath(directory);
 
-  if ((directoryStat && !directoryStat.isDirectory())
-    || await a2aHookFileState(manifest) === 'foreign' || await a2aHookFileState(handler) === 'foreign') {
+  const canWriteHook = async () => {
+    const directoryStat = await statA2aHookPath(directory);
+
+    if ((!directoryStat || directoryStat.isDirectory())
+      && await a2aHookFileState(manifest) !== 'foreign' && await a2aHookFileState(handler) !== 'foreign') return true;
+
     log.warn(`Skipping the Hermes A2A control hook: ${directory} contains files teamai did not generate`);
 
     return false;
-  }
+  };
 
-  const handlerChanged = await writeIfChanged(handler, buildA2aHookHandler(entry));
+  if (!await canWriteHook()) return false;
 
-  const manifestChanged = await writeIfChanged(manifest, [
-    A2A_HOOK_MARKER,
-    `name: ${A2A_HOOK}`,
-    'description: Polls for workspace collaboration configuration.',
-    'events: ["gateway:startup"]',
-    '',
-  ].join('\n'));
+  let changed = false;
 
-  if (handlerChanged || manifestChanged) log.info('Reload the Hermes Gateway to start background collaboration setup.');
+  const enrolled = await claimHermesA2aProfile(home, async () => {
+    if (!await canWriteHook()) return false;
 
-  return handlerChanged || manifestChanged;
+    const handlerChanged = await writeA2aHookFile(handler, buildA2aHookHandler(entry));
+
+    const manifestChanged = await writeA2aHookFile(manifest, [
+      A2A_HOOK_MARKER,
+      `name: ${A2A_HOOK}`,
+      'description: Polls for workspace collaboration configuration.',
+      'events: ["gateway:startup"]',
+      '',
+    ].join('\n'));
+
+    changed = handlerChanged || manifestChanged;
+
+    return true;
+  });
+
+  if (enrolled && changed) log.info('Reload the Hermes Gateway to start background collaboration setup.');
+
+  return enrolled && changed;
 }
 
 export async function removeHermesA2aControl(home = toolHome('hermes')): Promise<void> {

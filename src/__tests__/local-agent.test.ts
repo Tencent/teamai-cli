@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -85,7 +85,11 @@ function enrolled(...dirs: string[]): Record<string, unknown> {
 describe('local-agent: Hermes A2A Gateway control', () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  async function setupHermesControl(backend = 'local') {
+  const endpoint = 'https://control.example.com';
+  const ownerPath = () => path.join(tmpDir, '.teamai', 'local-agent', 'hermes-a2a-owner.json');
+  const hookManifest = (home: string) => path.join(home, 'hooks', 'teamai-a2a-control', 'HOOK.yaml');
+
+  async function setupHermesControl(backend = 'local', pinned = true) {
     const workspace = path.join(tmpDir, 'workspace');
     const profile = path.join(tmpDir, 'hermes-profile');
     const profileAlias = path.join(tmpDir, 'profile-link');
@@ -95,10 +99,13 @@ describe('local-agent: Hermes A2A Gateway control', () => {
     await fse.symlink(workspace, workspaceAlias, 'junction');
     await fse.symlink(profile, profileAlias, 'junction');
     await fse.outputFile(path.join(profile, 'config.yaml'), `terminal:\n  backend: local\n  cwd: ${JSON.stringify(workspace)}\n`);
-    await setupConfig({}, 'sk-example-openclaw', 'https://control.example.com');
+    await setupConfig({}, 'sk-example-openclaw', endpoint);
     const configPath = path.join(tmpDir, '.teamai', 'local-agent', 'config.json');
     const config = await fse.readJson(configPath);
-    await fse.writeJson(configPath, { ...config, agentTokens: { openclaw: 'sk-example-openclaw', hermes: 'sk-example-hermes' } });
+    await fse.writeJson(configPath, {
+      ...config, agentTokens: { openclaw: 'sk-example-openclaw', hermes: 'sk-example-hermes' },
+    });
+    if (pinned) await fse.writeJson(ownerPath(), { endpoint, profile });
     vi.spyOn(os, 'platform').mockReturnValue('linux');
     vi.stubEnv('HERMES_HOME', profileAlias);
     vi.stubEnv('TERMINAL_ENV', backend);
@@ -178,6 +185,79 @@ describe('local-agent: Hermes A2A Gateway control', () => {
     expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({
       agent_type: 'hermes', runtime_type: 'hermes', default_workspace: '', runtime_profile: '',
     });
+  });
+
+  it('pins one canonical profile and switches it only on explicit Hermes enrollment', async () => {
+    const { workspace, profile } = await setupHermesControl('local', false);
+    const second = path.join(tmpDir, 'second-hermes-profile');
+    await fse.outputFile(path.join(second, 'config.yaml'), `terminal:\n  backend: local\n  cwd: ${JSON.stringify(workspace)}\n`);
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (new URL(String(input)).pathname.endsWith('/sync')) return Response.json({ ok: true });
+      const { local_agent_id } = JSON.parse(String(init?.body));
+      return Response.json({ instance_id: `local-hermes-${String(local_agent_id).slice(-6)}` });
+    });
+    const { claimHermesA2aProfile, initLocalAgentHttp, runHermesA2aControl, runPluginReconcileWorker, shutdownLocalAgentHttp } = await import('../local-agent.js');
+
+    expect(await runHermesA2aControl(true)).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await claimHermesA2aProfile(profile, async () => false)).toBe(false);
+    expect(await fse.pathExists(ownerPath())).toBe(false);
+    expect(await claimHermesA2aProfile(path.join(tmpDir, 'profile-link'), async () => {
+      await fse.outputFile(hookManifest(profile), '# [teamai] Hermes A2A control\n');
+      return true;
+    })).toBe(true);
+    expect(await fse.readJson(ownerPath())).toEqual({ endpoint, profile });
+    expect(await runHermesA2aControl(true)).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const firstReport = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
+    const instanceId = `local-hermes-${String(firstReport.local_agent_id).slice(-6)}`;
+    fetch.mockClear();
+
+    vi.stubEnv('HERMES_HOME', second);
+    expect(await claimHermesA2aProfile(second)).toBe(false);
+    expect(await runHermesA2aControl(true)).toBe(true);
+    vi.stubEnv('TEAMAI_PLUGIN_A2A_REQUEST', JSON.stringify({
+      scope: createHash('sha256').update(`${endpoint}\0${instanceId}`).digest('hex'),
+      instanceId, revision: 'different-profile', hermesRuntime: { profile: second, workspace },
+    }));
+    await runPluginReconcileWorker();
+    expect(fetch).not.toHaveBeenCalled();
+
+    await initLocalAgentHttp({ endpoint, filterAgents: ['codex'] });
+    expect(await fse.readJson(ownerPath())).toEqual({ endpoint, profile });
+    await initLocalAgentHttp({ endpoint, filterAgents: ['hermes'] });
+    expect(await fse.readJson(ownerPath())).toEqual({ endpoint, profile: second });
+    expect(await fse.pathExists(hookManifest(profile))).toBe(false);
+    expect(await fse.pathExists(hookManifest(second))).toBe(true);
+    expect(await runHermesA2aControl(true)).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({ runtime_profile: second, local_agent_id: firstReport.local_agent_id });
+    fetch.mockClear();
+    vi.stubEnv('HERMES_HOME', profile);
+    expect(await runHermesA2aControl(true)).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await shutdownLocalAgentHttp('fixture')).toBe('removed');
+    expect(await fse.pathExists(hookManifest(second))).toBe(false);
+    expect(await fse.pathExists(ownerPath())).toBe(false);
+  });
+
+  it('drops the previous owner when replacing the HTTP endpoint and pins a fresh Hermes source', async () => {
+    const { profile } = await setupHermesControl();
+    await fse.outputFile(hookManifest(profile), '# [teamai] Hermes A2A control\n');
+    const replacement = 'https://replacement.example.com';
+    const { initLocalAgentHttp, loadLocalAgentConfig, runHermesA2aControl } = await import('../local-agent.js');
+    const fetch = vi.spyOn(globalThis, 'fetch');
+
+    await initLocalAgentHttp({ endpoint: replacement, force: true, token: 'sk-example-codex', filterAgents: ['codex'] });
+    expect(await fse.pathExists(ownerPath())).toBe(false);
+    expect(await fse.pathExists(hookManifest(profile))).toBe(false);
+    expect(await runHermesA2aControl(true)).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+
+    await initLocalAgentHttp({ endpoint: replacement, token: 'sk-example-next-hermes', replaceToken: true, filterAgents: ['hermes'] });
+    expect(await fse.readJson(ownerPath())).toEqual({ endpoint: replacement, profile });
+    expect(await fse.pathExists(hookManifest(profile))).toBe(true);
+    expect((await loadLocalAgentConfig())?.agentTokens).toEqual({ codex: 'sk-example-codex', hermes: 'sk-example-next-hermes' });
   });
 });
 

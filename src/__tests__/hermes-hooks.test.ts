@@ -28,8 +28,7 @@ afterEach(() => {
 
 describe('injectHermesHooks', () => {
   it('installs a Gateway startup hook only for eligible HTTP enrollment and removes its own files', async () => {
-    const config = vi.spyOn(localAgent, 'loadLocalAgentConfig').mockResolvedValue({ endpoint: 'http://fixture.local', token: 'sk-fixture', workspaceBindings: {} });
-    const eligible = vi.spyOn(localAgent, 'canRunHermesA2aControl').mockReturnValue(false);
+    const claim = vi.spyOn(localAgent, 'claimHermesA2aProfile').mockResolvedValue(false);
     const hook = path.join(tmpDir, 'hooks', 'teamai-a2a-control');
     const manifest = path.join(hook, 'HOOK.yaml');
     const handler = path.join(hook, 'handler.py');
@@ -37,12 +36,14 @@ describe('injectHermesHooks', () => {
       await injectHermesHooks();
       expect(fs.existsSync(manifest)).toBe(false);
 
-      eligible.mockReturnValue(true);
+      claim.mockImplementation(async (_home, install) => await install?.() ?? true);
       await injectHermesHooks();
+      expect(claim).toHaveBeenLastCalledWith(tmpDir, expect.any(Function));
       expect(YAML.parse(fs.readFileSync(manifest, 'utf8')).events).toEqual(['gateway:startup']);
       const code = fs.readFileSync(handler, 'utf8');
       expect(code).toContain('"source", "a2a-control", "--agent", "hermes"');
       expect(code).toContain('HERMES_HOME=');
+      expect(code).toContain('while _teamai_file(_manifest) and _teamai_file(_handler):');
       expect(code).not.toContain('sk-fixture');
       expect(code).not.toContain('fixture.local');
       const note = path.join(hook, 'README.txt');
@@ -52,26 +53,63 @@ describe('injectHermesHooks', () => {
       expect(fs.existsSync(handler)).toBe(false);
       expect(fs.readFileSync(note, 'utf8')).toBe('member data');
     } finally {
-      eligible.mockRestore();
-      config.mockRestore();
+      claim.mockRestore();
+    }
+  });
+
+  it('keeps a second profile from installing the startup poller when the source already has an owner', async () => {
+    const other = path.join(tmpDir, 'profiles', 'second');
+    fs.mkdirSync(other, { recursive: true });
+    const claim = vi.spyOn(localAgent, 'claimHermesA2aProfile').mockImplementation(async (home, install) => {
+      return home === tmpDir && (await install?.() ?? true);
+    });
+    const hook = path.join('hooks', 'teamai-a2a-control', 'HOOK.yaml');
+    try {
+      await injectHermesHooks();
+      process.env.HERMES_HOME = other;
+      await injectHermesHooks();
+
+      expect(claim.mock.calls.map(([home]) => home)).toEqual([tmpDir, other]);
+      expect(fs.existsSync(path.join(tmpDir, hook))).toBe(true);
+      expect(fs.existsSync(path.join(other, hook))).toBe(false);
+    } finally {
+      claim.mockRestore();
     }
   });
 
   it('preserves a member-defined Gateway startup hook with the same name', async () => {
-    const config = vi.spyOn(localAgent, 'loadLocalAgentConfig').mockResolvedValue({ endpoint: 'http://fixture.local', token: 'sk-fixture', workspaceBindings: {} });
-    const eligible = vi.spyOn(localAgent, 'canRunHermesA2aControl').mockReturnValue(true);
+    const claim = vi.spyOn(localAgent, 'claimHermesA2aProfile').mockResolvedValue(true);
     const hook = path.join(tmpDir, 'hooks', 'teamai-a2a-control');
     const handler = path.join(hook, 'handler.py');
+    const memberContent = '# member hook\n# [teamai] Hermes A2A control is disabled here\n';
     fs.mkdirSync(hook, { recursive: true });
-    fs.writeFileSync(handler, 'member data');
+    fs.writeFileSync(handler, memberContent);
     try {
       await injectHermesHooks();
       await removeHermesHooks();
+      expect(claim).not.toHaveBeenCalled();
       expect(fs.existsSync(path.join(hook, 'HOOK.yaml'))).toBe(false);
-      expect(fs.readFileSync(handler, 'utf8')).toBe('member data');
+      expect(fs.readFileSync(handler, 'utf8')).toBe(memberContent);
     } finally {
-      eligible.mockRestore();
-      config.mockRestore();
+      claim.mockRestore();
+    }
+  });
+
+  it('preserves a member hook created while claiming a profile', async () => {
+    const hook = path.join(tmpDir, 'hooks', 'teamai-a2a-control');
+    const handler = path.join(hook, 'handler.py');
+    const claim = vi.spyOn(localAgent, 'claimHermesA2aProfile').mockImplementation(async (_home, install) => {
+      fs.mkdirSync(hook, { recursive: true });
+      fs.writeFileSync(handler, '# member hook\n');
+
+      return await install?.() ?? true;
+    });
+    try {
+      await injectHermesHooks();
+      expect(fs.existsSync(path.join(hook, 'HOOK.yaml'))).toBe(false);
+      expect(fs.readFileSync(handler, 'utf8')).toBe('# member hook\n');
+    } finally {
+      claim.mockRestore();
     }
   });
 
