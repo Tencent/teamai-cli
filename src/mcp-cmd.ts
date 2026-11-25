@@ -9,13 +9,13 @@ import {
   resolveMcpTargets,
   buildDesiredMcpContext,
   desiredMcpForTarget,
+  installedMcpEntries,
   mcpTargetExcluded,
   shadowedMcpRecords,
   readMcpManifest,
   mcpManifestKey,
   describeMcpLocation,
   type McpChange,
-  type McpTarget,
 } from './mcp-reconcile.js';
 import { placeholderValue, referencedVars } from './resources/mcp-format.js';
 import { reportMissingSecrets } from './env-advisories.js';
@@ -77,6 +77,14 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
   // Project scope reads THIS worktree's own per-worktree manifest, and the local scopes' records (#915); user the global file.
   const manifest = await readMcpManifest(localConfig);
 
+  const installations = await Promise.all(targets.map(async (target) => {
+    const records = manifest[mcpManifestKey(target)] ?? [];
+    const entries = records.length > 0 ? await installedMcpEntries(target, { underKeyOnly: true }) : null;
+    const names = records.flatMap(({ name }) => entries?.has(name) ? [name] : []);
+
+    return { tool: target.tool, names };
+  }));
+
   console.log(`Team MCP servers — mcp/ (${servers.length}):`);
   console.log('');
 
@@ -100,10 +108,7 @@ export async function mcpList(_options: GlobalOptions): Promise<void> {
       console.log(`    secrets:  ${needed.join(', ')} (${state})`);
     }
 
-    const installed = (t: McpTarget): boolean =>
-      (manifest[mcpManifestKey(t)] ?? []).some((r) => r.name === s.name);
-
-    const installedIn = targets.filter(installed).map((t) => t.tool);
+    const installedIn = installations.filter(({ names }) => names.includes(s.name)).map(({ tool }) => tool);
     console.log(`    installed: ${installedIn.length > 0 ? installedIn.join(', ') : '(none)'}`);
 
     // Pull writes a resolved value only into a file git leaves out of a commit

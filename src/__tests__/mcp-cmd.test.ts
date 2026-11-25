@@ -17,6 +17,7 @@ vi.mock('../mcp-reconcile.js', async (importOriginal) => {
     mcpManifestKey: actual.mcpManifestKey,
     describeMcpLocation: actual.describeMcpLocation,
     readMcpManifest: actual.readMcpManifest,
+    installedMcpEntries: vi.fn().mockResolvedValue(new Map()),
     reconcileMcpForConfig: vi.fn(),
     releaseCleanMcpGitExcludes: vi.fn(),
     resolveMcpTargets: vi.fn().mockResolvedValue([]),
@@ -47,7 +48,7 @@ import { autoDetectInit } from '../config.js';
 import { entryLayout } from '../namespaced-entries.js';
 import { LayeredEntries } from '../resources/layered-entries.js';
 import { mcpInject, mcpList, mcpRemove } from '../mcp-cmd.js';
-import { reconcileMcpForConfig, releaseCleanMcpGitExcludes, resolveMcpTargets } from '../mcp-reconcile.js';
+import { installedMcpEntries, reconcileMcpForConfig, releaseCleanMcpGitExcludes, resolveMcpTargets } from '../mcp-reconcile.js';
 import { ensureExcludedFromGit } from '../mcp-git-exclude.js';
 import { readJson } from '../utils/fs.js';
 import { managedMcpManifestKey } from '../types.js';
@@ -135,7 +136,10 @@ describe('mcpList', () => {
     expect(text).toContain('withheld: claude — /work/app/.git/info/exclude is not writable. Make it writable, then run `teamai pull` again.');
   });
 
-  it('still says a server is withheld from a file an earlier pull installed it in (#882)', async () => {
+  it.each([
+    { configHasServer: true, installed: 'claude' },
+    { configHasServer: false, installed: '(none)' },
+  ])('reports installed: $installed for a withheld server based on the tool config (#882)', async ({ configHasServer, installed }) => {
     mockedAutoDetectInit.mockResolvedValue({
       localConfig: { repo: { localPath: '/repo' }, scope: 'project', projectRoot: '/work/app', additionalRoles: [] },
       teamConfig: { toolPaths: {} },
@@ -147,6 +151,9 @@ describe('mcpList', () => {
       { tool: 'claude', format: 'claude', file: '/work/app/.mcp.json', projectScope: true },
     ]);
     (readJson as Mock).mockResolvedValueOnce({ [managedMcpManifestKey('claude', true)]: [{ name: 'jira', hash: 'h' }] });
+    const configEntries = new Map([['personal', { command: 'node' }]]);
+    if (configHasServer) configEntries.set('jira', { command: 'jira-mcp' });
+    vi.mocked(installedMcpEntries).mockResolvedValueOnce(configEntries);
     (ensureExcludedFromGit as Mock).mockResolvedValueOnce({
       kind: 'failed',
       reason: 'git already tracks /work/app/.mcp.json',
@@ -155,7 +162,7 @@ describe('mcpList', () => {
 
     const text = await listOutput();
 
-    expect(text).toContain('installed: claude');
+    expect(text).toContain(`installed: ${installed}`);
     expect(text).toContain('withheld: claude — git already tracks /work/app/.mcp.json. Run `git rm --cached /work/app/.mcp.json`');
   });
 
