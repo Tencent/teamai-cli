@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { ResourceHandler, type ScanForPushOptions } from './base.js';
 import { RESOURCE_LAYOUTS, Resources, type ResourceDiagnostic, type TeamItem } from './resolver.js';
 import { TeamSkillSource } from './team-skill-source.js';
+import { isActiveNamespace } from '../namespace-resolver.js';
 import type { CopyOrigin, PendingPush, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { getPushignorePath, resolveBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
 import { isDraft, listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
@@ -945,7 +946,7 @@ export async function readTeamSkillIndex(repoPath: string, scopedNamespaces: str
     // keeps a name.
     for (const namespace of scopedNamespaces) {
       for (const skill of skills) {
-        if (skill.namespace !== namespace) continue;
+        if (!isActiveNamespace([namespace], skill.namespace ?? '')) continue;
         const copy = { dir: skill.source, namespace };
         addTeamSkill(skill.name, copy);
 
@@ -957,7 +958,7 @@ export async function readTeamSkillIndex(repoPath: string, scopedNamespaces: str
     for (const skill of skills) {
       const { namespace } = skill;
 
-      if (namespace === undefined || scopedNamespaces.includes(namespace)) continue;
+      if (namespace === undefined || isActiveNamespace(scopedNamespaces, namespace)) continue;
       const copy = { dir: skill.source, namespace };
       addTeamSkill(skill.name, copy);
       blockedSkills.set(skill.name, [...blockedSkills.get(skill.name) ?? [], copy]);

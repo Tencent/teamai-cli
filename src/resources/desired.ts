@@ -8,10 +8,11 @@
 import path from 'node:path';
 import { loadStateForScope, loadTeamConfig } from '../config.js';
 import {
-  itemCandidate, resolveNamespacedItems, resolveRootOverrides,
+  itemCandidate, isActiveNamespace, resolveNamespacedItems, resolveRootOverrides,
   type NamespaceCandidate, type NamespaceConflict, type NamespaceOverride,
 } from '../namespace-resolver.js';
 import { placedResourcePath } from '../push-namespaces.js';
+import { namespaceDir } from '../namespaced-entries.js';
 import { resolveResourceNamespaces, usesMemberFilters } from '../resource-namespaces.js';
 import { activeRoleIds, loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
 import { existingSharedInstructionDirs } from '../shared-instruction-source.js';
@@ -48,22 +49,29 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
 
   if (!resolved) return null;
   const { activeNamespaces, allSkillNamespaces, inactiveDocsNamespaces } = resolved;
-  const inactiveSkillNamespaces = [...allSkillNamespaces].filter((namespace) => !activeNamespaces.skills.includes(namespace));
+  const inactiveSkillNamespaces = [...allSkillNamespaces].filter((namespace) => !isActiveNamespace(activeNamespaces.skills, namespace));
   const activeSkillNames = new Set<string>();
   const inactiveSkillNames = new Set<string>();
   const inactiveSkillSources = new Map<string, string>();
   const { skills } = await readTeamSkills(localConfig.repo.localPath);
 
-  // A declared namespace that is a file cannot be read: listing it throws, and pull stops instead of delivering it as empty.
-  for (const namespace of [...activeNamespaces.skills, ...inactiveSkillNamespaces]) await listDirs(path.join(localConfig.repo.localPath, 'skills', namespace));
+  // The directories on disk, so a declaration that names its directory
+  // case-folded (`Frontend` for `skills/frontend/`) finds the directory it
+  // actually has. Listing a directory that does not exist throws, and pull
+  // stops instead of delivering the namespace as empty.
+  const skillDirs = await listDirs(path.join(localConfig.repo.localPath, 'skills'));
+
+  for (const namespace of [...activeNamespaces.skills, ...inactiveSkillNamespaces]) {
+    await listDirs(path.join(localConfig.repo.localPath, 'skills', namespaceDir(skillDirs, namespace)));
+  }
 
   for (const namespace of activeNamespaces.skills) {
-    for (const skill of skills) if (skill.namespace === namespace) activeSkillNames.add(skill.name);
+    for (const skill of skills) if (isActiveNamespace([namespace], skill.namespace ?? '')) activeSkillNames.add(skill.name);
   }
 
   for (const namespace of inactiveSkillNamespaces) {
     for (const skill of skills) {
-      if (skill.namespace !== namespace) continue;
+      if (!isActiveNamespace([namespace], skill.namespace ?? '')) continue;
       inactiveSkillNames.add(skill.name);
 
       // Record the source so cleanup can verify the deployed copy is
@@ -98,7 +106,7 @@ export function filterRulesByKnowledgeNamespaces(
     if (slashIndex === -1) return true; // root-level rule, always include
     const namespace = rule.name.slice(0, slashIndex);
 
-    return knowledgeNamespaces.includes(namespace);
+    return isActiveNamespace(knowledgeNamespaces, namespace);
   });
 }
 
@@ -215,7 +223,13 @@ export async function scanRoleAwareSkills(
   candidates?: readonly ResourceItem[],
 ): Promise<{ kind: 'resolved'; items: ResourceItem[] } | DeliveryConflict> {
   const skills = candidates ?? await teamSkills(localConfig);
-  const items = namespaces.skills.flatMap((namespace) => skills.filter((item) => item.namespace === namespace));
+  // A declared namespace names its directory case-folded, so `skills: [Frontend]`
+  // reaches a `skills/frontend/` directory on a case-sensitive filesystem too.
+  // Two directories that differ only by case match the same declaration; the
+  // resolver reports them as the conflict they are.
+  const items = namespaces.skills.flatMap((namespace) =>
+    skills.filter((item) => item.namespace !== null && isActiveNamespace([namespace], item.namespace)),
+  );
   const resolution = resolveNamespacedItems(items.map(itemCandidate), namespaces.skills);
 
   if (resolution.kind === 'conflict') return { kind: 'conflict', type: 'skill', conflict: resolution };
@@ -292,7 +306,7 @@ async function sharedFirst(repoPath: string, items: readonly ResourceItem[]): Pr
     skipped: item.relativePath,
     kept: winner.relativePath,
     receivingRoles: roles
-      .filter(({ resources: { skills } }) => namespacesOf(item.name).every((namespace) => skills.includes(namespace) === (namespace === item.namespace)))
+      .filter(({ resources: { skills } }) => namespacesOf(item.name).every((namespace) => isActiveNamespace(skills, namespace) === (namespace === item.namespace)))
       .map((role) => role.id),
   }));
 
@@ -310,7 +324,9 @@ async function roleAllowedSkills(teamConfig: TeamaiConfig, localConfig: LocalCon
   const skipped = new Set<string>();
 
   const eligible = items.filter((item) => {
-    if (!item.namespace || !required.has(item.namespace) || allowed.has(item.namespace)) return true;
+    if (!item.namespace
+      || !isActiveNamespace([...required], item.namespace)
+      || isActiveNamespace([...allowed], item.namespace)) return true;
     skipped.add(item.namespace);
 
     return false;

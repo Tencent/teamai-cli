@@ -13,6 +13,7 @@
  * same question the same way, and so the answer can be tested without a repo.
  */
 import { isSafeNamespaceSegment, NAMESPACE_RULE, type NamespaceEntry } from './manifest-schema.js';
+import { isActiveNamespace } from './namespace-resolver.js';
 import {
   findProject, unknownProjectMessage,
   type AllProjectResourceType, type ProjectsManifest,
@@ -194,7 +195,7 @@ export function resolveRoleNamespace(
   const axis = NAMESPACE_AXIS[type];
   const onAxis = [...new Set(declared.filter((entry) => entry.type === axis).map((entry) => entry.namespace))];
 
-  if (onAxis.includes(namespace)) return { ok: true, namespace };
+  if (isActiveNamespace(onAxis, namespace)) return { ok: true, namespace };
 
   return {
     ok: false,

@@ -16,6 +16,7 @@ import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam, shippedAgentRender } 
 import { agentFormatOf, descriptorOf } from '../tool-registry.js';
 import { cleanupOf, deliveryPlaceOf, installOf, locate, ownOf, writable, type DeliveryPlace, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
+import { isActiveNamespace } from '../namespace-resolver.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
 import { loadStateForScope } from '../config.js';
@@ -125,7 +126,7 @@ export function selectAgentsForDirectory(
   if (activeNamespaces === null) return agents;
 
   const active = agents.filter(
-    (agent) => !agent.namespace || activeNamespaces.includes(agent.namespace),
+    (agent) => !agent.namespace || isActiveNamespace(activeNamespaces, agent.namespace),
   );
 
   if (!placedAgents) return active;
@@ -158,7 +159,7 @@ export function resolveAgentsForDirectory(
   const selected = selectAgentsForDirectory(agents, activeNamespaces, placedAgents);
 
   const recorded = selected.flatMap((agent) => (
-    agent.namespace && !activeNamespaces.includes(agent.namespace) ? [agent.namespace] : []
+    agent.namespace && !isActiveNamespace(activeNamespaces, agent.namespace) ? [agent.namespace] : []
   ));
 
   return resolveNamespacedItems(selected.map(itemCandidate), [...new Set([...activeNamespaces, ...recorded])]);
@@ -210,7 +211,7 @@ export class AgentsHandler extends ResourceHandler {
       // SAFETY: segments.length === 2 was checked just above, so both entries exist.
       const [namespace, stem] = segments as [string, string];
 
-      const deliveredHere = activeNamespaces === null || activeNamespaces.includes(namespace)
+      const deliveredHere = activeNamespaces === null || isActiveNamespace(activeNamespaces, namespace)
         || placedIn(stem) === namespace;
 
       if (deliveredHere && !desired.has(stem)) removed.add(stem);
@@ -386,7 +387,7 @@ export class AgentsHandler extends ResourceHandler {
 
     // Only a folder pull delivers here stands for this name: one in an inactive namespace leaves a root file's copy editable.
     const folderStems = new Set((await listTeamAgentFolders(teamAgentsDir))
-      .filter(({ namespace }) => activeNamespaces === null || namespace === undefined || activeNamespaces.includes(namespace))
+      .filter(({ namespace }) => activeNamespaces === null || namespace === undefined || isActiveNamespace(activeNamespaces, namespace))
       .map(({ name }) => name));
 
     for (const tool of Object.keys(install.toolPaths)) {
@@ -469,7 +470,7 @@ export class AgentsHandler extends ResourceHandler {
       // file and overwrote it without an edit.
       const active = sources.filter(
         (file) => activeNamespaces === null || !file.namespace
-          || activeNamespaces.includes(file.namespace),
+          || isActiveNamespace(activeNamespaces, file.namespace),
       );
 
       const activeInNamespace = active.filter((file) => file.namespace);
