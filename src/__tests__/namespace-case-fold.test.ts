@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   activeNamespaceRank,
+  declaredDirectories,
   isActiveNamespace,
   resolveNamespacedItems,
   type NamespaceCandidate,
@@ -103,5 +104,90 @@ describe('resolveNamespacedItems with a case-folded namespace', () => {
     // `active` order decides, and an exact match wins over a folded one.
     expect(activeNamespaceRank(['Frontend', 'frontend'], 'Frontend')).toBe(1);
     expect(activeNamespaceRank(['Frontend', 'frontend'], 'frontend')).toBe(2);
+  });
+});
+
+describe('declaredDirectories', () => {
+  it('claims the exact directory when the declaration spells one', () => {
+    expect([...declaredDirectories(['Frontend'], ['Frontend', 'frontend'])]).toEqual(['Frontend']);
+  });
+
+  it('claims the folded directory when no exact one exists', () => {
+    expect([...declaredDirectories(['Frontend'], ['frontend'])]).toEqual(['frontend']);
+  });
+
+  it('claims nothing when no directory answers the declaration', () => {
+    expect(declaredDirectories(['Frontend'], ['backend']).size).toBe(0);
+  });
+
+  it('does not let two declarations claim one directory twice', () => {
+    // Only `Frontend/` exists, so both declarations resolve to it; the set holds
+    // one entry and no delivery doubles up.
+    const owned = declaredDirectories(['Frontend', 'frontend'], ['Frontend']);
+    expect([...owned]).toEqual(['Frontend']);
+  });
+
+  it('gives each declaration its own directory on a case-sensitive filesystem', () => {
+    const owned = declaredDirectories(['Frontend', 'backend'], ['frontend', 'backend']);
+    expect([...owned].sort()).toEqual(['backend', 'frontend']);
+  });
+});
+
+describe('resolveNamespacedItems keeps the exact directory when both spellings exist', () => {
+  /**
+   * Regression: with `Frontend/` and `frontend/` both on disk, folding accepted
+   * both, they competed for the one declaration, and the resolution became a
+   * `two-namespaces` conflict where it used to deliver the exact copy. A team
+   * on a case-sensitive filesystem would have stopped receiving the skill.
+   */
+  it('delivers the exact copy instead of reporting a conflict', () => {
+    const result = resolveNamespacedItems(
+      [
+        candidate('tdd', 'Frontend', 'skills/Frontend/tdd'),
+        candidate('tdd', 'frontend', 'skills/frontend/tdd'),
+      ],
+      ['Frontend'],
+    );
+
+    expect(result.kind).toBe('resolved');
+    if (result.kind !== 'resolved') return;
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]?.namespace).toBe('Frontend');
+    expect(result.items[0]?.source).toBe('skills/Frontend/tdd');
+  });
+
+  it('delivers the folded copy when it is the only one', () => {
+    const result = resolveNamespacedItems([candidate('tdd', 'frontend', 'skills/frontend/tdd')], ['Frontend']);
+
+    expect(result.kind).toBe('resolved');
+    expect(result.kind === 'resolved' && result.items[0]?.namespace).toBe('frontend');
+  });
+
+  it('still reports a conflict when two genuinely different active namespaces hold one name', () => {
+    const result = resolveNamespacedItems(
+      [candidate('tdd', 'alpha', 'skills/alpha/tdd'), candidate('tdd', 'beta', 'skills/beta/tdd')],
+      ['alpha', 'beta'],
+    );
+
+    expect(result.kind).toBe('conflict');
+  });
+
+  it('keeps the exact copy replacing the root item when a folded sibling is present', () => {
+    const result = resolveNamespacedItems(
+      [
+        candidate('tdd', null, 'skills/tdd'),
+        candidate('tdd', 'Frontend', 'skills/Frontend/tdd'),
+        candidate('tdd', 'frontend', 'skills/frontend/tdd'),
+      ],
+      ['Frontend'],
+    );
+
+    expect(result.kind).toBe('resolved');
+    if (result.kind !== 'resolved') return;
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]?.namespace).toBe('Frontend');
+    expect(result.items[0]?.replaces?.namespace).toBeNull();
   });
 });

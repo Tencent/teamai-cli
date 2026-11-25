@@ -8,7 +8,7 @@
 import path from 'node:path';
 import { loadStateForScope, loadTeamConfig } from '../config.js';
 import {
-  itemCandidate, isActiveNamespace, resolveNamespacedItems, resolveRootOverrides,
+  itemCandidate, declaredDirectories, isActiveNamespace, resolveNamespacedItems, resolveRootOverrides,
   type NamespaceCandidate, type NamespaceConflict, type NamespaceOverride,
 } from '../namespace-resolver.js';
 import { placedResourcePath } from '../push-namespaces.js';
@@ -65,13 +65,22 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
     await listDirs(path.join(localConfig.repo.localPath, 'skills', namespaceDir(skillDirs, namespace)));
   }
 
-  for (const namespace of activeNamespaces.skills) {
-    for (const skill of skills) if (isActiveNamespace([namespace], skill.namespace ?? '')) activeSkillNames.add(skill.name);
+  // The directory each active declaration owns, exact spelling first: with both
+  // `skills/Frontend/` and `skills/frontend/` present, `Frontend` owns the
+  // former and the folded sibling is neither delivered nor counted as active.
+  const activeSkillDirs = new Set(
+    activeNamespaces.skills.map((namespace) => namespaceDir(skillDirs, namespace)),
+  );
+
+  for (const skill of skills) {
+    if (skill.namespace !== undefined && activeSkillDirs.has(skill.namespace)) activeSkillNames.add(skill.name);
   }
 
   for (const namespace of inactiveSkillNamespaces) {
+    const directory = namespaceDir(skillDirs, namespace);
+
     for (const skill of skills) {
-      if (!isActiveNamespace([namespace], skill.namespace ?? '')) continue;
+      if (skill.namespace !== directory) continue;
       inactiveSkillNames.add(skill.name);
 
       // Record the source so cleanup can verify the deployed copy is
@@ -225,11 +234,11 @@ export async function scanRoleAwareSkills(
   const skills = candidates ?? await teamSkills(localConfig);
   // A declared namespace names its directory case-folded, so `skills: [Frontend]`
   // reaches a `skills/frontend/` directory on a case-sensitive filesystem too.
-  // Two directories that differ only by case match the same declaration; the
-  // resolver reports them as the conflict they are.
-  const items = namespaces.skills.flatMap((namespace) =>
-    skills.filter((item) => item.namespace !== undefined && isActiveNamespace([namespace], item.namespace)),
-  );
+  // The exact spelling still wins when both exist, so the folded sibling is left
+  // out rather than competing with it for the one declaration.
+  const directories = [...new Set(skills.flatMap((item) => (item.namespace === undefined ? [] : [item.namespace])))];
+  const owned = declaredDirectories(namespaces.skills, directories);
+  const items = skills.filter((item) => item.namespace !== undefined && owned.has(item.namespace));
   const resolution = resolveNamespacedItems(items.map(itemCandidate), namespaces.skills);
 
   if (resolution.kind === 'conflict') return { kind: 'conflict', type: 'skill', conflict: resolution };

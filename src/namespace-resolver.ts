@@ -57,6 +57,45 @@ export function activeNamespaceRank(active: readonly string[], namespace: string
   return index < 0 ? 0 : index + 1;
 }
 
+/**
+ * The directory each active declaration actually owns among `directories`.
+ *
+ * `isActiveNamespace` answers whether a directory may be delivered at all; this
+ * answers which one directory a declaration names. The distinction matters when
+ * two directories differ only by case: `isActiveNamespace` accepts both, which
+ * would make them compete for one declaration and turn a delivery that used to
+ * succeed into a `two-namespaces` conflict. The exact spelling wins, as it does
+ * in `namespaced-entries.namespaceDir`, and the folded sibling is left out.
+ *
+ * A declaration no directory answers owns none, which is what `pull` already
+ * reports when it lists the namespace and finds nothing.
+ */
+export function declaredDirectories(
+  active: readonly string[],
+  directories: readonly string[],
+): Set<string> {
+  const present = new Set(directories);
+  // Sorted so which folded sibling a declaration claims cannot depend on the
+  // order the filesystem happened to list them in.
+  const sorted = [...present].sort(compareStrings);
+  const owned = new Set<string>();
+
+  for (const declared of active) {
+    if (present.has(declared)) {
+      owned.add(declared);
+
+      continue;
+    }
+
+    const folded = caseFoldKey(declared);
+    const match = sorted.find((directory) => caseFoldKey(directory) === folded);
+
+    if (match !== undefined) owned.add(match);
+  }
+
+  return owned;
+}
+
 /** One named item read from the team repo. `namespace: null` is the root. */
 export interface NamespaceCandidate<T> {
   readonly name: string;
@@ -115,8 +154,16 @@ export function resolveNamespacedItems<T>(
 
   const byName = new Map<string, NamespaceCandidate<T>[]>();
 
+  // One directory per declaration, exact spelling first: two directories that
+  // differ only by case must not both answer for one declaration, or the item
+  // they share would be reported as a `two-namespaces` conflict instead of
+  // delivering the exact copy, which is what happened before folding matched.
+  const owned = declaredDirectories(active, candidates.flatMap((candidate) => (
+    candidate.namespace === null ? [] : [candidate.namespace]
+  )));
+
   for (const candidate of candidates) {
-    if (candidate.namespace !== null && !isActiveNamespace(active, candidate.namespace)) continue;
+    if (candidate.namespace !== null && !owned.has(candidate.namespace)) continue;
     const group = byName.get(candidate.name);
 
     if (group) group.push(candidate);
@@ -186,8 +233,14 @@ export function resolveRootOverrides<T>(
     candidate.namespace === null ? [[candidate.name, candidate.source] as const] : []
   )));
 
+  // One directory per declaration here too: a folded sibling is not delivered,
+  // so it must not report itself as replacing a root item.
+  const owned = declaredDirectories(active, candidates.flatMap((candidate) => (
+    candidate.namespace === null ? [] : [candidate.namespace]
+  )));
+
   return candidates.flatMap((candidate) => {
-    const root = candidate.namespace !== null && isActiveNamespace(active, candidate.namespace)
+    const root = candidate.namespace !== null && owned.has(candidate.namespace)
       ? roots.get(candidate.name)
       : undefined;
 
