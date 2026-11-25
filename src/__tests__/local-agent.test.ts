@@ -82,6 +82,105 @@ function enrolled(...dirs: string[]): Record<string, unknown> {
   return Object.fromEntries(dirs.map((dir) => [dir, { projectId: 0, projectName: '__pending__', boundAt: '2026-01-01T00:00:00.000Z' }]));
 }
 
+describe('local-agent: Hermes A2A Gateway control', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  async function setupHermesControl(backend = 'local') {
+    const workspace = path.join(tmpDir, 'workspace');
+    const profile = path.join(tmpDir, 'hermes-profile');
+    const profileAlias = path.join(tmpDir, 'profile-link');
+    const workspaceAlias = path.join(tmpDir, 'workspace-link');
+    await fse.ensureDir(workspace);
+    await fse.ensureDir(profile);
+    await fse.symlink(workspace, workspaceAlias, 'junction');
+    await fse.symlink(profile, profileAlias, 'junction');
+    await fse.outputFile(path.join(profile, 'config.yaml'), `terminal:\n  backend: local\n  cwd: ${JSON.stringify(workspace)}\n`);
+    await setupConfig({}, 'sk-example-openclaw', 'https://control.example.com');
+    const configPath = path.join(tmpDir, '.teamai', 'local-agent', 'config.json');
+    const config = await fse.readJson(configPath);
+    await fse.writeJson(configPath, { ...config, agentTokens: { openclaw: 'sk-example-openclaw', hermes: 'sk-example-hermes' } });
+    vi.spyOn(os, 'platform').mockReturnValue('linux');
+    vi.stubEnv('HERMES_HOME', profileAlias);
+    vi.stubEnv('TERMINAL_ENV', backend);
+    vi.stubEnv('TERMINAL_CWD', workspaceAlias);
+    return { workspace, profile };
+  }
+
+  it('uses the canonical Hermes runtime and its own token to report and bind the workspace', async () => {
+    const { workspace, profile } = await setupHermesControl();
+    const globalSkill = path.join(profile, 'skills', 'global-example', 'SKILL.md');
+    await fse.outputFile(globalSkill, '---\nname: global-example\n---\n# Global example');
+    await fse.outputFile(path.join(workspace, '.agents', 'skills', 'local-example', 'SKILL.md'), '---\nname: local-label\n---\n# Local example');
+    if (process.platform !== 'win32') {
+      const link = path.join(workspace, '.agents', 'skills', 'linked', 'SKILL.md');
+      await fse.ensureDir(path.dirname(link));
+      await fse.symlink(globalSkill, link, 'file');
+    }
+    const calls: Array<{ route: string; body: Record<string, unknown>; authorization: string | null }> = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const route = new URL(String(input)).pathname;
+      const body: Record<string, unknown> = JSON.parse(String(init?.body));
+      calls.push({ route, body, authorization: new Headers(init?.headers).get('Authorization') });
+      if (route.endsWith('/sync')) return Response.json({ ok: true, a2a_workspace_binding: { id: 7, project_id: 4, workspace, runtime_profile: profile } });
+      return Response.json({ ok: true, instance_id: `local-hermes-${String(body.local_agent_id).slice(-6)}` });
+    });
+    const { runHermesA2aControl, loadLocalAgentConfig } = await import('../local-agent.js');
+
+    expect(await runHermesA2aControl(true)).toBe(true);
+    expect(calls.map(({ route }) => route)).toEqual([
+      '/api/local-agent/report', '/api/local-agent/sync', '/api/local-agent/report', '/api/local-agent/commands/ack',
+      '/api/local-agent/sync',
+    ]);
+    expect(calls.every(({ authorization }) => authorization === 'Bearer sk-example-hermes')).toBe(true);
+    expect(calls[0]!.body).toMatchObject({
+      agent_type: 'hermes', runtime_type: 'hermes', runtime_profile: profile, default_workspace: workspace,
+      workspaces: [{ path: workspace, ide_type: 'hermes', skills: [{ slug: 'local-example', display_name: 'local-label' }] }],
+    });
+    expect(calls[1]!.body).toMatchObject({ agent_type: 'hermes', a2a_control: true });
+    expect(calls[2]!.body).toMatchObject({
+      a2a_binding_task_id: 7, runtime_profile: profile,
+      workspaces: [{ path: workspace, ide_type: 'hermes', project_id: 4, skills: [{ slug: 'local-example' }] }],
+    });
+    expect(calls[3]!.body).toMatchObject({ id: 7, type: 'bind_a2a_workspace', status: 'success' });
+    expect((await loadLocalAgentConfig())?.workspaceBindings[workspace]).toMatchObject({ projectId: 4, ideType: 'hermes' });
+
+    await fse.remove(path.join(workspace, '.agents', 'skills', 'local-example'));
+    expect(await runHermesA2aControl(true)).toBe(true);
+    expect(calls[5]!.body).toMatchObject({ workspaces: [{ path: workspace, skills: [] }] });
+  });
+
+  it('refuses a task for another Hermes profile even when the workspace path matches', async () => {
+    const { workspace } = await setupHermesControl();
+    const binding = { id: 7, project_id: 4, workspace, runtime_profile: path.join(tmpDir, 'previous-profile') };
+    const fetch = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(Response.json({ ok: true, a2a_workspace_binding: binding }))
+      .mockResolvedValueOnce(Response.json({ ok: true }));
+    const { runHermesA2aControl, loadLocalAgentConfig } = await import('../local-agent.js');
+
+    expect(await runHermesA2aControl(false)).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toMatchObject({
+      id: 7, status: 'failed', error: 'default_workspace_changed',
+    });
+    expect((await loadLocalAgentConfig())?.workspaceBindings).toEqual({});
+  });
+
+  it('clears the default workspace when the Hermes terminal stops running locally', async () => {
+    await setupHermesControl('docker');
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const { local_agent_id } = JSON.parse(String(init?.body));
+      return Response.json({ instance_id: `local-hermes-${String(local_agent_id).slice(-6)}` });
+    });
+    const { runHermesA2aControl } = await import('../local-agent.js');
+
+    expect(await runHermesA2aControl(true)).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({
+      agent_type: 'hermes', runtime_type: 'hermes', default_workspace: '', runtime_profile: '',
+    });
+  });
+});
+
 describe('local-agent: OpenClaw A2A Gateway control', () => {
   const reportedInstance = (localAgentId: unknown) => ({ instance_id: `local-openclaw-${String(localAgentId).toLowerCase().slice(-6)}` });
 

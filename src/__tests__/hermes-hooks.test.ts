@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import YAML from 'yaml';
 import * as builtinHooks from '../builtin-hooks.js';
+import * as localAgent from '../local-agent.js';
 import { injectHermesHooks, removeHermesHooks, hasHermesHooks, getReportScriptPath, getInstructionsPluginDir, getTeamHookScriptPath, lastInstructionsSection } from '../hermes-hooks.js';
 import { bridgedTeamHookFile } from '../bridged-team-hooks.js';
 import { shellQuoteValue } from '../utils/shell-profile.js';
@@ -26,6 +27,54 @@ afterEach(() => {
 });
 
 describe('injectHermesHooks', () => {
+  it('installs a Gateway startup hook only for eligible HTTP enrollment and removes its own files', async () => {
+    const config = vi.spyOn(localAgent, 'loadLocalAgentConfig').mockResolvedValue({ endpoint: 'http://fixture.local', token: 'sk-fixture', workspaceBindings: {} });
+    const eligible = vi.spyOn(localAgent, 'canRunHermesA2aControl').mockReturnValue(false);
+    const hook = path.join(tmpDir, 'hooks', 'teamai-a2a-control');
+    const manifest = path.join(hook, 'HOOK.yaml');
+    const handler = path.join(hook, 'handler.py');
+    try {
+      await injectHermesHooks();
+      expect(fs.existsSync(manifest)).toBe(false);
+
+      eligible.mockReturnValue(true);
+      await injectHermesHooks();
+      expect(YAML.parse(fs.readFileSync(manifest, 'utf8')).events).toEqual(['gateway:startup']);
+      const code = fs.readFileSync(handler, 'utf8');
+      expect(code).toContain('"source", "a2a-control", "--agent", "hermes"');
+      expect(code).toContain('HERMES_HOME=');
+      expect(code).not.toContain('sk-fixture');
+      expect(code).not.toContain('fixture.local');
+      const note = path.join(hook, 'README.txt');
+      fs.writeFileSync(note, 'member data');
+      await removeHermesHooks();
+      expect(fs.existsSync(manifest)).toBe(false);
+      expect(fs.existsSync(handler)).toBe(false);
+      expect(fs.readFileSync(note, 'utf8')).toBe('member data');
+    } finally {
+      eligible.mockRestore();
+      config.mockRestore();
+    }
+  });
+
+  it('preserves a member-defined Gateway startup hook with the same name', async () => {
+    const config = vi.spyOn(localAgent, 'loadLocalAgentConfig').mockResolvedValue({ endpoint: 'http://fixture.local', token: 'sk-fixture', workspaceBindings: {} });
+    const eligible = vi.spyOn(localAgent, 'canRunHermesA2aControl').mockReturnValue(true);
+    const hook = path.join(tmpDir, 'hooks', 'teamai-a2a-control');
+    const handler = path.join(hook, 'handler.py');
+    fs.mkdirSync(hook, { recursive: true });
+    fs.writeFileSync(handler, 'member data');
+    try {
+      await injectHermesHooks();
+      await removeHermesHooks();
+      expect(fs.existsSync(path.join(hook, 'HOOK.yaml'))).toBe(false);
+      expect(fs.readFileSync(handler, 'utf8')).toBe('member data');
+    } finally {
+      eligible.mockRestore();
+      config.mockRestore();
+    }
+  });
+
   it('warns and keeps the installed files when the CLI entry cannot be resolved', async () => {
     await injectHermesHooks();
     const files = [getReportScriptPath(), path.join(tmpDir, 'config.yaml'), path.join(tmpDir, 'shell-hooks-allowlist.json'),
