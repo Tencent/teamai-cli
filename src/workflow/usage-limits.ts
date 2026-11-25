@@ -45,8 +45,8 @@ function wallMinutes({ year, month, day, hour, minute }: Wall): number {
   return Date.UTC(year, month - 1, day, hour, minute) / 60_000;
 }
 
-/** The instant whose wall clock in `zone` reads `wall`, through the zone's offset at that instant, not at another. */
-function instantOf(wall: Wall, zone: string): number | undefined {
+/** The next matching instant, or the last match if the wall time has already passed. */
+function instantOf(wall: Wall, zone: string, now: number): number | undefined {
   const asUtc = wallMinutes(wall) * 60_000;
 
   const offsetAt = (at: number): number | undefined => {
@@ -55,12 +55,18 @@ function instantOf(wall: Wall, zone: string): number | undefined {
     return there && wallMinutes(there) * 60_000 - Math.floor(at / 60_000) * 60_000;
   };
 
-  const guess = offsetAt(asUtc);
+  // Sampling a day on either side sees both offsets even when the transition is not a full hour.
+  const day = 86_400_000;
+  const offsets = new Set([offsetAt(asUtc - day), offsetAt(asUtc + day)]);
 
-  if (guess === undefined) return undefined;
-  const offset = offsetAt(asUtc - guess);
+  const instants = [...offsets].flatMap((offset) => {
+    if (offset === undefined) return [];
+    const at = asUtc - offset;
 
-  return offset === undefined ? undefined : asUtc - offset;
+    return offsetAt(at) === offset ? [at] : [];
+  }).sort((a, b) => a - b);
+
+  return instants.find((at) => at > now) ?? instants.at(-1);
 }
 
 /** The hour of a 12-hour clock with its `meridiem`, or of a 24-hour one without. */
@@ -81,13 +87,13 @@ function nextWall({ now, zone, hour, minute, date }: { now: number; zone: string
 
   if (!current) return undefined;
   const target: Wall = { year: date?.year ?? current.year, month: date?.month ?? current.month, day: date?.day ?? current.day, hour, minute };
-  const at = instantOf(target, zone);
+  const at = instantOf(target, zone, now);
 
   if (at === undefined || at > now) return at;
 
-  if (date === undefined) return instantOf({ ...target, day: target.day + 1 }, zone);
+  if (date === undefined) return instantOf({ ...target, day: target.day + 1 }, zone, now);
 
-  return date.year === undefined ? instantOf({ ...target, year: target.year + 1 }, zone) : at;
+  return date.year === undefined ? instantOf({ ...target, year: target.year + 1 }, zone, now) : at;
 }
 
 const TIME = String.raw`(\d{1,2})(?::(\d{2}))?\s*(am|pm)?`;
