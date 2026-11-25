@@ -1318,6 +1318,9 @@ async function checkoutExplicitBranch(
   await git.checkoutLocalBranch(branchName);
 }
 
+/** Shared files a pending edit is merged into on the destination branch; any other file is copied over it. */
+const MERGED_SHARED_FILES = ['teamai.yaml', 'env/env.yaml'] as const;
+
 /**
  * Prepare the destination branch `teamai push --branch` named, before callers
  * copy the resources to push into the working tree. Fetches origin, checks a
@@ -1351,21 +1354,27 @@ export async function prepareExplicitBranch(localPath: string, branchName: strin
       .trim().split(/\s+/).map((count) => Number.parseInt(count, 10))
     : [0, 0];
 
-  const hasConfigEdit = (localExists || originExists)
-    && (await git.raw(['status', '--porcelain', '--', 'teamai.yaml'])).trim() !== '';
+  // Shared files whose pending edit is merged into the destination, not copied over it.
+  const prefix = localExists || originExists ? (await git.raw(['rev-parse', '--show-prefix'])).trimEnd() : '';
+  const editedFiles: Array<{ name: string; configPath: string; base: Awaited<ReturnType<typeof readFileAtRev>> }> = [];
 
-  let source = hasConfigEdit ? await git.revparse(['--abbrev-ref', 'HEAD']) : null;
+  if (localExists || originExists) {
+    for (const name of MERGED_SHARED_FILES) {
+      if ((await git.raw(['status', '--porcelain', '--', name])).trim() === '') continue;
+      const configPath = `${prefix}${name}`;
+      editedFiles.push({ name, configPath, base: await readFileAtRev(localPath, 'HEAD', configPath) });
+    }
+  }
+
+  let source = editedFiles.length ? await git.revparse(['--abbrev-ref', 'HEAD']) : null;
 
   if (source === 'HEAD') source = await git.revparse(['HEAD']);
-
-  const configPath = hasConfigEdit ? `${(await git.raw(['rev-parse', '--show-prefix'])).trimEnd()}teamai.yaml` : null;
-  const base = configPath === null ? null : await readFileAtRev(localPath, 'HEAD', configPath);
 
   // Pending config or env edits may already be in the working tree; a checkout
   // to the destination must not lose them, and its files must not block it.
   const carried = await carryWorkingTree(git);
 
-  let mergedConfig: string | undefined;
+  const mergedFiles = new Map<string, string>();
 
   try {
     if (!localExists) {
@@ -1390,7 +1399,10 @@ export async function prepareExplicitBranch(localPath: string, branchName: strin
       }
     }
 
-    if (carried && configPath && base && source && carried.entries.some((entry) => entry.relative === configPath && entry.present)) {
+    for (const { name, configPath, base } of editedFiles) {
+      const entry = carried?.entries.find((candidate) => candidate.relative === configPath);
+
+      if (!carried || !source || !entry) continue;
       const backup = path.join(carried.root, 'files', configPath);
 
       try {
@@ -1398,28 +1410,38 @@ export async function prepareExplicitBranch(localPath: string, branchName: strin
         const baseText = 'text' in base ? base.text : null;
         const destinationText = 'text' in destination ? destination.text : null;
 
-        if (baseText !== destinationText) {
-          const file = await fse.lstat(destinationText === null ? backup : path.join(localPath, 'teamai.yaml'));
+        if (!entry.present) {
+          if (destinationText !== null && baseText !== destinationText) {
+            throw new Error('The destination changed the file you deleted.');
+          }
 
-          if (!file.isFile() || !(await fse.lstat(backup)).isFile()) throw new Error('teamai.yaml is not a regular file.');
+          continue;
+        }
+
+        if (baseText !== destinationText) {
+          const file = await fse.lstat(destinationText === null ? backup : path.join(localPath, ...name.split('/')));
+
+          if (!file.isFile() || !(await fse.lstat(backup)).isFile()) throw new Error(`${name} is not a regular file.`);
 
           const pending = await readRegularFile(backup, 'utf8');
           const merged = mergeTeamConfig(baseText, pending, destinationText);
-          const mergedFile = path.join(carried.root, 'merged-teamai.yaml');
+          const mergedFile = path.join(carried.root, `merged-${name.replaceAll('/', '-')}`);
           await fse.writeFile(mergedFile, merged, { encoding: 'utf8', mode: file.mode });
-          mergedConfig = mergedFile;
+          mergedFiles.set(configPath, mergedFile);
         }
       } catch (error) {
+        // Aborting: earlier merged files must not be restored onto the source branch.
+        mergedFiles.clear();
         await git.checkout([source]);
         throw new Error(
-          `Cannot apply teamai.yaml to ${branchName}: ${error instanceof Error ? error.message : String(error)} `
+          `Cannot apply ${name} to ${branchName}: ${error instanceof Error ? error.message : String(error)} `
           + `Your edit is still in the team repo. Check out the destination and reapply it there, or push with --branch <new name>.`,
           { cause: error },
         );
       }
     }
   } finally {
-    await restoreWorkingTree(git, carried, configPath, mergedConfig);
+    await restoreWorkingTree(git, carried, mergedFiles);
   }
 }
 
@@ -1502,8 +1524,7 @@ async function carryWorkingTree(git: SimpleGit): Promise<CarriedWorkingTree | nu
 async function restoreWorkingTree(
   git: SimpleGit,
   carried: CarriedWorkingTree | null,
-  configPath: string | null,
-  mergedConfig: string | undefined,
+  mergedFiles: ReadonlyMap<string, string>,
 ): Promise<void> {
   if (carried === null) return;
 
@@ -1516,7 +1537,7 @@ async function restoreWorkingTree(
       const target = path.join(top, relative);
 
       if (present) {
-        const source = relative === configPath && mergedConfig ? mergedConfig : path.join(carried.root, 'files', relative);
+        const source = mergedFiles.get(relative) ?? path.join(carried.root, 'files', relative);
         await copyRegularTree(source, target, { keepTimes: true });
       } else {
         await fse.remove(target);
