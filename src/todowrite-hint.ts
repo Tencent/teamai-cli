@@ -5,8 +5,8 @@ import { z } from 'zod';
 import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js';
 import { log } from '@teamai/shared/log';
 import { deriveSessionId } from './utils/session-id.js';
-import { getUserHome } from '@teamai/shared/home';
 import { DefaultFolders, type DefaultFolder, type TextLanguage } from './default-folders.js';
+import { getSessionStateDir } from './types.js';
 
 // ─── TodoWrite hint data flow ───────────────────────────
 //
@@ -42,12 +42,7 @@ interface HookInput {
  * quality cache under ~/.teamai/sessions/.
  */
 export function getTodoWriteHintCachePath(sessionId: string): string {
-  return path.join(
-    getUserHome(),
-    '.teamai',
-    'sessions',
-    `${sessionId}-todowrite-hint.json`,
-  );
+  return path.join(getSessionStateDir(), `${sessionId}-todowrite-hint.json`);
 }
 
 function readCache(sessionId: string): TodoWriteHintCache | null {

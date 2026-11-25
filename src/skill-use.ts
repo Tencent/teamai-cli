@@ -27,7 +27,7 @@ import type { ContentBlock, Message, Session } from '@teamai/tool-core/sessions/
 import { typedText } from '@teamai/tool-core/sessions/title';
 import { type PromptForm, type SkillLoad } from '@teamai/tool-core/definition';
 import { baseDescriptorOf } from './tool-registry.js';
-import { SKILL_NAME_CHARS, type LocalConfig } from './types.js';
+import { getSessionStateDir, SKILL_NAME_CHARS, type LocalConfig } from './types.js';
 import { withFileLock } from './update.js';
 import {
   appendUsageEvent,
@@ -533,7 +533,7 @@ type SkillClaims = z.infer<typeof SkillClaimsSchema>;
 
 function claimsPath(sessionId: string): string {
   // Ends in `.json`, so cleanupStaleSessions sweeps it with the session's other files.
-  return path.join(getUserHome(), '.teamai', 'sessions', `${sanitizeSessionId(sessionId)}-skills.json`);
+  return path.join(getSessionStateDir(), `${sanitizeSessionId(sessionId)}-skills.json`);
 }
 
 /** A prompt-submit and the detached post-tool-use hooks of its turn can claim at once. */

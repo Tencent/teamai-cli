@@ -633,6 +633,84 @@ describe('uninstall', () => {
     expect(await fse.pathExists(runtimeState), 'runtime state').toBe(false);
   });
 
+  it('removes the dashboard records, session state and state.json the last uninstall used to leave, and keeps debug.log', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    const dashboard = path.join(teamaiHome, 'dashboard');
+    const sessions = path.join(teamaiHome, 'sessions');
+    const state = path.join(teamaiHome, 'state.json');
+    const debugLog = path.join(teamaiHome, 'debug.log');
+    await fse.outputFile(path.join(dashboard, 'events.jsonl'), '{"type":"stop"}\n');
+    await fse.outputFile(path.join(dashboard, 'requests.jsonl'), '{"id":"r1"}\n');
+    await fse.outputFile(path.join(dashboard, 'session-owners.jsonl'), '{"sessionId":"s1"}\n');
+    await fse.outputFile(path.join(dashboard, 'reported-interventions.json'), '{}\n');
+    await fse.outputFile(path.join(sessions, 'abc-skills.json'), '{}\n');
+    await fse.outputFile(path.join(sessions, 'abc.http-enrolment.json'), '{}\n');
+    await fse.outputFile(state, '{"kept":false}\n');
+    await fse.outputFile(debugLog, 'uninstall failed earlier\n');
+    const { bridgedTeamHookDir } = await import('../bridged-team-hooks.js');
+    await fse.ensureDir(bridgedTeamHookDir());
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot: homeDir,
+      dataHome: path.join(teamaiHome, 'projects', 'current'),
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig() });
+
+    await uninstall({ force: true });
+
+    expect(await fse.pathExists(dashboard)).toBe(false);
+    expect(await fse.pathExists(sessions)).toBe(false);
+    expect(await fse.pathExists(state)).toBe(false);
+    expect(await fse.pathExists(bridgedTeamHookDir())).toBe(false);
+    expect(await fse.readFile(debugLog, 'utf8')).toBe('uninstall failed earlier\n');
+  });
+
+  it('keeps the dashboard records, session state, state.json and team-hooks while another install still uses them', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    await installAnotherProject(homeDir, tmpDir);
+    const events = path.join(teamaiHome, 'dashboard', 'events.jsonl');
+    const skills = path.join(teamaiHome, 'sessions', 'abc-skills.json');
+    const state = path.join(teamaiHome, 'state.json');
+    const { bridgedTeamHookDir } = await import('../bridged-team-hooks.js');
+    await fse.outputFile(events, '{"type":"stop"}\n');
+    await fse.outputFile(skills, '{}\n');
+    await fse.outputFile(state, '{"kept":true}\n');
+    await fse.ensureDir(bridgedTeamHookDir());
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot: homeDir,
+      dataHome: path.join(teamaiHome, 'projects', 'current'),
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig() });
+
+    await uninstall({ force: true });
+
+    expect(await fse.readFile(events, 'utf8')).toBe('{"type":"stop"}\n');
+    expect(await fse.readFile(skills, 'utf8')).toBe('{}\n');
+    expect(await fse.readFile(state, 'utf8')).toBe('{"kept":true}\n');
+    expect(await fse.pathExists(bridgedTeamHookDir())).toBe(true);
+  });
+
+  it('leaves a team-hooks folder that still holds a file', async () => {
+    const { homeDir, repoPath, teamaiHome } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    const { bridgedTeamHookDir } = await import('../bridged-team-hooks.js');
+    const file = path.join(bridgedTeamHookDir(), 'member.json');
+    await fse.outputFile(file, '{}\n');
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot: homeDir,
+      dataHome: path.join(teamaiHome, 'projects', 'current'),
+    });
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig: makeTeamConfig() });
+
+    await uninstall({ force: true });
+
+    expect(await fse.readFile(file, 'utf8')).toBe('{}\n');
+  });
+
   /**
    * Stands in for the sandbox runtime this install ships: it records what it was asked, in which HOME, and whether its
    * journal under `runtimeState` was still there, then lists one warm image for a preview, or says it removed one and
