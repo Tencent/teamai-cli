@@ -23,7 +23,7 @@ import { filterByTags, loadTagsConfig } from '../utils/tags.js';
 import { warnOnce } from '../utils/warn-once.js';
 import { deliveredMembers, unionMemberItems } from '../workspace-children.js';
 import { RECALL_AGENT } from '../builtin-agents.js';
-import { resolveAgentsForDirectory } from './agents.js';
+import { ownedAgentDirectories, resolveAgentsForDirectory } from './agents.js';
 import { resolveDocsForDirectory } from './docs.js';
 import { getHandler } from './index.js';
 import { readTeamSkills, teamSkillItem } from './skills.js';
@@ -98,25 +98,24 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
  * Filter rules by the user's active knowledge namespaces.
  *
  * Rules whose name starts with a namespace path (e.g. "common/coding-style")
- * are filtered: only those in activeKnowledgeNamespaces pass through.
+ * are filtered: only those in a directory the namespace owns pass through.
  * Root-level rules (no "/" in name) are always included.
+ *
+ * `directories` is the rule directories on disk, read by the caller. Ownership
+ * is resolved from it rather than from the rules alone, because a
+ * `rules/Frontend/` holding no rule still owns the declaration: deriving the set
+ * from the rules found would let `rules/frontend/` deliver its instructions in
+ * its place.
  *
  * When knowledgeNamespaces is null (no role configured), all rules pass through.
  */
 export function filterRulesByKnowledgeNamespaces(
   rules: ResourceItem[],
   knowledgeNamespaces: string[] | null,
+  directories: readonly string[],
 ): ResourceItem[] {
   if (!knowledgeNamespaces) return rules;
 
-  // One directory per declaration: with rules in both `rules/Frontend/` and
-  // `rules/frontend/`, only the declared spelling is delivered. Folding alone
-  // would hand the member instructions from a directory nothing selected.
-  const directories = [...new Set(rules.flatMap((rule) => {
-    const slash = rule.name.indexOf('/');
-
-    return slash === -1 ? [] : [rule.name.slice(0, slash)];
-  }))];
   const owned = declaredDirectories(knowledgeNamespaces, directories);
 
   return rules.filter((rule) => {
@@ -184,6 +183,7 @@ export function filterAgentsByNamespaces(
   agents: ResourceItem[],
   agentNamespaces: string[] | null,
   placedAgents?: Record<string, string>,
+  owned?: ReadonlySet<string>,
 ): DesiredItems {
   if (agentNamespaces === null) {
     // Every agent ships, so each namespace counts as active here, ranked in
@@ -205,7 +205,7 @@ export function filterAgentsByNamespaces(
     return { kind: 'resolved', items: agents, overrides: [] };
   }
 
-  const resolution = resolveAgentsForDirectory(agents, agentNamespaces, placedAgents);
+  const resolution = resolveAgentsForDirectory(agents, agentNamespaces, placedAgents, owned);
 
   if (resolution.kind === 'conflict') return { kind: 'conflict', type: 'agent', conflict: resolution };
   const delivered = new Set(resolution.items.map((item) => item.value));
@@ -652,8 +652,9 @@ export async function resolveDesiredRules(
 
   // The tag channel first: only a namespace rule this member receives
   // replaces the root rule of its name.
+  const ruleDirs = knowledgeNs ? await listDirs(path.join(localConfig.repo.localPath, 'rules')) : [];
   const { included, skipped } = filterByTags(
-    filterRulesByKnowledgeNamespaces(allItems, knowledgeNs), tagsConfig, usesMemberFilters(localConfig) ? localConfig.subscribedTags : undefined, 'rules',
+    filterRulesByKnowledgeNamespaces(allItems, knowledgeNs, ruleDirs), tagsConfig, usesMemberFilters(localConfig) ? localConfig.subscribedTags : undefined, 'rules',
   );
 
   if (!knowledgeNs) return { items: included, overrides: [], replaced: [], skippedByTags: skipped.length };
@@ -768,11 +769,13 @@ export async function resolveTeamAgents(
   if (members) return resolveWorkspaceAgents(teamConfig, members);
   const items = await getHandler('agents').scanTeamForPull(teamConfig, localConfig);
   const { placedAgents } = await loadStateForScope(localConfig);
+  const agentNs = roleContext ? roleContext.activeNamespaces.agents : null;
 
   return filterAgentsByNamespaces(
     items,
-    roleContext ? roleContext.activeNamespaces.agents : null,
+    agentNs,
     placedAgents,
+    await ownedAgentDirectories(localConfig, agentNs),
   );
 }
 

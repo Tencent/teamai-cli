@@ -214,19 +214,31 @@ describe('filterRulesByKnowledgeNamespaces keeps one directory per declaration',
     const kept = filterRulesByKnowledgeNamespaces(
       [rule('Frontend/style'), rule('frontend/style'), rule('backend/style'), rule('root-rule')],
       ['Frontend'],
+      ['Frontend', 'frontend', 'backend'],
     );
 
     expect(kept.map((item) => item.name)).toEqual(['Frontend/style', 'root-rule']);
   });
 
   it('delivers a folded directory when the declaration has no exact one', () => {
-    const kept = filterRulesByKnowledgeNamespaces([rule('frontend/style'), rule('backend/style')], ['Frontend']);
+    const kept = filterRulesByKnowledgeNamespaces([rule('frontend/style'), rule('backend/style')], ['Frontend'], ['frontend', 'backend']);
 
     expect(kept.map((item) => item.name)).toEqual(['frontend/style']);
   });
 
+  /**
+   * Regression: the directory list was derived from the rules found, so an empty
+   * `rules/Frontend/` did not appear and the declaration fell through to
+   * `rules/frontend/`, delivering instructions nothing had selected.
+   */
+  it('does not deliver the folded sibling when the exact directory exists but is empty', () => {
+    const kept = filterRulesByKnowledgeNamespaces([rule('frontend/style')], ['Frontend'], ['Frontend', 'frontend']);
+
+    expect(kept).toEqual([]);
+  });
+
   it('always keeps root rules', () => {
-    const kept = filterRulesByKnowledgeNamespaces([rule('root-rule')], ['Frontend']);
+    const kept = filterRulesByKnowledgeNamespaces([rule('root-rule')], ['Frontend'], ['Frontend']);
 
     expect(kept.map((item) => item.name)).toEqual(['root-rule']);
   });
@@ -234,7 +246,7 @@ describe('filterRulesByKnowledgeNamespaces keeps one directory per declaration',
   it('passes everything through when no namespace is active', () => {
     const rules = [rule('Frontend/style'), rule('backend/style'), rule('root-rule')];
 
-    expect(filterRulesByKnowledgeNamespaces(rules, null)).toEqual(rules);
+    expect(filterRulesByKnowledgeNamespaces(rules, null, [])).toEqual(rules);
   });
 });
 

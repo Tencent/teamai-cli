@@ -102,6 +102,25 @@ export interface AgentResourceItem extends ResourceItem {
  * Tools without an `agents` path in toolPaths are silently skipped.
  */
 /**
+ * The agent directories each active declaration owns, resolved from the whole
+ * `agents/` listing — the exact spelling first, one directory per declaration.
+ *
+ * Pull and push both need this, and both need it from the listing rather than
+ * per stem: a declaration owns its exact directory even when that directory
+ * holds a different agent, and the folded sibling is then nobody's.
+ */
+export async function ownedAgentDirectories(
+  localConfig: LocalConfig,
+  active: readonly string[] | null,
+): Promise<Set<string> | undefined> {
+  if (active === null) return undefined;
+
+  const dirs = await listTeamAgentDirs(path.join(localConfig.repo.localPath, 'agents'));
+
+  return declaredDirectories(active, dirs.flatMap(({ namespace }) => (namespace ? [namespace] : [])));
+}
+
+/**
  * The agents this directory should hold: the ones in an active namespace, plus
  * any this machine published into a namespace it does not activate — push lets
  * the author keep editing those through the placement record, so pull has to
@@ -111,6 +130,10 @@ export interface AgentResourceItem extends ResourceItem {
  * flattened, so two would collide on one filename, and the active one is the
  * agent deployed here. A root agent of the stem does not claim it: the
  * recorded agent replaces it, as an active namespace agent would (#707).
+ *
+ * `owned` is the set `ownedAgentDirectories` returns. Without it the namespace
+ * test falls back to folding alone, which lets a folded sibling claim a name the
+ * exact directory owns — so every caller that has a listing passes it.
  *
  * This is the candidate set, root agents included; `resolveAgentsForDirectory`
  * applies the namespace rule to it. Delivery and revocation both resolve
@@ -122,11 +145,16 @@ export function selectAgentsForDirectory(
   agents: ResourceItem[],
   activeNamespaces: string[] | null,
   placedAgents?: Record<string, string>,
+  owned?: ReadonlySet<string>,
 ): ResourceItem[] {
   if (activeNamespaces === null) return agents;
 
+  const inActive = (namespace: string): boolean => (
+    owned === undefined ? isActiveNamespace(activeNamespaces, namespace) : owned.has(namespace)
+  );
+
   const active = agents.filter(
-    (agent) => !agent.namespace || isActiveNamespace(activeNamespaces, agent.namespace),
+    (agent) => !agent.namespace || inActive(agent.namespace),
   );
 
   if (!placedAgents) return active;
@@ -155,11 +183,16 @@ export function resolveAgentsForDirectory(
   agents: ResourceItem[],
   activeNamespaces: string[],
   placedAgents?: Record<string, string>,
+  owned?: ReadonlySet<string>,
 ): NamespaceResolution<ResourceItem> {
-  const selected = selectAgentsForDirectory(agents, activeNamespaces, placedAgents);
+  const selected = selectAgentsForDirectory(agents, activeNamespaces, placedAgents, owned);
+
+  const inActive = (namespace: string): boolean => (
+    owned === undefined ? isActiveNamespace(activeNamespaces, namespace) : owned.has(namespace)
+  );
 
   const recorded = selected.flatMap((agent) => (
-    agent.namespace && !isActiveNamespace(activeNamespaces, agent.namespace) ? [agent.namespace] : []
+    agent.namespace && !inActive(agent.namespace) ? [agent.namespace] : []
   ));
 
   return resolveNamespacedItems(selected.map(itemCandidate), [...new Set([...activeNamespaces, ...recorded])]);
@@ -198,10 +231,13 @@ export class AgentsHandler extends ResourceHandler {
       placedResourcePath(placedAgents, 'agents', stem) ?? placedResourcePath(retiredPlacedAgents, 'agents', stem)
     )?.split('/')[1];
 
+    const owned = await ownedAgentDirectories(localConfig, activeNamespaces);
+
     const desired = new Set(selectAgentsForDirectory(
       await this.scanTeamForPull(teamConfig, localConfig),
       activeNamespaces,
       placedAgents,
+      owned,
     ).map((agent) => agent.name));
 
     for (const tombstone of tombstones) {
@@ -211,7 +247,9 @@ export class AgentsHandler extends ResourceHandler {
       // SAFETY: segments.length === 2 was checked just above, so both entries exist.
       const [namespace, stem] = segments as [string, string];
 
-      const deliveredHere = activeNamespaces === null || isActiveNamespace(activeNamespaces, namespace)
+      // The declaration owns one directory, so `fe` counts as delivered here
+      // only when it is that directory — not merely because it folds to one.
+      const deliveredHere = activeNamespaces === null || (owned !== undefined && owned.has(namespace))
         || placedIn(stem) === namespace;
 
       if (deliveredHere && !desired.has(stem)) removed.add(stem);
@@ -385,9 +423,19 @@ export class AgentsHandler extends ResourceHandler {
     const resolved = await resolveResourceNamespaces(localConfig);
     const activeNamespaces = resolved?.activeNamespaces.agents ?? null;
 
+    // One directory per declaration, resolved from the whole agents listing —
+    // not from the sources of the stem being pushed. A declaration owns its
+    // exact directory even when that directory holds a different agent, and the
+    // folded sibling is then nobody's: it must neither stand for this name nor
+    // claim it.
+    const ownedAgentDirs = activeNamespaces === null
+      ? null
+      : declaredDirectories(activeNamespaces, (await listTeamAgentDirs(teamAgentsDir))
+        .flatMap(({ namespace }) => (namespace ? [namespace] : [])));
+
     // Only a folder pull delivers here stands for this name: one in an inactive namespace leaves a root file's copy editable.
     const folderStems = new Set((await listTeamAgentFolders(teamAgentsDir))
-      .filter(({ namespace }) => activeNamespaces === null || namespace === undefined || isActiveNamespace(activeNamespaces, namespace))
+      .filter(({ namespace }) => ownedAgentDirs === null || namespace === undefined || ownedAgentDirs.has(namespace))
       .map(({ name }) => name));
 
     for (const tool of Object.keys(install.toolPaths)) {
@@ -468,16 +516,13 @@ export class AgentsHandler extends ResourceHandler {
       // that must not block it (#649 review). Letting the flag win outright
       // compared an active agent's rendering with the requested namespace's
       // file and overwrote it without an edit.
-      // Pull delivers one directory per declaration, so push must read the same
-      // directory: accepting every folded match made two sources compete for one
-      // declaration and reported an ambiguous agent, refusing to push an edit of
-      // the copy pull had just delivered.
-      const owned = activeNamespaces === null
-        ? null
-        : declaredDirectories(activeNamespaces, [...new Set(sources.flatMap((file) => (file.namespace ? [file.namespace] : [])))]);
-
+      // Pull delivers one directory per declaration, so push reads the same
+      // directory — the one resolved from the whole listing above, not one
+      // derived from this stem's own sources. A declaration whose exact
+      // directory exists but holds another agent still owns it, and the local
+      // file must not resolve to the folded sibling pull never delivered.
       const active = sources.filter(
-        (file) => owned === null || !file.namespace || owned.has(file.namespace),
+        (file) => ownedAgentDirs === null || !file.namespace || ownedAgentDirs.has(file.namespace),
       );
 
       const activeInNamespace = active.filter((file) => file.namespace);
