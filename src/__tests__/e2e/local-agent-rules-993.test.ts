@@ -162,7 +162,7 @@ describe('local-agent rules (#993)', () => {
     }
   }, 40_000);
 
-  it.skipIf(process.platform === 'win32')('binds and installs A2A through the Gateway worker CLI without a session', async () => {
+  it.skipIf(process.platform === 'win32').each(['http', 'https'])('binds and installs A2A over %s through the Gateway worker CLI without a session', async (scheme) => {
     const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-a2a-control-')));
     sandboxes.push(sandbox);
     const home = path.join(sandbox, 'home');
@@ -175,7 +175,7 @@ describe('local-agent rules (#993)', () => {
     const token = 'sk-test-control-openclaw';
     const deviceId = '0011223344ddeeff';
     const instanceId = 'local-openclaw-ddeeff';
-    const { cert, tls } = fixtureCertificate(sandbox);
+    const tlsFixture = scheme === 'https' ? fixtureCertificate(sandbox) : undefined;
     const roster = JSON.stringify([{ id: 'default-agent', workspace, isDefault: true }]);
     const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
     fs.mkdirSync(agentDir, { recursive: true });
@@ -186,18 +186,19 @@ describe('local-agent rules (#993)', () => {
     // The worker is Linux-only. The real CLI and its subprocesses run against
     // the same fixture on both Linux and macOS test hosts.
     fs.writeFileSync(preload, "require('node:os').platform = () => 'linux'; require('node:module').syncBuiltinESMExports();\n");
-    const calls: Array<{ pathname: string; body: Record<string, unknown>; authorization?: string }> = [];
+    const calls: Array<{ pathname: string; searchParams: URLSearchParams; body: Record<string, unknown>; authorization?: string }> = [];
     let applied = false;
 
-    const server = createHttpsServer(tls, async (req, res) => {
-      const { pathname, searchParams } = new URL(req.url ?? '/', 'https://127.0.0.1');
+    const server = tlsFixture ? createHttpsServer(tlsFixture.tls) : createServer();
+    server.on('request', async (req, res) => {
+      const { pathname, searchParams } = new URL(req.url ?? '/', `${scheme}://127.0.0.1`);
       let content = '';
 
       for await (const chunk of req) content += String(chunk);
 
       const body: Record<string, unknown> = JSON.parse(content || '{}');
 
-      calls.push({ pathname, body, authorization: req.headers.authorization });
+      calls.push({ pathname, searchParams, body, authorization: req.headers.authorization });
       res.setHeader('content-type', 'application/json');
 
       switch (pathname) {
@@ -226,14 +227,14 @@ describe('local-agent rules (#993)', () => {
       }
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const endpoint = `https://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const endpoint = `${scheme}://127.0.0.1:${(server.address() as { port: number }).port}`;
     const configPath = path.join(agentDir, 'config.json');
 
     try {
       fs.writeFileSync(configPath, JSON.stringify({ endpoint, agentTokens: { openclaw: token }, workspaceBindings: {} }));
       const result = await runCLI(['source', 'a2a-control', '--report'], {
         HOME: home,
-        NODE_EXTRA_CA_CERTS: cert,
+        ...(tlsFixture ? { NODE_EXTRA_CA_CERTS: tlsFixture.cert } : {}),
         NODE_OPTIONS: `--require=${preload}`,
         PATH: `${bin}${path.delimiter}${process.env.PATH}`,
         TEAMAI_LOCAL_AGENT_ID: deviceId,
@@ -245,6 +246,9 @@ describe('local-agent rules (#993)', () => {
         '/api/local-agent/commands/ack', '/api/local-agent/sync', '/api/local-agent/get-config',
       ]);
       expect(calls.every(({ authorization }) => authorization === `Bearer ${token}`)).toBe(true);
+      expect(Object.fromEntries(calls[5]!.searchParams)).toEqual({
+        config_type: 'a2a', instance_id: instanceId, ...(scheme === 'http' ? { scheme } : {}),
+      });
       expect(calls[0]!.body).toMatchObject({ default_workspace: workspace, workspaces: [expect.objectContaining({ path: workspace })] });
       expect(calls[0]!.body).not.toHaveProperty('a2a_binding_task_id');
       expect(calls[1]!.body).toMatchObject({ a2a_control: true, local_agent_id: deviceId });

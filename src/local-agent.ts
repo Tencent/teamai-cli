@@ -1429,8 +1429,16 @@ export function tokenForAgent(config: Pick<LocalAgentConfig, 'token' | 'agentTok
   return config.token ?? Object.values(config.agentTokens ?? {})[0];
 }
 
+function a2aEndpointScheme(endpoint: string): 'http' | 'https' | undefined {
+  if (endpoint.startsWith('http://')) return 'http';
+
+  if (endpoint.startsWith('https://')) return 'https';
+
+  return undefined;
+}
+
 export function canRunOpenClawA2aControl(config: LocalAgentConfig): boolean {
-  return os.platform() === 'linux' && config.endpoint.startsWith('https://')
+  return os.platform() === 'linux' && a2aEndpointScheme(config.endpoint) !== undefined
     && tokenForAgent(config, 'openclaw')?.startsWith('sk-') === true
     && (!isCloudStudioSandbox() || process.env.TEAMAI_ALLOW_SANDBOX_REPORT === '1');
 }
@@ -1664,7 +1672,7 @@ async function scheduleA2aPlugins(
   revision: string,
   reportedInstanceId?: string,
 ): Promise<void> {
-  if (identity.agent_type !== 'openclaw' || !config.endpoint.startsWith('https://') || !tokenForAgent(config, 'openclaw')?.startsWith('sk-')) return;
+  if (identity.agent_type !== 'openclaw' || !a2aEndpointScheme(config.endpoint) || !tokenForAgent(config, 'openclaw')?.startsWith('sk-')) return;
   const instanceId = reportedInstanceId ?? deriveInstanceId(identity.agent_type, identity.local_agent_id.toLowerCase());
   const request = A2aPluginRequestSchema.safeParse({ scope: a2aPluginScope(config.endpoint, instanceId), instanceId, revision });
 
@@ -1696,8 +1704,9 @@ async function spawnPluginReconcile(env: Record<string, string>): Promise<void> 
 async function reconcileA2aPlugins(config: LocalAgentConfig, tag: string, request: A2aPluginRequest): Promise<void> {
   const tool = 'openclaw';
   const token = tokenForAgent(config, tool);
+  const scheme = a2aEndpointScheme(config.endpoint);
 
-  if (!token?.startsWith('sk-') || !config.endpoint.startsWith('https://') || request.scope !== a2aPluginScope(config.endpoint, request.instanceId) || !await a2aPullDue(request)) return;
+  if (!token?.startsWith('sk-') || !scheme || request.scope !== a2aPluginScope(config.endpoint, request.instanceId) || !await a2aPullDue(request)) return;
   const slug = A2A_PLUGIN_PREFIX + request.scope;
   const statePath = a2aPullStatePath(request.scope);
   const deps = buildReconcileDeps(tag);
@@ -1717,6 +1726,8 @@ async function reconcileA2aPlugins(config: LocalAgentConfig, tag: string, reques
   try {
     const route = resolveRoute(config, 'getConfig');
     const query = new URLSearchParams({ config_type: 'a2a', instance_id: request.instanceId });
+
+    if (scheme === 'http') query.set('scheme', scheme);
     const getConfig = route + (route.includes('?') ? '&' : '?') + query.toString();
 
     const response = await localAgentFetch({ ...config, routes: { ...config.routes, getConfig } }, tag, 'getConfig',
