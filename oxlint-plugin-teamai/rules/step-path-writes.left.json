@@ -49,7 +49,6 @@
   "src/scorers/marks.ts": 1,
   "src/scorers/scoring-evidence.ts": 8,
   "src/session-flow/captures.ts": 3,
-  "src/session-flow/session-publish.ts": 1,
   "src/session-flow/session-work.ts": 4,
   "src/session-flow/sync.ts": 1,
   "src/session-owners.ts": 1,
