@@ -113,6 +113,23 @@ describe('readTeamSkillIndex reads ownership from the listing', () => {
     expect(index.teamSkills.get('tdd')).toBeUndefined();
   });
 
+  /**
+   * Regression: excluding the folded sibling from the ACTIVE index must not
+   * remove it from the provenance index. A copy delivered before the exact
+   * directory appeared still has a recorded origin there; dropping it made
+   * `resolveDestination` refuse an edit of it.
+   */
+  it('keeps the unowned folded sibling in the provenance index as blocked', async () => {
+    listDirs.mockResolvedValue(['Frontend', 'frontend']);
+    const repo = await repoWithLowercaseSkill();
+
+    const index = await readTeamSkillIndex(repo, ['Frontend']);
+
+    expect(index.teamSkills.get('tdd')).toBeUndefined();
+    expect((index.allTeamSkills.get('tdd') ?? []).map((copy) => copy.namespace)).toEqual(['frontend']);
+    expect(index.blockedSkills.get('tdd')?.length).toBe(1);
+  });
+
   it('indexes the folded directory when no exact directory exists', async () => {
     listDirs.mockResolvedValue(['frontend']);
     const repo = await repoWithLowercaseSkill();

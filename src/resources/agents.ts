@@ -247,9 +247,12 @@ export class AgentsHandler extends ResourceHandler {
       // SAFETY: segments.length === 2 was checked just above, so both entries exist.
       const [namespace, stem] = segments as [string, string];
 
-      // The declaration owns one directory, so `fe` counts as delivered here
-      // only when it is that directory — not merely because it folds to one.
-      const deliveredHere = activeNamespaces === null || (owned !== undefined && owned.has(namespace))
+      // Asked of the DECLARATION, not of the directories on disk: a tombstone
+      // usually means the namespace's last file was deleted, and git drops the
+      // now-empty directory with it. Requiring the directory to still exist
+      // would make the removal invisible exactly when it matters, and the next
+      // push would republish the agent as new (#649 review).
+      const deliveredHere = activeNamespaces === null || isActiveNamespace(activeNamespaces, namespace)
         || placedIn(stem) === namespace;
 
       if (deliveredHere && !desired.has(stem)) removed.add(stem);
