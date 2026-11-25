@@ -177,7 +177,7 @@ describe('recall in a project whose config cannot be read (#796)', () => {
     expect(errors()).toEqual([expect.stringMatching(/^Nothing was searched: /)]);
   });
 
-  it('a missing query is rejected before the project is resolved, as before', async () => {
+  it('a missing query is rejected before the project is resolved, with a failing exit code', async () => {
     const root = gitRepo('project-a');
     await brokenPartition(root);
     process.chdir(root);
@@ -185,6 +185,7 @@ describe('recall in a project whose config cannot be read (#796)', () => {
     await recall('', {});
 
     expect(vi.mocked(log.error).mock.calls.map(([msg]) => msg)).toEqual(['Usage: teamai recall <query>']);
+    expect(process.exitCode).toBe(1);
   });
 
   it('searches and records the project scope of a readable project config, as before', async () => {

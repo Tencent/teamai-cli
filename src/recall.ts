@@ -1139,6 +1139,7 @@ export async function recall(
   if (noQuery && !options.check) {
     log.error('Usage: teamai recall <query>');
     log.info('Example: teamai recall "api timeout"');
+    process.exitCode = 1;
 
     return;
   }
