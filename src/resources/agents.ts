@@ -17,7 +17,7 @@ import { agentFormatOf, descriptorOf } from '../tool-registry.js';
 import { cleanupOf, deliveryPlaceOf, installOf, locate, ownOf, writable, type DeliveryPlace, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
 import { declaredDirectories, isActiveNamespace } from '../namespace-resolver.js';
-import { isSafeNamespaceSegment } from '../manifest-schema.js';
+import { caseFoldKey, isSafeNamespaceSegment } from '../manifest-schema.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
 import { loadStateForScope } from '../config.js';
 import { placedResourcePath } from '../push-namespaces.js';
@@ -247,14 +247,23 @@ export class AgentsHandler extends ResourceHandler {
       // SAFETY: segments.length === 2 was checked just above, so both entries exist.
       const [namespace, stem] = segments as [string, string];
 
-      // A tombstone names a namespace, and that namespace may have no directory
-      // left: deleting its last file makes git drop the empty directory. So the
-      // declared spelling still counts when the directory is gone. A folded
-      // sibling no declaration owns does NOT — its tombstone must not hide a new
-      // agent in the directory that does own the declaration.
+      // A tombstone names a namespace whose directory may be gone: deleting its
+      // last file makes git drop the empty directory, so neither the declared
+      // spelling nor the owned set can answer. Four cases, in order:
+      //   - nothing is filtered here, or
+      //   - the namespace is the declaration's own spelling (its directory may be
+      //     gone), or
+      //   - a directory that exists and is owned, or
+      //   - it folds to a declaration no directory answers any more: a member
+      //     delivered `agents/frontend/` under a `Frontend` declaration lost the
+      //     whole directory, and its tombstone must still count.
+      // A folded sibling that DOES sit beside an owned directory is the excluded
+      // one: its tombstone must not hide a new agent in the owning directory.
+      const ownedFoldKeys = new Set([...(owned ?? [])].map((directory) => caseFoldKey(directory)));
       const deliveredHere = activeNamespaces === null
         || activeNamespaces.includes(namespace)
         || (owned !== undefined && owned.has(namespace))
+        || (isActiveNamespace(activeNamespaces, namespace) && !ownedFoldKeys.has(caseFoldKey(namespace)))
         || placedIn(stem) === namespace;
 
       if (deliveredHere && !desired.has(stem)) removed.add(stem);

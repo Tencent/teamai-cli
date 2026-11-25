@@ -202,7 +202,10 @@ export function resolveRoleNamespace(
   const onAxis = [...new Set(declared.filter((entry) => entry.type === axis).map((entry) => entry.namespace))];
 
   if (isActiveNamespace(onAxis, namespace)) {
-    const [owned] = declaredDirectories(onAxis, directories);
+    // Resolve the REQUESTED declaration only. Handing `onAxis` over would let
+    // the first declared namespace win: with `['Frontend', 'Backend']` and both
+    // directories present, `--role Backend` came back as `Frontend`.
+    const [owned] = declaredDirectories([namespace], directories);
 
     return { ok: true, namespace: owned ?? namespace };
   }
