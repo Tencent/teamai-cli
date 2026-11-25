@@ -4,7 +4,7 @@ import fse from 'fs-extra';
 import YAML from 'yaml';
 import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
-import { loadTeamConfig, autoDetectInit, loadLocalConfig, detectProjectConfig } from './config.js';
+import { loadTeamConfig, autoDetectInit, loadLocalConfig, detectProjectConfig, NotInitializedError } from './config.js';
 import { assertAttachedTeamRepo, createGit, DetachedTeamRepoError, pullRepo } from './utils/git.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import { detectProvider, getProvider } from './providers/index.js';
@@ -693,8 +693,11 @@ export async function sourceList(): Promise<void> {
     // Read-only: the load never persists a migration (#893).
     const { teamConfig } = await autoDetectInit(undefined, { dryRun: true });
     gitSources = teamConfig.sources ?? [];
-  } catch {
-    // Not initialized (no team repo) — only the HTTP bypass may exist.
+  } catch (e) {
+    // Not initialized (no team repo) — only the HTTP bypass may exist. A config
+    // that exists but cannot be read or used is not that: saying "no sources"
+    // would report a broken setup as an empty one.
+    if (!(e instanceof NotInitializedError)) throw e;
   }
 
   const { describeLocalAgent } = await import('./local-agent.js');
