@@ -24,6 +24,8 @@ import { getHandler } from './resources/index.js';
 // `RepoResourceHandler` off that mock threw "no export is defined" instead of
 // falling back to the layout default.
 import { RepoResourceHandler } from './resources/repo-resource.js';
+import { collectEnvSecrets } from '@teamai/shared/redact';
+import { MAX_REPORTED_FILES, formatSecretHits, screenPushItems } from './utils/secret-screen.js';
 import { createSkillPushItem, scanTeamRepoNamespaces } from './resources/skills.js';
 import { AgentsHandler } from './resources/agents.js';
 import { deliversEveryNamespace, resolveResourceNamespaces } from './resource-namespaces.js';
@@ -1264,7 +1266,7 @@ export async function explicitBranchRefusal(
 }
 
 export async function push(
-  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string; carried?: string[] },
+  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string; carried?: string[]; allowSecrets?: boolean },
   /**
    * Optional out-param: set to `{ completed: true }` only when a real push
    * actually happened (resources or config pushed) — never on dry-run, cancel,
@@ -1704,7 +1706,7 @@ async function defaultBranchGuard(
 async function pushCore(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
-  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string; carried?: string[] },
+  options: GlobalOptions & { all?: boolean; role?: string; project?: string; shared?: boolean; branch?: string; carried?: string[]; allowSecrets?: boolean },
   initialPendingTeamConfig: string | null = null,
   result?: { completed: boolean },
 ): Promise<void> {
@@ -2893,6 +2895,51 @@ async function pushCore(
     );
   }
 
+  // #2023: where the pending team config's bytes sit in the clone — the yaml
+  // may also be rewritten by the refresh below, so resolve it at screening time.
+  const teamYamlPath = path.join(localConfig.repo.localPath, 'teamai.yaml');
+
+  // #2023: screen the whole selection before any group is processed — a
+  // refusal must stop every group, not just the one carrying the secret (an
+  // earlier group may already have updated its open PR otherwise). The team
+  // config rides along with the first group, so its bytes are screened too:
+  // `teamai.yaml` reaches the same remote and the same every-member pull.
+  // Precise shapes refuse (exit 1 — a refusal that exits 0 is the bug #2040
+  // fixed for `source`); loose `key=value` pairs and environment values warn,
+  // because honest docs hit them too and a screen that blocks those gets
+  // disabled. --allow-secrets pushes past the refusals knowingly; the report
+  // prints either way, and the scan always runs to the end (the verdict uses
+  // the complete counts, the report is capped per tier for readability).
+  const screenItems: Array<Parameters<typeof screenPushItems>[0][number]> = [...selectedItems];
+
+  if (pendingTeamConfig !== null) {
+    screenItems.push({ type: 'teamai.yaml', relativePath: 'teamai.yaml', sourcePath: teamYamlPath });
+  }
+
+  const screen = await screenPushItems(screenItems, collectEnvSecrets());
+
+  if (screen.hits.length > 0) {
+    for (const { line, tier } of formatSecretHits(screen.hits)) {
+      if (tier === 'refuse') log.error(line);
+      else log.warn(line);
+    }
+
+    if (screen.refusalCount > screen.hits.filter((hit) => hit.tier === 'refuse').length
+      || screen.warnCount > screen.hits.filter((hit) => hit.tier === 'warn').length) {
+      log.warn(`  …report capped at ${MAX_REPORTED_FILES} files per tier; the scan itself ran to the end`);
+    }
+  }
+
+  if (screen.refusalCount > 0 && options.allowSecrets !== true) {
+    log.error(`Refused: ${screen.refusalCount} file(s) matched secret shapes.`);
+    log.error('Push refused: scrub the files above, or re-run with --allow-secrets to push them anyway.');
+    process.exitCode = 1;
+
+    return;
+  }
+
+  if (screen.refusalCount > 0) log.warn('--allow-secrets: pushing the refused files anyway.');
+
   // ── Step 4: Place NEW root-level resources in a namespace (after selection) ─
   if (!await placeNewResources({
     items: selectedItems, options, localConfig, projectsManifest, roleNamespaces, skillsDestinationError, teamRepoStale, settled,
@@ -3046,7 +3093,7 @@ async function pushCore(
 async function pushTeamConfigOnly(
   localConfig: LocalConfig,
   teamConfig: TeamaiConfig,
-  options: GlobalOptions & { branch?: string },
+  options: GlobalOptions & { branch?: string; allowSecrets?: boolean },
   result?: { completed: boolean },
 ): Promise<void> {
   console.log('');
@@ -3059,6 +3106,30 @@ async function pushTeamConfigOnly(
 
     return;
   }
+
+  // #2023: a config-only push never goes through the selection screen, so the
+  // config bytes are screened here — same tiers, same --allow-secrets escape.
+  const screen = await screenPushItems(
+    [{ type: 'teamai.yaml', relativePath: 'teamai.yaml', sourcePath: path.join(localConfig.repo.localPath, 'teamai.yaml') }],
+    collectEnvSecrets(),
+  );
+
+  if (screen.hits.length > 0) {
+    for (const { line, tier } of formatSecretHits(screen.hits)) {
+      if (tier === 'refuse') log.error(line);
+      else log.warn(line);
+    }
+  }
+
+  if (screen.refusalCount > 0 && options.allowSecrets !== true) {
+    (await spinner('Pushing team config...')).fail(`Refused: ${screen.refusalCount} file(s) matched secret shapes.`);
+    log.error('Push refused: scrub the files above, or re-run with --allow-secrets to push them anyway.');
+    process.exitCode = 1;
+
+    return;
+  }
+
+  if (screen.refusalCount > 0) log.warn('--allow-secrets: pushing the refused files anyway.');
 
   const pushSpin = (await spinner('Pushing team config...')).start();
   const branchName = options.branch ?? await unusedBranchName(localConfig.repo.localPath, localConfig.username);

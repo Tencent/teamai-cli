@@ -244,6 +244,7 @@ program
     + '— skills, knowledge for rules, agents, learnings, docs, env, hooks, mcp, models, and more (from manifest/projects.yaml)')
   .option('--shared', 'Place new resources at the shared root for all roles; cannot combine with --role or --project')
   .option('--branch <name>', 'Push to this destination branch instead of a generated teamai/push branch')
+  .option('--allow-secrets', 'Push past the secret screen when it matches; the matched files are still reported')
   .option('--file <local file>', 'Push exactly this local file, byte for byte, to the team path --path names, as a pull request. '
     + 'No other change in the team clone joins it; requires --path')
   .option('--path <team path>', 'Where --file goes in the team repo, such as benchmarks/frontend/tasks/pod-startup.yaml or scorers/review.md. '

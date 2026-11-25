@@ -109,6 +109,8 @@ teamai push --role pm
 
 新的 skill、rule、agent 会问放到哪个目录，选项来自你的角色和当前项目。已经开着的 pull request 会更新原来那一个。
 
+push 会筛查待投递的内容（#2023）。文件内容命中精确密钥形态（厂商 token 前缀、PEM 块、JWT、Bearer 头）时拒绝推送；宽松的 `key=value` 对或本机环境变量的值只警告并照常推送。报告点名文件、行号和命中的模式，且无论放行与否都会打印；`--allow-secrets` 用于明知有密钥仍要推送。
+
 ### 查看状态
 
 ```bash

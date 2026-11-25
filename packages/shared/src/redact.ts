@@ -215,3 +215,85 @@ export function redactJson(value: unknown, envSecrets: Record<string, string>): 
 export function redactWithEnv(text: string, env: NodeJS.ProcessEnv = process.env): string {
   return redact(text, { envSecrets: collectEnvSecrets(env) });
 }
+
+/** What a detected redaction came from: a literal environment value or a built-in secret-shape pattern. */
+export type RedactionLayer = 'env-value' | 'shape' | 'kv';
+
+/**
+ * A pattern match found by {@link findRedactions}, without any rewriting:
+ * `label` is the placeholder label `redact` would use, `layer` groups the
+ * verdict for callers that treat precise shapes and loose key/value pairs
+ * differently.
+ */
+export interface Redaction {
+  label: string;
+  layer: RedactionLayer;
+}
+
+function firstRealMatch(pattern: RegExp, text: string): boolean {
+  return realMatch(pattern, text) !== null;
+}
+
+function realMatch(pattern: RegExp, text: string): RegExpExecArray | null {
+  return realMatches(pattern, text)[0] ?? null;
+}
+
+/** Every non-`passedOver` match of `pattern` — same groups `redact` sees (`match.groups`, not the capture array). */
+function realMatches(pattern: RegExp, text: string): Array<RegExpExecArray> {
+  // A fresh instance per scan: the catalogue regexes are global, and a
+  // `passedOver` match must not advance shared state for later callers.
+  const probe = new RegExp(pattern.source, pattern.flags);
+  const matches: Array<RegExpExecArray> = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = probe.exec(text)) !== null) {
+    if (!PassedOverSchema.safeParse(match.groups).success) matches.push(match);
+  }
+
+  return matches;
+}
+
+/**
+ * The redactions `redact(text, options)` would apply, as labels — for callers
+ * that need to *react* to a match (report it, tier a verdict) rather than mask
+ * it. Layer `kv` is the loose `key=value` pair: precise enough to mention, too
+ * loose to refuse a push on. Runs the same catalogue in the same order.
+ */
+export function findRedactions(text: string, options: RedactOptions = {}): Redaction[] {
+  if (!text) return [];
+
+  const found: Redaction[] = [];
+  const envSecrets = options.envSecrets ?? {};
+  const entries = Object.entries(envSecrets).sort((a, b) => b[1].length - a[1].length);
+
+  for (const [label, value] of entries) {
+    if (!value) continue;
+
+    if (value.length < MIN_ENV_VALUE_LENGTH) {
+      const token = new RegExp(`(?<![\\p{L}\\p{N}_])${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'gu');
+
+      if (token.test(text)) found.push({ label, layer: 'env-value' });
+    } else if (text.includes(value)) {
+      found.push({ label, layer: 'env-value' });
+    }
+  }
+
+  if (options.patterns !== false) {
+    for (const [label, pattern] of SECRET_PATTERNS) {
+      if (firstRealMatch(pattern, text)) found.push({ label, layer: 'shape' });
+    }
+
+    if (firstRealMatch(KV_PATTERN, text)) found.push({ label: 'kv', layer: 'kv' });
+
+    // The prose exclusion `redact` applies (`Bearer authentication-scheme` reads
+    // as words, not a token) must hold here too, or docs refuse the push. Every
+    // match is examined: prose in front must not hide a real token behind it.
+    const bearerToken = realMatches(BEARER_PATTERN, text).some((match) => !JOINED_WORDS_PATTERN.test(match[2]));
+
+    if (bearerToken) found.push({ label: 'authz', layer: 'shape' });
+
+    if (firstRealMatch(CONNECTION_STRING_PATTERN, text)) found.push({ label: 'conn', layer: 'shape' });
+  }
+
+  return found;
+}
