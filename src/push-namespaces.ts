@@ -12,7 +12,7 @@
  * reached the whole team (issue #649). It lives here so every type answers the
  * same question the same way, and so the answer can be tested without a repo.
  */
-import { isSafeNamespaceSegment, NAMESPACE_RULE, type NamespaceEntry } from './manifest-schema.js';
+import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE, type NamespaceEntry } from './manifest-schema.js';
 import { declaredDirectories, isActiveNamespace } from './namespace-resolver.js';
 import {
   findProject, unknownProjectMessage,
@@ -202,12 +202,15 @@ export function resolveRoleNamespace(
   const onAxis = [...new Set(declared.filter((entry) => entry.type === axis).map((entry) => entry.namespace))];
 
   if (isActiveNamespace(onAxis, namespace)) {
-    // Resolve the REQUESTED declaration only. Handing `onAxis` over would let
-    // the first declared namespace win: with `['Frontend', 'Backend']` and both
-    // directories present, `--role Backend` came back as `Frontend`.
-    const [owned] = declaredDirectories([namespace], directories);
+    // Resolve the matching DECLARATION first, then the directory it owns. Asking
+    // for the flag's own spelling looks like an exact match: with a declared
+    // `Frontend` and both `skills/Frontend/` and `skills/frontend/` on disk,
+    // `--role frontend` resolved to `frontend/`, the sibling pull excludes.
+    const declaration = onAxis.find((entry) => entry === namespace)
+      ?? onAxis.find((entry) => caseFoldKey(entry) === caseFoldKey(namespace));
+    const [owned] = declaration === undefined ? [] : declaredDirectories([declaration], directories);
 
-    return { ok: true, namespace: owned ?? namespace };
+    return { ok: true, namespace: owned ?? declaration ?? namespace };
   }
 
   return {

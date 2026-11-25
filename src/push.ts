@@ -254,6 +254,32 @@ type NewResourceDestination =
   | { kind: 'invalid-selection'; message: string };
 
 /**
+ * The repo directories a type's namespace directories live under. Most types sit
+ * at `<repo>/<type>`, but a handler may put them elsewhere: wiki keeps its
+ * namespaces under `teamwiki/evidence/code`, so listing `<repo>/wiki` found
+ * nothing and `--role Frontend` then created `…/Frontend/` beside the existing
+ * `…/FRONTEND/` that pull reads.
+ */
+async function namespaceRootsOf(localConfig: LocalConfig, type: PlaceableType): Promise<string[]> {
+  const handler = getHandler(type) as unknown as {
+    dir?: string;
+    dirResolver?: (repoPath: string) => Promise<string[]>;
+  };
+
+  if (handler.dirResolver) return handler.dirResolver(localConfig.repo.localPath);
+
+  return [handler.dir ?? type];
+}
+
+/** Every namespace directory of `type` the team repo holds. */
+async function namespaceDirsOf(localConfig: LocalConfig, type: PlaceableType): Promise<string[]> {
+  const roots = await namespaceRootsOf(localConfig, type);
+  const listed = await Promise.all(roots.map((root) => listDirs(path.join(localConfig.repo.localPath, root))));
+
+  return [...new Set(listed.flat())];
+}
+
+/**
  * Decide the namespace for the new root-level resources of one type.
  *
  * Every axis answers this the same way — that consistency is the fix for #649 —
@@ -272,7 +298,7 @@ async function resolveNamespaceForNew(
   const flagged = options.project && projectsManifest
     ? resolveProjectNamespace(projectsManifest, options.project, type)
     : options.role
-      ? resolveRoleNamespace(roleNamespaces, options.role, type, await listDirs(path.join(localConfig.repo.localPath, type)))
+      ? resolveRoleNamespace(roleNamespaces, options.role, type, await namespaceDirsOf(localConfig, type))
       : null;
 
   if (flagged) {
@@ -2124,7 +2150,7 @@ async function pushCore(
   const flaggedAgents = options.project && projectsManifest
     ? resolveProjectNamespace(projectsManifest, options.project, 'agents')
     : options.role
-      ? resolveRoleNamespace(roleNamespaces, options.role, 'agents', await listDirs(path.join(localConfig.repo.localPath, 'agents')))
+      ? resolveRoleNamespace(roleNamespaces, options.role, 'agents', await namespaceDirsOf(localConfig, 'agents'))
       : null;
 
   if (flaggedAgents?.ok) {
@@ -2547,8 +2573,7 @@ async function pushCore(
       return;
     }
 
-    const resolved = resolveRoleNamespace(roleNamespaces, options.role, 'skills',
-      await listDirs(path.join(localConfig.repo.localPath, 'skills')));
+    const resolved = resolveRoleNamespace(roleNamespaces, options.role, 'skills', await namespaceDirsOf(localConfig, 'skills'));
 
     if (resolved.ok) {
       skillsDestination = resolved.namespace;

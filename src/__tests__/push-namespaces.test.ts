@@ -233,9 +233,19 @@ describe('resolveRoleNamespace', () => {
       .toEqual({ ok: true, namespace: 'Frontend' });
   });
 
-  it('keeps the flag spelling when no directory answers the declaration', () => {
+  it('keeps the declared spelling when no directory answers the declaration', () => {
     expect(resolveRoleNamespace([declared('Frontend')], 'frontend', 'skills', []))
-      .toEqual({ ok: true, namespace: 'frontend' });
+      .toEqual({ ok: true, namespace: 'Frontend' });
+  });
+
+  /**
+   * Regression: the flag spelling was resolved as if it were the declaration.
+   * With both `Frontend/` and `frontend/` on disk, `--role frontend` picked the
+   * exact-looking sibling that pull excludes.
+   */
+  it('resolves the flag spelling to the declared directory, not to an exact sibling', () => {
+    expect(resolveRoleNamespace([declared('Frontend')], 'frontend', 'skills', ['Frontend', 'frontend']))
+      .toEqual({ ok: true, namespace: 'Frontend' });
   });
 
   it('rejects a namespace nothing declares', () => {
