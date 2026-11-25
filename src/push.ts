@@ -39,7 +39,7 @@ import {
   resolveProjectNamespace, resolveRoleNamespace, rootSegmentsFor, skillNamespacePath, withNamespace, type PlaceableType,
 } from './push-namespaces.js';
 import { askQuestion, askSelection, isInteractive } from './utils/prompt.js';
-import { pathExists, pruneEmptyDirs, readFileSafe, writeFile } from './utils/fs.js';
+import { listDirs, pathExists, pruneEmptyDirs, readFileSafe, writeFile } from './utils/fs.js';
 import { gitAnswer, git as gitAt, unansweredGit } from './workflow/worktree.js';
 import { brokenTeamProfileFiles } from './models/profile.js';
 
@@ -271,7 +271,9 @@ async function resolveNamespaceForNew(
 
   const flagged = options.project && projectsManifest
     ? resolveProjectNamespace(projectsManifest, options.project, type)
-    : options.role ? resolveRoleNamespace(roleNamespaces, options.role, type) : null;
+    : options.role
+      ? resolveRoleNamespace(roleNamespaces, options.role, type, await listDirs(path.join(localConfig.repo.localPath, type)))
+      : null;
 
   if (flagged) {
     return flagged.ok
@@ -2121,7 +2123,9 @@ async function pushCore(
 
   const flaggedAgents = options.project && projectsManifest
     ? resolveProjectNamespace(projectsManifest, options.project, 'agents')
-    : options.role ? resolveRoleNamespace(roleNamespaces, options.role, 'agents') : null;
+    : options.role
+      ? resolveRoleNamespace(roleNamespaces, options.role, 'agents', await listDirs(path.join(localConfig.repo.localPath, 'agents')))
+      : null;
 
   if (flaggedAgents?.ok) {
     requestedAgentsNamespace = flaggedAgents.namespace;
@@ -2543,7 +2547,8 @@ async function pushCore(
       return;
     }
 
-    const resolved = resolveRoleNamespace(roleNamespaces, options.role, 'skills');
+    const resolved = resolveRoleNamespace(roleNamespaces, options.role, 'skills',
+      await listDirs(path.join(localConfig.repo.localPath, 'skills')));
 
     if (resolved.ok) {
       skillsDestination = resolved.namespace;

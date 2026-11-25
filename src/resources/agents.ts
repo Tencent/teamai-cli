@@ -247,12 +247,14 @@ export class AgentsHandler extends ResourceHandler {
       // SAFETY: segments.length === 2 was checked just above, so both entries exist.
       const [namespace, stem] = segments as [string, string];
 
-      // Asked of the DECLARATION, not of the directories on disk: a tombstone
-      // usually means the namespace's last file was deleted, and git drops the
-      // now-empty directory with it. Requiring the directory to still exist
-      // would make the removal invisible exactly when it matters, and the next
-      // push would republish the agent as new (#649 review).
-      const deliveredHere = activeNamespaces === null || isActiveNamespace(activeNamespaces, namespace)
+      // A tombstone names a namespace, and that namespace may have no directory
+      // left: deleting its last file makes git drop the empty directory. So the
+      // declared spelling still counts when the directory is gone. A folded
+      // sibling no declaration owns does NOT — its tombstone must not hide a new
+      // agent in the directory that does own the declaration.
+      const deliveredHere = activeNamespaces === null
+        || activeNamespaces.includes(namespace)
+        || (owned !== undefined && owned.has(namespace))
         || placedIn(stem) === namespace;
 
       if (deliveredHere && !desired.has(stem)) removed.add(stem);
