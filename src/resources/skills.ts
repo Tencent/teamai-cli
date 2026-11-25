@@ -946,8 +946,11 @@ export async function readTeamSkillIndex(repoPath: string, scopedNamespaces: str
     // keeps a name.
     for (const namespace of scopedNamespaces) {
       for (const skill of skills) {
-        if (!isActiveNamespace([namespace], skill.namespace ?? '')) continue;
-        const copy = { dir: skill.source, namespace };
+        if (skill.namespace === undefined || !isActiveNamespace([namespace], skill.namespace)) continue;
+        // The directory the file is actually in, not the declared spelling: a
+        // declaration `Frontend` served by `skills/frontend/` must push back to
+        // `skills/frontend/`, or the edit creates a second directory beside it.
+        const copy = { dir: skill.source, namespace: skill.namespace };
         addTeamSkill(skill.name, copy);
 
         if (!teamSkills.get(skill.name)?.namespace) teamSkills.set(skill.name, copy);

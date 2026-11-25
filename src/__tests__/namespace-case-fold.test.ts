@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
   activeNamespaceRank,
   declaredDirectories,
@@ -6,6 +9,9 @@ import {
   resolveNamespacedItems,
   type NamespaceCandidate,
 } from '../namespace-resolver.js';
+import { filterRulesByKnowledgeNamespaces } from '../resources/desired.js';
+import { readTeamSkillIndex } from '../resources/skills.js';
+import type { LocalConfig, ResourceItem } from '../types.js';
 
 /**
  * A declared namespace names its directory case-folded, as the entry types
@@ -189,5 +195,84 @@ describe('resolveNamespacedItems keeps the exact directory when both spellings e
     expect(result.items).toHaveLength(1);
     expect(result.items[0]?.namespace).toBe('Frontend');
     expect(result.items[0]?.replaces?.namespace).toBeNull();
+  });
+});
+
+describe('filterRulesByKnowledgeNamespaces keeps one directory per declaration', () => {
+  const rule = (name: string): ResourceItem => ({
+    name,
+    type: 'rules',
+    sourcePath: `/repo/rules/${name}`,
+    relativePath: `rules/${name}`,
+  });
+
+  /**
+   * Regression: folding alone accepted `rules/Frontend/` and `rules/frontend/`,
+   * so a member received instructions from a directory nothing had selected.
+   */
+  it('delivers the declared directory and not the folded sibling', () => {
+    const kept = filterRulesByKnowledgeNamespaces(
+      [rule('Frontend/style'), rule('frontend/style'), rule('backend/style'), rule('root-rule')],
+      ['Frontend'],
+    );
+
+    expect(kept.map((item) => item.name)).toEqual(['Frontend/style', 'root-rule']);
+  });
+
+  it('delivers a folded directory when the declaration has no exact one', () => {
+    const kept = filterRulesByKnowledgeNamespaces([rule('frontend/style'), rule('backend/style')], ['Frontend']);
+
+    expect(kept.map((item) => item.name)).toEqual(['frontend/style']);
+  });
+
+  it('always keeps root rules', () => {
+    const kept = filterRulesByKnowledgeNamespaces([rule('root-rule')], ['Frontend']);
+
+    expect(kept.map((item) => item.name)).toEqual(['root-rule']);
+  });
+
+  it('passes everything through when no namespace is active', () => {
+    const rules = [rule('Frontend/style'), rule('backend/style'), rule('root-rule')];
+
+    expect(filterRulesByKnowledgeNamespaces(rules, null)).toEqual(rules);
+  });
+});
+
+describe('readTeamSkillIndex records the on-disk directory', () => {
+  const SKILL = '---\nname: tdd\ndescription: Test-driven development\n---\n\n# TDD\n';
+
+  async function repoWith(dirs: string[]): Promise<string> {
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-skill-index-'));
+
+    for (const dir of dirs) {
+      const full = path.join(repo, 'skills', dir, 'tdd');
+      await fs.mkdir(full, { recursive: true });
+      await fs.writeFile(path.join(full, 'SKILL.md'), SKILL, 'utf8');
+    }
+
+    return repo;
+  }
+
+  /**
+   * Regression: the index stored the declared spelling, so an edit pushed to
+   * `skills/Frontend/tdd/` created a second directory beside the
+   * `skills/frontend/tdd/` the skill was read from.
+   */
+  it('stores the directory name, not the declaration', async () => {
+    const repo = await repoWith(['frontend']);
+    const index = await readTeamSkillIndex(repo, ['Frontend']);
+
+    expect(index.teamSkills.get('tdd')?.namespace).toBe('frontend');
+  });
+
+  it('stores the exact directory when both spellings exist', async () => {
+    const repo = await repoWith(['Frontend', 'frontend']);
+    const index = await readTeamSkillIndex(repo, ['Frontend']);
+
+    const copies = index.allTeamSkills.get('tdd') ?? [];
+    const kept = copies.filter((copy) => copy.namespace === 'Frontend' || copy.namespace === 'frontend');
+
+    expect(kept.length).toBeGreaterThan(0);
+    expect(index.teamSkills.get('tdd')?.namespace).toBe('Frontend');
   });
 });

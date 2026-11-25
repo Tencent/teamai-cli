@@ -16,7 +16,7 @@ import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam, shippedAgentRender } 
 import { agentFormatOf, descriptorOf } from '../tool-registry.js';
 import { cleanupOf, deliveryPlaceOf, installOf, locate, ownOf, writable, type DeliveryPlace, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
-import { isActiveNamespace } from '../namespace-resolver.js';
+import { declaredDirectories, isActiveNamespace } from '../namespace-resolver.js';
 import { isSafeNamespaceSegment } from '../manifest-schema.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
 import { loadStateForScope } from '../config.js';
@@ -468,9 +468,16 @@ export class AgentsHandler extends ResourceHandler {
       // that must not block it (#649 review). Letting the flag win outright
       // compared an active agent's rendering with the requested namespace's
       // file and overwrote it without an edit.
+      // Pull delivers one directory per declaration, so push must read the same
+      // directory: accepting every folded match made two sources compete for one
+      // declaration and reported an ambiguous agent, refusing to push an edit of
+      // the copy pull had just delivered.
+      const owned = activeNamespaces === null
+        ? null
+        : declaredDirectories(activeNamespaces, [...new Set(sources.flatMap((file) => (file.namespace ? [file.namespace] : [])))]);
+
       const active = sources.filter(
-        (file) => activeNamespaces === null || !file.namespace
-          || isActiveNamespace(activeNamespaces, file.namespace),
+        (file) => owned === null || !file.namespace || owned.has(file.namespace),
       );
 
       const activeInNamespace = active.filter((file) => file.namespace);

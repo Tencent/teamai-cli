@@ -109,13 +109,23 @@ export function filterRulesByKnowledgeNamespaces(
 ): ResourceItem[] {
   if (!knowledgeNamespaces) return rules;
 
+  // One directory per declaration: with rules in both `rules/Frontend/` and
+  // `rules/frontend/`, only the declared spelling is delivered. Folding alone
+  // would hand the member instructions from a directory nothing selected.
+  const directories = [...new Set(rules.flatMap((rule) => {
+    const slash = rule.name.indexOf('/');
+
+    return slash === -1 ? [] : [rule.name.slice(0, slash)];
+  }))];
+  const owned = declaredDirectories(knowledgeNamespaces, directories);
+
   return rules.filter((rule) => {
     const slashIndex = rule.name.indexOf('/');
 
     if (slashIndex === -1) return true; // root-level rule, always include
     const namespace = rule.name.slice(0, slashIndex);
 
-    return isActiveNamespace(knowledgeNamespaces, namespace);
+    return owned.has(namespace);
   });
 }
 
@@ -236,7 +246,16 @@ export async function scanRoleAwareSkills(
   // reaches a `skills/frontend/` directory on a case-sensitive filesystem too.
   // The exact spelling still wins when both exist, so the folded sibling is left
   // out rather than competing with it for the one declaration.
-  const directories = [...new Set(skills.flatMap((item) => (item.namespace === undefined ? [] : [item.namespace])))];
+  //
+  // Ownership is read from the directory listing, not only from the skills found
+  // in it: a `skills/Frontend/` holding no deliverable SKILL.md still owns the
+  // `Frontend` declaration, and must not hand it to the folded sibling that does
+  // have one. The skills themselves are added too, for a candidate list supplied
+  // without a listing.
+  const directories = [...new Set([
+    ...await listDirs(path.join(localConfig.repo.localPath, 'skills')),
+    ...skills.flatMap((item) => (item.namespace === undefined ? [] : [item.namespace])),
+  ])];
   const owned = declaredDirectories(namespaces.skills, directories);
   const items = skills.filter((item) => item.namespace !== undefined && owned.has(item.namespace));
   const resolution = resolveNamespacedItems(items.map(itemCandidate), namespaces.skills);
