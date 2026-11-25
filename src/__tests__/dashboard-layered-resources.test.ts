@@ -277,6 +277,32 @@ describe('MCP servers on the Resources page', () => {
       ['jira-lite', { kind: 'refused', message: 'command "node" is not in sharing.mcp.allowedCommands' }, path.join(dataHome, 'mcp', `jira-lite.${folderVersion(path.join(repo, 'mcp', 'jira-lite'))}`)],
     ]);
   });
+
+  it('does not statically refuse an MCP server whose host or command comes from a placeholder', async () => {
+    await write({
+      'mcp/mcp.yaml': [
+        'servers:',
+        '  - name: dynamic-http',
+        '    transport: http',
+        '    url: https://${MCP_HOST}/mcp',
+        '  - name: dynamic-stdio',
+        '    transport: stdio',
+        '    command: ${MCP_RUNNER}',
+      ].join('\n') + '\n',
+    });
+    const strict = TeamaiConfigSchema.parse({
+      team: 'acme',
+      repo: 'https://example.test/acme/team.git',
+      sharing: { mcp: { allowedCommands: ['npx'], allowedHosts: ['*.Trusted.COM'] } },
+    });
+
+    const list = (await collectLayeredResources(member(), strict)).types.find((found) => found.type === 'mcp');
+
+    expect(list?.resources.map((resource) => [resource.name, resource.state.kind]).sort()).toEqual([
+      ['dynamic-http', 'in-force'],
+      ['dynamic-stdio', 'in-force'],
+    ]);
+  });
 });
 
 /** teamai's own folder of default hook `name`, which a team copies to replace it. */

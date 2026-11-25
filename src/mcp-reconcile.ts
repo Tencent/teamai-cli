@@ -34,6 +34,7 @@ import {
   supportsEnvExpansion,
   renderJsonEntry,
   renderCodexBlock,
+  hasPlaceholder,
   resolvePlaceholders,
   referencedVars,
   entryHash,
@@ -278,16 +279,20 @@ function hostAllowed(url: string, allowedHosts: string[]): boolean {
   let host: string;
 
   try {
-    host = new URL(url).hostname;
+    host = new URL(url).hostname.toLowerCase();
   } catch {
     return false;
   }
 
-  return allowedHosts.some((pattern) =>
-    pattern.startsWith('*.')
+  if (!host) return false;
+
+  return allowedHosts.some((rawPattern) => {
+    const pattern = rawPattern.toLowerCase();
+
+    return pattern.startsWith('*.')
       ? host === pattern.slice(2) || host.endsWith(pattern.slice(1))
-      : host === pattern,
-  );
+      : host === pattern;
+  });
 }
 
 /** Reject a server that the team's security policy disallows. Returns a reason, or null when OK. */
@@ -305,9 +310,22 @@ function policyViolation(def: McpServerDef, sharing: ReturnType<typeof getMcpSha
   return null;
 }
 
+/**
+ * Policy check before `${VAR}` expansion. Defers when the policy-governed field
+ * (`command` for stdio, `url` for HTTP/SSE) contains a placeholder so the real
+ * resolved value is evaluated once variables are expanded.
+ */
+function staticPolicyViolation(def: McpServerDef, sharing: ReturnType<typeof getMcpSharing>): string | null {
+  const dynamicField = def.transport === 'stdio' ? hasPlaceholder(def.command) : hasPlaceholder(def.url);
+
+  if (dynamicField) return null;
+
+  return policyViolation(def, sharing);
+}
+
 /** Why the team's security policy keeps `resolved` out of every tool, or null when it lets it through. */
 export function teamMcpRefusal(localConfig: LocalConfig, teamConfig: TeamaiConfig, resolved: ResolvedEntry<TeamMcpDefinition>): string | null {
-  return policyViolation(teamMcpDef(localConfig, resolved), getMcpSharing(teamConfig));
+  return staticPolicyViolation(teamMcpDef(localConfig, resolved), getMcpSharing(teamConfig));
 }
 
 /** True when every executable in `requires` is on PATH. Returns a reason, or null when OK. */
@@ -1427,7 +1445,7 @@ export function desiredMcpForTarget(
       continue;
     }
 
-    const violation = policyViolation(raw, ctx.sharing);
+    const violation = staticPolicyViolation(raw, ctx.sharing);
 
     if (violation) {
       skipped.push({ tool: target.tool, server: raw.name, action: 'skipped', reason: violation });
@@ -1456,6 +1474,13 @@ export function desiredMcpForTarget(
       continue;
     }
 
+    const resolvedViolation = policyViolation(rendered.def, ctx.sharing);
+
+    if (resolvedViolation) {
+      skipped.push({ tool: target.tool, server: raw.name, action: 'skipped', reason: resolvedViolation });
+      continue;
+    }
+
     if (rendered.passthrough && referencedVars(raw).length > 0) {
       log.debug(`${raw.name}: passing ${referencedVars(raw).join(', ')} through to ${target.tool}`);
     }
@@ -1479,7 +1504,7 @@ function renderMcpEntry(
   target: McpTarget,
   raw: McpServerDef,
   vars: Record<string, string>,
-): { entry: DesiredMcpEntry; passthrough: boolean } | { missing: string[] } {
+): { entry: DesiredMcpEntry; passthrough: boolean; def: McpServerDef } | { missing: string[] } {
   const passthrough = supportsEnvExpansion(target.format, target.projectScope, raw);
   let def = raw;
 
@@ -1495,12 +1520,12 @@ function renderMcpEntry(
   if (target.format === 'codex') {
     const block = renderCodexBlock(def);
 
-    return { entry: { entry: block, hash: entryHash(block), block, resolvedValue }, passthrough };
+    return { entry: { entry: block, hash: entryHash(block), block, resolvedValue }, passthrough, def };
   }
 
   const entry = renderJsonEntry(target.format, def);
 
-  return { entry: { entry, hash: entryHash(entry), resolvedValue }, passthrough };
+  return { entry: { entry, hash: entryHash(entry), resolvedValue }, passthrough, def };
 }
 
 /** Every revision of the team repo's MCP files (#993), or null when unreadable or an HTTP-mode team. */
