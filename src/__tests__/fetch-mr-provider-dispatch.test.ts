@@ -14,10 +14,15 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const github = vi.fn(async (url: string) => ({ provider: 'github', url }));
-const tgit = vi.fn(async (url: string) => ({ provider: 'tgit', url }));
-const gitlab = vi.fn(async (url: string) => ({ provider: 'gitlab', url }));
-const gitcode = vi.fn(async (url: string) => ({ provider: 'gitcode', url }));
+// `vi.mock` is hoisted above the imports, so its factories run before any
+// top-level `const` initializer would. `vi.hoisted` moves these stubs up with
+// them; a plain `const` here makes collection fail with a ReferenceError.
+const { github, tgit, gitlab, gitcode } = vi.hoisted(() => ({
+  github: vi.fn(async (url: string) => ({ provider: 'github', url })),
+  tgit: vi.fn(async (url: string) => ({ provider: 'tgit', url })),
+  gitlab: vi.fn(async (url: string) => ({ provider: 'gitlab', url })),
+  gitcode: vi.fn(async (url: string) => ({ provider: 'gitcode', url })),
+}));
 
 vi.mock('../providers/github/mr-fetch.js', () => ({ fetchGitHubPR: github }));
 vi.mock('../providers/tgit/mr-fetch.js', () => ({ fetchTGitMR: tgit }));
