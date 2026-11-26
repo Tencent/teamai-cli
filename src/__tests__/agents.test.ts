@@ -60,6 +60,16 @@ function buildTeamConfig(
   } as TeamaiConfig;
 }
 
+/** Whether names differing only in case are one file in `dir`. */
+async function caseInsensitive(dir: string): Promise<boolean> {
+  const probe = path.join(dir, 'CaseProbe');
+  await fse.writeFile(probe, '');
+  const result = await fse.pathExists(path.join(dir, 'caseprobe'));
+  await fse.remove(probe);
+
+  return result;
+}
+
 describe('AgentsHandler — Phase 1 push/pull/remove', () => {
   let tmpDir: string;
   let homeDir: string;
@@ -939,11 +949,16 @@ projects:
     expect(await fse.pathExists(deployed)).toBe(false);
   });
 
-  it.skipIf(process.platform === 'win32')(
+  it(
     'does not revoke the agent that delivery just recovered from a placement record',
-    async () => {
+    async (ctx) => {
       // Needs a case-sensitive filesystem: `agents/Frontend/` has to sit beside
-      // `agents/frontend/` for the two to compete for one declaration.
+      // `agents/frontend/` for the two to compete for one declaration. Windows
+      // and a default macOS volume fold them into one directory, where the
+      // premise cannot exist — platform checks are not enough, so probe the
+      // filesystem the repo is on.
+      if (await caseInsensitive(repoPath)) ctx.skip();
+
       const other = 'name: other\ndescription: Other\ninstructions: Read it.\n';
       const reviewer = 'name: reviewer\ndescription: Shared\ninstructions: Read it.\n';
       await fse.outputFile(path.join(repoPath, 'agents/Frontend/other.yaml'), other);
