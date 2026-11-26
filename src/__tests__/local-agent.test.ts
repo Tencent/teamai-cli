@@ -225,6 +225,21 @@ describe('local-agent: Hermes A2A Gateway control', () => {
 
     await initLocalAgentHttp({ endpoint, filterAgents: ['codex'] });
     expect(await fse.readJson(ownerPath())).toEqual({ endpoint, profile });
+
+    const movedProfile = path.join(tmpDir, 'moved-hermes-profile');
+    await fse.move(profile, movedProfile);
+    await fse.symlink(movedProfile, profile, 'junction');
+
+    try {
+      await expect(initLocalAgentHttp({ endpoint, filterAgents: ['hermes'] })).rejects.toThrow();
+      expect(await fse.readJson(ownerPath())).toEqual({ endpoint, profile });
+      expect(await fse.pathExists(hookManifest(movedProfile))).toBe(true);
+      expect(await fse.pathExists(hookManifest(second))).toBe(false);
+    } finally {
+      await fse.remove(profile);
+      await fse.move(movedProfile, profile);
+    }
+
     await initLocalAgentHttp({ endpoint, filterAgents: ['hermes'] });
     expect(await fse.readJson(ownerPath())).toEqual({ endpoint, profile: second });
     expect(await fse.pathExists(hookManifest(profile))).toBe(false);

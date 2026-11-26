@@ -946,7 +946,7 @@ export async function initHttp(
   // Step 6 below points the local agent at this endpoint; refuse a replacement
   // now, before anything is written (resolving the scope may migrate a config),
   // and only here: by Step 6 the local agent may read back the config this init saved.
-  const { assertNoLocalAgentReplacement, initLocalAgentHttp } = await import('./local-agent.js');
+  const { assertNoLocalAgentReplacement, initLocalAgentHttp, prepareLocalAgentHttpEndpointReplacement } = await import('./local-agent.js');
 
   validateLocalAgentTokenReplacement({ token: options.token, replaceToken: options.replaceToken });
 
@@ -1007,6 +1007,12 @@ export async function initHttp(
   }
 
   const replacedFile = existingLocalConfig && await readConfigFile(existingConfigPath);
+
+  if (!options.dryRun && (options.token?.trim() || resolveApiKey())) {
+    await prepareLocalAgentHttpEndpointReplacement({
+      endpoint: url, token: options.token, force: options.force, replaceToken: options.replaceToken, filterAgents: requestedAgents,
+    });
+  }
 
   // Step 1: API key. Persist --token when given (one command sets endpoint+key),
   // otherwise fall back to TEAMAI_API_TOKEN / an existing ~/.teamai/apikey.
