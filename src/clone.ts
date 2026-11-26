@@ -3,6 +3,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 import fs from 'fs-extra';
 
+import { longPathArgs } from './utils/git.js';
 import { getGitHubToken } from './providers/github/gh-cli.js';
 import { getGitLabToken } from './providers/gitlab/gitlab-api.js';
 import { getGitCodeToken } from './providers/gitcode/gitcode-api.js';
@@ -285,7 +286,8 @@ export async function shallowClone(
     const { cloneUrl, cloneMethod, extraAuthHeader } = resolveCloneAuth(url, provider, { forceSsh, forceAnonymous });
 
     // 构建 clone 参数：若有 token 则通过 http.extraHeader 注入，避免 token 出现在 URL 中
-    const cloneArgs: string[] = [];
+    // `-c <key>=<val>` is a git-level option, so it must precede `clone`.
+    const cloneArgs: string[] = [...longPathArgs()];
 
     if (extraAuthHeader) {
         cloneArgs.push('-c', `http.extraHeader=${extraAuthHeader}`);
