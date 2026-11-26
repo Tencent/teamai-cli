@@ -839,6 +839,13 @@ export async function confirmVotesSynced(
  * Record manual feedback for a recalled document.
  */
 export async function recallFeedback(opts: { positive?: string; negative?: string; dryRun?: boolean }): Promise<void> {
+  if (Boolean(opts.positive) === Boolean(opts.negative)) {
+    log.error('Specify exactly one of --positive <docId> or --negative <docId>.');
+    process.exitCode = 1;
+
+    return;
+  }
+
   const { resolveConfigForDir, findUnreadableProjectConfig, throwMissingOrInvalid, BROKEN_CONFIG_ADVICE } = await import('./config.js');
   // The votes of the cwd's scope (#787). An unreadable project config falls
   // back to no other scope: the feedback would reach that scope's team.
@@ -950,5 +957,4 @@ export async function recallFeedback(opts: { positive?: string; negative?: strin
     return;
   }
 
-  log.error('Usage: teamai recall feedback --positive <docId> | --negative <docId>');
 }
