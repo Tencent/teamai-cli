@@ -59,6 +59,17 @@ const GitHubUserSchema = z.object({ login: z.string(), email: z.string().nullish
 const TGitUserSchema = z.object({ username: z.string(), email: z.string() });
 
 /**
+ * Provider whose token identifies the commit author for a `ci write` push.
+ * Derived from the MR's route (parseMrUrl), never from a hostname substring:
+ * a GitLab/TGit project path can legitimately contain "github.com" (mirrors),
+ * and a substring match then picked the wrong token and wrote the wrong author
+ * identity into the team repo commit. Exported for a regression test.
+ */
+export function ciWriteProvider(mrUrl: string): 'github' | 'tgit' | 'gitlab' {
+  return parseMrUrl(mrUrl).provider;
+}
+
+/**
  * Sets git user.name and user.email automatically.
  *
  * Looks up the user behind the current token through the provider API:
@@ -158,11 +169,7 @@ async function writeKnowledgeToRepo(
 
   if (!dryRun && changedFiles.length > 0) {
     try {
-      const provider = mrUrl.includes('github.com') ? 'github' as const
-        : mrUrl.includes('git.woa.com') ? 'tgit' as const
-          : 'gitlab' as const;
-
-      await configureGitUser(teamRepo, provider);
+      await configureGitUser(teamRepo, ciWriteProvider(mrUrl));
       await pushRepoDirectly(teamRepo, `[teamai] CI extract knowledge from MR`, changedFiles);
       log.success('Pushed to the team repo');
     } catch (err) {
