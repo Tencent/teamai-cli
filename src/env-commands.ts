@@ -204,10 +204,19 @@ export async function envSet(
 /** Remove this member's value for a secret or variable, for this team repo or, with `global`, for the machine. */
 export async function envUnset(key: string, options: GlobalOptions & { global?: boolean; workspace?: boolean }): Promise<void> {
   if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
+
+  if (options.workspace && options.global) {
+    return fail('Pass either --workspace or --global, not both. Nothing was changed.');
+  }
+
   const scope = await scopeHere(options.global, options.dryRun);
 
   if (scope.kind === 'reported') return;
   const localConfig = scope.kind === 'scope' ? scope.localConfig : null;
+
+  if (options.workspace && localConfig?.scope !== 'project') {
+    return fail('--workspace needs a project-scope checkout. Nothing was changed.');
+  }
 
   const { file, value } = valuesFile(localConfig, options.global, options.workspace);
   const hasNoValue = (): void => { log.info(`${key} has no ${value}. Nothing was changed.`); };

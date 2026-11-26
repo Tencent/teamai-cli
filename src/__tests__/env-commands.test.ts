@@ -321,6 +321,27 @@ scope: 'user',
       }
     });
 
+    it('rejects --workspace together with --global for set and unset', async () => {
+      await envSet('GITHUB_TOKEN', { workspace: true, global: true, fromEnv: 'WORKSPACE_TOKEN' });
+      await envUnset('GITHUB_TOKEN', { workspace: true, global: true });
+
+      expect(log.error).toHaveBeenCalledTimes(2);
+      expect(log.error).toHaveBeenCalledWith('Pass either --workspace or --global, not both. Nothing was changed.');
+      expect(process.exitCode).toBe(1);
+      process.exitCode = undefined;
+    });
+
+    it('rejects --workspace outside a project-scope checkout for set and unset without throwing', async () => {
+      await envSet('GITHUB_TOKEN', { workspace: true, fromEnv: 'WORKSPACE_TOKEN' });
+
+      await expect(envUnset('GITHUB_TOKEN', { workspace: true })).resolves.toBeUndefined();
+
+      expect(log.error).toHaveBeenCalledTimes(2);
+      expect(log.error).toHaveBeenCalledWith('--workspace needs a project-scope checkout. Nothing was changed.');
+      expect(process.exitCode).toBe(1);
+      process.exitCode = undefined;
+    });
+
     const logged = (): string => [log.info, log.success, log.warn, log.error, log.dim]
       .flatMap((fn) => vi.mocked(fn).mock.calls.map((c) => String(c[0])))
       .concat(consoleSpy.mock.calls.map((c) => String(c[0])))
