@@ -850,8 +850,10 @@ function getPluginStatePath(): string {
   return path.join(getLocalAgentHome(), 'plugins.json');
 }
 
-async function readPluginState(): Promise<Record<string, PluginState>> {
-  return (await readJson<Record<string, PluginState>>(getPluginStatePath())) ?? {};
+type LocalAgentPluginState = PluginState & { a2a?: A2aPluginRuntime };
+
+async function readPluginState(): Promise<Record<string, LocalAgentPluginState>> {
+  return (await readJson<Record<string, LocalAgentPluginState>>(getPluginStatePath())) ?? {};
 }
 
 /**
@@ -859,7 +861,7 @@ async function readPluginState(): Promise<Record<string, PluginState>> {
  * cannot be acquired within the timeout, throws (the caller skips this cycle
  * rather than writing without the lock — reconcile is throttled, so skipping is safe).
  */
-async function withPluginStateLock(mutate: (m: Record<string, PluginState>) => void): Promise<void> {
+async function withPluginStateLock(mutate: (m: Record<string, LocalAgentPluginState>) => void): Promise<void> {
   const statePath = getPluginStatePath();
   const lockPath = `${statePath}.lock`;
   await ensureDir(path.dirname(lockPath));
@@ -1613,8 +1615,13 @@ function redactSecrets(s: string): string {
  * emit 'close', producing a false timeout even though the command itself finished.
  * Rejects on non-zero exit, termination by signal, or timeout.
  */
-export async function execPluginCommand(cmd: string, timeoutMs: number, deviceToken?: string, hermesRuntime?: HermesA2aRuntime): Promise<void> {
+export async function execPluginCommand(
+  cmd: string,
+  timeoutMs: number,
+  a2a?: { deviceToken?: string; hermesRuntime?: HermesA2aRuntime },
+): Promise<void> {
   const { spawn } = await import('node:child_process');
+  const hermesRuntime = a2a?.hermesRuntime;
   let hermesEnv: NodeJS.ProcessEnv | undefined;
 
   if (hermesRuntime) {
@@ -1623,9 +1630,9 @@ export async function execPluginCommand(cmd: string, timeoutMs: number, deviceTo
   }
 
   await new Promise<void>((resolve, reject) => {
-    const env = deviceToken ? {
+    const env = a2a ? {
       ...process.env,
-      TEAMAI_CLAWPRO_A2A_DEVICE_TOKEN: deviceToken,
+      TEAMAI_CLAWPRO_A2A_DEVICE_TOKEN: a2a.deviceToken,
       ...(hermesRuntime && {
         ...hermesEnv,
         TERMINAL_ENV: 'local',
@@ -1633,7 +1640,7 @@ export async function execPluginCommand(cmd: string, timeoutMs: number, deviceTo
       }),
     } : undefined;
 
-    const stdio = ['ignore', 'ignore', deviceToken ? 'ignore' : 'pipe'] as const;
+    const stdio = ['ignore', 'ignore', a2a ? 'ignore' : 'pipe'] as const;
 
     const child = process.platform === 'win32'
       ? spawn('cmd', ['/c', cmd], { windowsHide: true, stdio: [...stdio], env })
@@ -1728,12 +1735,24 @@ async function isHermesA2aOwner(endpoint: string, profile: string): Promise<bool
   return owner?.endpoint === endpoint && owner.profile === profile;
 }
 
-const A2aPluginRequestSchema = z.strictObject({
-  scope: z.string().regex(/^[a-f0-9]{64}$/),
+const A2aPluginRuntimeFields = {
   instanceId: z.string().regex(/^local-(?:openclaw|hermes)-[a-f0-9]{6}$/),
-  revision: A2aPluginRevisionSchema,
   hermesRuntime: HermesA2aRuntimeSchema.optional(),
-}).refine(({ instanceId, hermesRuntime }) => instanceId.startsWith('local-hermes-') === Boolean(hermesRuntime));
+};
+
+function matchesA2aRuntime({ instanceId, hermesRuntime }: { instanceId: string; hermesRuntime?: HermesA2aRuntime }): boolean {
+  return instanceId.startsWith('local-hermes-') === Boolean(hermesRuntime);
+}
+
+const A2aPluginRuntimeSchema = z.strictObject(A2aPluginRuntimeFields).refine(matchesA2aRuntime);
+
+const A2aPluginRequestSchema = z.strictObject({
+  ...A2aPluginRuntimeFields,
+  scope: z.string().regex(/^[a-f0-9]{64}$/),
+  revision: A2aPluginRevisionSchema,
+}).refine(matchesA2aRuntime);
+
+type A2aPluginRuntime = z.infer<typeof A2aPluginRuntimeSchema>;
 
 type A2aPluginRequest = z.infer<typeof A2aPluginRequestSchema>;
 
@@ -1813,6 +1832,7 @@ async function reconcileA2aPlugins(config: LocalAgentConfig, tag: string, reques
   const slug = A2A_PLUGIN_PREFIX + request.scope;
   const statePath = a2aPullStatePath(request.scope);
   const deps = buildReconcileDeps(tag);
+  const runtime: A2aPluginRuntime = { instanceId: request.instanceId, hermesRuntime: request.hermesRuntime };
 
   const scopedDeps: ReconcileDeps = {
     ...deps,
@@ -1822,7 +1842,13 @@ async function reconcileA2aPlugins(config: LocalAgentConfig, tag: string, reques
       // The instance pull stamp controls retries, including after a new revision.
       return state ? { [slug]: { ...state, lastAttemptAt: undefined } } : {};
     },
-    execCommand: (command, timeout) => execPluginCommand(command, timeout, token, request.hermesRuntime),
+    mutatePlugins: (mutate) => withPluginStateLock((states) => {
+      mutate(states);
+      const state = states[slug];
+
+      if (state && !state.a2a) state.a2a = runtime;
+    }),
+    execCommand: (command, timeout) => execPluginCommand(command, timeout, { deviceToken: token, hermesRuntime: request.hermesRuntime }),
     runTimeoutMs: A2A_PLUGIN_RUN_TIMEOUT_MS,
   };
 
@@ -1866,11 +1892,18 @@ async function reconcileA2aPlugins(config: LocalAgentConfig, tag: string, reques
     }
 
     await reconcilePlugins(desired, scopedDeps);
-    const current = (await scopedDeps.readPlugins())[slug];
+    const current = (await readPluginState())[slug];
 
     if (plugin ? !isCurrent(current) : current !== undefined) throw new Error('A2A plugin did not converge');
 
-    if (plugin && isCurrent(previous)) await scopedDeps.execCommand(plugin.runCmd, A2A_PLUGIN_RUN_TIMEOUT_MS);
+    if (plugin && isCurrent(previous)) {
+      if (current && !current.a2a) {
+        await withPluginStateLock((states) => { if (states[slug]) states[slug].a2a ??= runtime; });
+      }
+
+      await scopedDeps.execCommand(plugin.runCmd, A2A_PLUGIN_RUN_TIMEOUT_MS, slug);
+    }
+
     await writeJsonAtomic<A2aPullState>(statePath, {
       observedRevision: request.revision,
       nextCheckAt: Date.now() + (plugin ? A2A_PLUGIN_RETRY_MS : PLUGIN_PULL_INTERVAL_MS),
@@ -3021,14 +3054,14 @@ async function canonicalHermesA2aProfile(home = process.env.HERMES_HOME?.trim() 
   }
 }
 
-async function resolveHermesA2aRuntime(profile: string): Promise<HermesA2aRuntime | null | undefined> {
+async function resolveHermesA2aRuntime(profile: string, env = process.env): Promise<HermesA2aRuntime | null | undefined> {
   try {
     const raw = await readFileSafe(getHermesConfigPath(profile));
 
     if (raw === null) return undefined;
     const { terminal } = HermesTerminalConfigSchema.parse(parseYaml(raw) ?? {});
-    const backend = process.env.TERMINAL_ENV?.trim() || terminal?.backend?.trim() || 'local';
-    const cwd = process.env.TERMINAL_CWD?.trim() || terminal?.cwd?.trim();
+    const backend = env.TERMINAL_ENV?.trim() || terminal?.backend?.trim() || 'local';
+    const cwd = env.TERMINAL_CWD?.trim() || terminal?.cwd?.trim();
 
     if (backend !== 'local' || !cwd || !A2aRuntimePathSchema.safeParse(cwd).success) return null;
 
@@ -7115,6 +7148,48 @@ function parseScopeKey(key: string): ScopeOfKey {
   return { scope: key === 'instance' ? 'instance' : 'user' };
 }
 
+async function legacyA2aPluginRuntime(config: LocalAgentConfig, slug: string): Promise<A2aPluginRuntime | undefined> {
+  const instanceFor = (tool: A2aTool) => deriveInstanceId(tool, resolveLocalAgentId({ tool }).toLowerCase());
+  const openClawId = instanceFor('openclaw');
+
+  if (slug === A2A_PLUGIN_PREFIX + a2aPluginScope(config.endpoint, openClawId)) return { instanceId: openClawId };
+  const hermesId = instanceFor('hermes');
+
+  if (slug !== A2A_PLUGIN_PREFIX + a2aPluginScope(config.endpoint, hermesId)) return;
+  const owner = await readHermesA2aOwner();
+  const hermesRuntime = owner?.endpoint === config.endpoint ? await resolveHermesA2aRuntime(owner.profile, {}) : undefined;
+
+  if (!hermesRuntime) throw new Error('Could not recover the enrolled Hermes A2A profile and workspace.');
+
+  return { instanceId: hermesId, hermesRuntime };
+}
+
+async function teardownLocalAgentPluginState(config: LocalAgentConfig): Promise<void> {
+  const deps = buildReconcileDeps('[local-agent] [uninstall]');
+  const plugins = await readPluginState();
+
+  await teardownAllPlugins({
+    ...deps,
+    readPlugins: async () => plugins,
+    execCommand: async (cmd, timeout, slug) => {
+      if (!slug.startsWith(A2A_PLUGIN_PREFIX)) return deps.execCommand(cmd, timeout, slug);
+      const stored = A2aPluginRuntimeSchema.safeParse(plugins[slug]?.a2a).data;
+      const runtime = stored ?? await legacyA2aPluginRuntime(config, slug);
+
+      // An endpoint change may leave local files behind, but its token belongs only to the new endpoint.
+      const deviceToken = runtime && slug === A2A_PLUGIN_PREFIX + a2aPluginScope(config.endpoint, runtime.instanceId)
+        ? a2aToken(config, runtime.instanceId.startsWith('local-hermes-') ? 'hermes' : 'openclaw')
+        : undefined;
+
+      if (!stored && runtime) {
+        await withPluginStateLock((states) => { if (states[slug]) states[slug].a2a = runtime; });
+      }
+
+      await execPluginCommand(cmd, timeout, { deviceToken, hermesRuntime: runtime?.hermesRuntime });
+    },
+  });
+}
+
 /**
  * Run each installed plugin's uninstall_cmd (stop daemons, deregister autostart,
  * remove packages) using the persisted plugin manifest. No-op when no HTTP source
@@ -7129,7 +7204,7 @@ export async function teardownLocalAgentPlugins(): Promise<void> {
     const config = await loadLocalAgentConfig();
 
     if (!config) return;
-    await teardownAllPlugins(buildReconcileDeps('[local-agent] [uninstall]'));
+    await teardownLocalAgentPluginState(config);
   } catch (e) {
     log.warn(`[local-agent] plugin teardown failed: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -7222,14 +7297,25 @@ async function interruptedRemovalConfig(): Promise<LocalAgentConfig | null> {
   return isJsonObject(marker) && marker.disabled === true ? storedLocalAgentConfig(marker.removing)?.config ?? null : null;
 }
 
-async function removeHermesA2aProfileHook(profile?: string): Promise<void> {
+async function removeHermesA2aProfileHook(profile?: string): Promise<string | undefined> {
   try {
-    if (profile !== undefined && await canonicalHermesA2aProfile(profile) !== profile) return;
+    if (profile !== undefined) {
+      const canonical = await fs.promises.realpath(profile).catch((error) => {
+        if (errnoCode(error) !== 'ENOENT') throw error;
+      });
+
+      if (!canonical) return;
+
+      if (canonical !== profile) throw new Error(`Hermes profile path has changed: ${profile}`);
+    }
+
     const { removeHermesA2aControl } = await import('./hermes-hooks.js');
 
-    await removeHermesA2aControl(profile);
+    await removeHermesA2aControl(profile, { strict: profile !== undefined });
   } catch (error) {
     log.warn(`[local-agent] Failed to remove the Hermes A2A control service: ${messageOf(error)}`);
+
+    return profile;
   }
 }
 
@@ -7240,7 +7326,7 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
   if (!config) {
     if (!await disabledSourceLeftovers()) return 'none';
 
-    if (hermesOwner) await removeHermesA2aProfileHook(hermesOwner.profile);
+    const hermesHookLeft = hermesOwner ? await removeHermesA2aProfileHook(hermesOwner.profile) : undefined;
     // A retry: the caches an earlier run could not delete are still in the manifest.
     const cachesLeft: string[] = [];
 
@@ -7255,7 +7341,7 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
     const blocks = await removeLocalAgentGitExclude(await localAgentCheckouts());
     const models = await removeWorkspaceModels();
 
-    return finishAgentHookTeardown(retry, { models, caches: cachesLeft, blocks: [...blocks, ...await releaseModelKeyLines()] });
+    return finishAgentHookTeardown(retry, { models, caches: cachesLeft, hermesHookLeft, blocks: [...blocks, ...await releaseModelKeyLines()] });
   }
 
   // Read before the marker and the teardown below delete what names them (#915).
@@ -7273,11 +7359,11 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
     log.warn(`[local-agent] Failed to remove the OpenClaw A2A control service: ${messageOf(error)}`);
   }
 
-  await removeHermesA2aProfileHook(hermesOwner?.profile);
+  const hermesHookLeft = await removeHermesA2aProfileHook(hermesOwner?.profile);
 
   // Tear down installed plugins before removing teamai's local-agent state.
   try {
-    await teardownAllPlugins(buildReconcileDeps('[local-agent] [uninstall]'));
+    await teardownLocalAgentPluginState(config);
   } catch (e) { log.warn(`[local-agent] plugin teardown failed: ${messageOf(e)}`); }
 
   const kinds: CommandResourceKind[] = ['skill', 'rule', 'claudemd'];
@@ -7312,7 +7398,7 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
   const models = await removeWorkspaceModels();
 
   return finishAgentHookTeardown(retry, {
-    models, caches: cachesLeft, entries: entriesLeft, removing: config,
+    models, caches: cachesLeft, entries: entriesLeft, removing: config, hermesHookLeft,
     // The lines of models files the teardown deleted, with any an earlier run could not write.
     blocks: [...blocks, ...await releaseModelKeyLines()],
   });
@@ -7397,7 +7483,7 @@ async function disabledSourceLeftovers(): Promise<boolean> {
  */
 async function finishAgentHookTeardown(
   retry: string,
-  left: { models: string[]; caches: string[]; entries?: string[]; removing?: LocalAgentConfig; blocks?: string[] } = { models: [], caches: [] },
+  left: { models: string[]; caches: string[]; entries?: string[]; removing?: LocalAgentConfig; blocks?: string[]; hermesHookLeft?: string } = { models: [], caches: [] },
 ): Promise<'removed' | 'incomplete'> {
   const entries = left.entries ?? [];
   const blocks = [...new Set(left.blocks ?? [])];
@@ -7407,6 +7493,8 @@ async function finishAgentHookTeardown(
   const a2aLeft = Object.keys(await readPluginState()).some((slug) => slug.startsWith(A2A_PLUGIN_PREFIX));
 
   if (hooksLeft.length > 0) keep.add(path.basename(getAgentHookManifestPath()));
+
+  if (left.hermesHookLeft || a2aLeft) keep.add(path.basename(getHermesA2aOwnerPath()));
 
   if (a2aLeft) keep.add(path.basename(getPluginStatePath()));
 
@@ -7428,6 +7516,7 @@ async function finishAgentHookTeardown(
 
   const held = [
     ...hooksLeft.length > 0 ? [`agent hooks ${hooksLeft.map((h) => `${h.slug} (${h.tool})`).join(', ')}`] : [],
+    ...left.hermesHookLeft ? [`the Hermes A2A startup hook in ${left.hermesHookLeft}`] : [],
     ...a2aLeft ? ['the ClawPro A2A plugin'] : [],
     ...left.models.length > 0 ? [`teamai's models in ${left.models.join(', ')}`] : [],
     ...left.caches.length > 0 ? [`the local agent's cache in ${left.caches.map((dir) => path.join(dir, '.teamai')).join(', ')}`] : [],

@@ -10,7 +10,7 @@
 
 import path from 'node:path';
 import { chmod, lstat } from 'node:fs/promises';
-import { generatedFileState, writeIfChanged, writeFileAtomic, pathExists, readFileSafe, remove } from './utils/fs.js';
+import { generatedFileState, writeIfChanged, writeFileAtomic, pathExists, readFileIfExists, readFileSafe, remove } from './utils/fs.js';
 import { log } from '@teamai/shared/log';
 import { resolveCliEntry } from './builtin-hooks.js';
 import { hookAdapterDirIn } from './locate.js';
@@ -102,14 +102,14 @@ function statA2aHookPath(file: string) {
   });
 }
 
-async function a2aHookFileState(file: string) {
+async function a2aHookFileState(file: string, read = readFileSafe) {
   const stat = await statA2aHookPath(file);
 
   if (!stat) return 'absent';
 
   if (!stat.isFile()) return 'foreign';
 
-  const firstLine = (await readFileSafe(file))?.split(/\r?\n/, 1)[0];
+  const firstLine = (await read(file))?.split(/\r?\n/, 1)[0];
 
   return firstLine === A2A_HOOK_MARKER ? 'teamai' : 'foreign';
 }
@@ -223,13 +223,13 @@ async function refreshHermesA2aControl(entry: string, home = toolHome('hermes'))
   return enrolled && changed;
 }
 
-export async function removeHermesA2aControl(home = toolHome('hermes')): Promise<void> {
+export async function removeHermesA2aControl(home = toolHome('hermes'), { strict = false } = {}): Promise<void> {
   const { directory, manifest, handler } = a2aHookFiles(home);
 
   if (!(await statA2aHookPath(directory))?.isDirectory()) return;
 
   for (const file of [manifest, handler]) {
-    if (await a2aHookFileState(file) === 'teamai') await remove(file);
+    if (await a2aHookFileState(file, strict ? readFileIfExists : readFileSafe) === 'teamai') await remove(file);
   }
 }
 

@@ -259,6 +259,42 @@ describe('local-agent: Hermes A2A Gateway control', () => {
     expect(await fse.pathExists(hookManifest(profile))).toBe(true);
     expect((await loadLocalAgentConfig())?.agentTokens).toEqual({ codex: 'sk-example-codex', hermes: 'sk-example-next-hermes' });
   });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0).each([
+    { failure: 'read', target: 'HOOK.yaml', mode: 0o000, restoreMode: 0o644 },
+    { failure: 'remove', target: '.', mode: 0o555, restoreMode: 0o755 },
+  ])('retries startup hook cleanup from another profile when it cannot $failure the hook', async ({ target, mode, restoreMode }) => {
+    const { profile } = await setupHermesControl();
+    const manifest = hookManifest(profile);
+    const handler = path.join(path.dirname(manifest), 'handler.py');
+    await fse.outputFile(manifest, '# [teamai] Hermes A2A control\n');
+    await fse.outputFile(handler, '# [teamai] Hermes A2A control\n');
+    const other = path.join(tmpDir, 'other-profile');
+    await fse.ensureDir(other);
+    vi.stubEnv('HERMES_HOME', other);
+    const { loadLocalAgentConfig, shutdownLocalAgentHttp } = await import('../local-agent.js');
+    const blocked = path.join(path.dirname(manifest), target);
+    const exitCode = process.exitCode;
+    await fse.chmod(blocked, mode);
+
+    try {
+      expect(await shutdownLocalAgentHttp('teamai source remove-http')).toBe('incomplete');
+      expect(process.exitCode).toBe(1);
+      expect(await loadLocalAgentConfig({ dryRun: true })).toBeNull();
+      expect(await fse.readJson(ownerPath())).toEqual({ endpoint, profile });
+      expect(await fse.pathExists(manifest)).toBe(true);
+      expect(await shutdownLocalAgentHttp('teamai source remove-http')).toBe('incomplete');
+      expect(await fse.readJson(ownerPath())).toEqual({ endpoint, profile });
+    } finally {
+      await fse.chmod(blocked, restoreMode);
+      process.exitCode = exitCode;
+    }
+
+    expect(await shutdownLocalAgentHttp('teamai source remove-http')).toBe('removed');
+    expect(await fse.pathExists(manifest)).toBe(false);
+    expect(await fse.pathExists(handler)).toBe(false);
+    expect(await fse.pathExists(ownerPath())).toBe(false);
+  });
 });
 
 describe('local-agent: OpenClaw A2A Gateway control', () => {

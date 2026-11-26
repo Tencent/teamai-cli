@@ -162,6 +162,107 @@ describe('local-agent rules (#993)', () => {
     }
   }, 40_000);
 
+  it.skipIf(process.platform === 'win32').each(['recorded', 'legacy'])('remove-http retries Hermes A2A teardown with %s runtime and device credential', async (stateKind) => {
+    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-a2a-remove-')));
+    sandboxes.push(sandbox);
+    const home = path.join(sandbox, 'home');
+    const agentDir = path.join(home, '.teamai', 'local-agent');
+    const profile = path.join(sandbox, 'hermes-profile');
+    const workspace = path.join(sandbox, 'hermes-workspace');
+    const token = 'sk-a2a-fixture-hermes';
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const instanceId = 'local-hermes-ddeeff';
+    const configPath = path.join(agentDir, 'config.json');
+    const pluginState = path.join(agentDir, 'plugins.json');
+    const marker = path.join(sandbox, 'uninstall-attempts');
+    const diagnostics = path.join(sandbox, 'uninstall-context.json');
+    const allowTeardown = path.join(sandbox, 'allow-teardown');
+    const preload = path.join(sandbox, 'linux.cjs');
+    const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+
+    for (const dir of [agentDir, profile, workspace]) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(profile, 'config.yaml'), `terminal:\n  backend: local\n  cwd: ${JSON.stringify(workspace)}\n`);
+    fs.writeFileSync(preload, "require('node:os').platform = () => 'linux'; require('node:module').syncBuiltinESMExports();\n");
+    const uninstall = `
+      const fs = require('node:fs');
+      const token = process.env.TEAMAI_CLAWPRO_A2A_DEVICE_TOKEN;
+      const context = {
+        token: require('node:crypto').createHash('sha256').update(token || '').digest('hex') === ${JSON.stringify(tokenHash)},
+        profile: process.env.HERMES_HOME === ${JSON.stringify(profile)},
+        backend: process.env.TERMINAL_ENV === 'local',
+        workspace: process.env.TERMINAL_CWD === ${JSON.stringify(workspace)},
+      };
+      fs.writeFileSync(${JSON.stringify(diagnostics)}, JSON.stringify(context));
+      if (!Object.values(context).every(Boolean)) process.exit(7);
+      fs.appendFileSync(${JSON.stringify(marker)}, 'attempt\\n');
+      if (!fs.existsSync(${JSON.stringify(allowTeardown)})) process.exit(8);
+    `;
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      res.setHeader('content-type', 'application/json');
+
+      if (req.headers.authorization !== `Bearer ${token}`) {
+        res.statusCode = 401;
+        res.end('{}');
+      } else if (url.pathname.endsWith('/report')) {
+        res.end(JSON.stringify({ instance_id: instanceId }));
+      } else if (url.pathname.endsWith('/sync')) {
+        res.end(JSON.stringify({ ok: true, plugin_config_revision: 'installed' }));
+      } else if (url.pathname.endsWith('/get-config') && url.searchParams.get('instance_id') === instanceId) {
+        res.end(JSON.stringify({ 'a2a-12': {
+          version: '1', install_cmd: 'true', run_cmd: 'true',
+          uninstall_cmd: `${quote(process.execPath)} --eval ${quote(uninstall)}`,
+        } }));
+      } else {
+        res.statusCode = 404;
+        res.end('{}');
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const endpoint = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const scope = createHash('sha256').update(endpoint + '\0' + instanceId).digest('hex');
+    const slug = `clawpro-a2a-${scope}`;
+    const pullState = path.join(agentDir, `plugin-pull-a2a-${scope}.json`);
+    const cliEnv = { HOME: home, HERMES_HOME: profile, NODE_OPTIONS: `--require=${preload}`, TEAMAI_LOCAL_AGENT_ID: '0011223344ddeeff' };
+
+    try {
+      fs.writeFileSync(configPath, JSON.stringify({ endpoint, agentTokens: { hermes: token, openclaw: 'sk-a2a-other-tool' }, workspaceBindings: {} }));
+      fs.writeFileSync(path.join(agentDir, 'hermes-a2a-owner.json'), JSON.stringify({ endpoint, profile }));
+      const installed = await runCLI(['source', 'a2a-control', '--agent', 'hermes', '--report'], cliEnv, home);
+      expect(installed.code, installed.output).toBe(0);
+      await expect.poll(() => fs.existsSync(pullState), { timeout: 6000 }).toBe(true);
+      const installedState = fs.readFileSync(pluginState, 'utf8');
+      const plugins = JSON.parse(installedState);
+      expect(plugins[slug]?.ready).toBe(true);
+      expect(installedState).not.toContain(token);
+
+      if (stateKind === 'legacy') {
+        delete plugins[slug].a2a;
+        fs.writeFileSync(pluginState, JSON.stringify(plugins));
+      }
+
+      const removeEnv = { ...cliEnv, HERMES_HOME: path.join(sandbox, 'another-profile'), TERMINAL_ENV: 'docker', TERMINAL_CWD: home };
+      const removed = await runCLI(['source', 'remove-http'], removeEnv, home);
+      expect(removed.code, removed.output).toBe(1);
+      expect(removed.output).toContain('HTTP source disabled, but removal is incomplete');
+      expect(removed.output).not.toContain(token);
+      expect(fs.existsSync(diagnostics), removed.output).toBe(true);
+      expect(JSON.parse(fs.readFileSync(diagnostics, 'utf8'))).toEqual({ token: true, profile: true, backend: true, workspace: true });
+      expect(fs.readFileSync(marker, 'utf8')).toBe('attempt\n');
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toMatchObject({ disabled: true });
+      expect(JSON.parse(fs.readFileSync(pluginState, 'utf8'))).toHaveProperty(slug);
+
+      fs.writeFileSync(allowTeardown, '');
+      const retried = await runCLI(['source', 'remove-http'], removeEnv, home);
+      expect(retried.code, retried.output).toBe(0);
+      expect(fs.readFileSync(marker, 'utf8')).toBe('attempt\nattempt\n');
+      expect(fs.existsSync(pluginState)).toBe(false);
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ disabled: true });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  }, 25_000);
+
   it.skipIf(process.platform === 'win32').each(['http', 'https'])('binds and installs A2A over %s through the Gateway worker CLI without a session', async (scheme) => {
     const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-a2a-control-')));
     sandboxes.push(sandbox);
