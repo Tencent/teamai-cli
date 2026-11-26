@@ -32,6 +32,7 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { writeIfChanged, pathExists, readFileSafe, writeJsonAtomic, remove, symlinkTarget } from './utils/fs.js';
+import { assertSafeResourceName } from './utils/path-safety.js';
 import { isPlainJson, parseJsonAs } from './utils/json.js';
 import { log } from '@teamai/shared/log';
 import { getUserHome } from '@teamai/shared/home';
@@ -732,6 +733,7 @@ export async function removeOpenClawAgentHook(opts: {
   slug: string;
   tool?: string;
 }): Promise<void> {
+  assertSafeResourceName(opts.slug);
   const tool = opts.tool ?? 'openclaw';
   const hooksDir = resolveOpenClawHooksDir(tool);
   const dir = path.join(hooksDir, opts.slug);
