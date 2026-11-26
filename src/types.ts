@@ -3807,6 +3807,9 @@ export function isDataBranch(branch: string): branch is DataBranch {
 /** Worktree directory (under .teamai) used to stage knowledge PRs off the active tree. */
 export const KNOWLEDGE_WORKTREE_DIRNAME = 'knowledge-wt';
 
+/** Lock filename (beside the knowledge-wt checkout) guarding concurrent knowledge PR writes. */
+export const KNOWLEDGE_LOCK_FILENAME = '.knowledge-lock';
+
 /**
  * Every worktree directory teamai creates. A side branch's `.gitignore` lists
  * all of them, so no worktree can ever nest-track another.

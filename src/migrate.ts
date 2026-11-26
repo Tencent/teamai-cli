@@ -3,7 +3,7 @@ import fse from 'fs-extra';
 import YAML from 'yaml';
 import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
-import { isSelfMode, LocalConfigSchema, SYNC_LOCK_FILENAME, WORKTREE_DIRNAMES, type LocalConfig } from './types.js';
+import { isSelfMode, KNOWLEDGE_LOCK_FILENAME, LocalConfigSchema, SYNC_LOCK_FILENAME, WORKTREE_DIRNAMES, type LocalConfig } from './types.js';
 import { getRemoteUrl, resolveAnchors } from './utils/git.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
 import { realpath } from 'node:fs/promises';
@@ -48,6 +48,7 @@ const SKIP_ENTRIES = new Set<string>([
   // mistaken for a live lock.
   SYNC_LOCK_FILENAME,
   '.update-lock',
+  KNOWLEDGE_LOCK_FILENAME,
 ]);
 
 /**
@@ -61,7 +62,7 @@ const SKIP_ENTRIES = new Set<string>([
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
 const LOCK_ARTIFACT = new RegExp(
-  `^(?:${[SYNC_LOCK_FILENAME, '.update-lock'].map((l) => l.replace(/\./g, '\\.')).join('|')})` +
+  `^(?:${[SYNC_LOCK_FILENAME, '.update-lock', KNOWLEDGE_LOCK_FILENAME].map((l) => l.replace(/\./g, '\\.')).join('|')})` +
     `(?:\\.sentinel(?:\\.steal-${UUID})*(?:\\.${UUID}\\.tmp|\\.reclaim-${UUID})?|\\.${UUID}\\.tmp|\\.new-${UUID})$`,
 );
 
