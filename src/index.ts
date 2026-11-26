@@ -831,6 +831,7 @@ envCmd
   .option('--stdin', 'Read the value from piped stdin')
   .option('--from-env <var>', 'Read the value from this environment variable each time it is used; no copy is stored')
   .option('--global', 'Set a secret for every team on this machine; a value set for a team still wins')
+  .option('--workspace', 'Set an override for this project partition; it wins for this checkout and its linked worktrees')
   .action(async (key, cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
     const { envSet } = await import('./env-commands.js');
@@ -841,6 +842,7 @@ envCmd
   .command('unset <key>')
   .description("Remove your value for a secret or env variable, for this directory's team, from this machine")
   .option('--global', 'Remove the value set for every team on this machine instead')
+  .option('--workspace', "Remove this project partition's override instead")
   .action(async (key, cmdOpts) => {
     const globalOpts = program.opts<GlobalOptions>();
     const { envUnset } = await import('./env-commands.js');

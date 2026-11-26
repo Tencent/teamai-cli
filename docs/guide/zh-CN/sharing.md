@@ -294,6 +294,14 @@ teamai env set GITHUB_TOKEN
 teamai env exec -- gh pr create
 ```
 
+同一台机器上有同一团队的多个检出、且某个检出需要不同值时，可在该目录设置 partition 级覆盖：
+
+```bash
+teamai env set API_ENDPOINT --workspace
+```
+
+覆盖值保存在该项目的机器数据目录中，作用于该项目的 linked worktree，并优先于成员值。`teamai env list` 会把它标为 `workspace`。只能覆盖团队已经声明的键。
+
 ### 按目录加载 Shell 环境变量
 
 shell 获得其启动目录的团队环境变量，因此同时打开的多个项目各自拿到自己的。`teamai pull` 会在 shell 配置文件中加入一个区块（zsh 为 `.zshenv`，bash 为 bash 启动文件）。交互式 shell 在 `cd` 时切换环境变量，离开项目时恢复你自己的值。

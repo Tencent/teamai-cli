@@ -16,7 +16,7 @@ import { envEntryReader, parseEnvFileKept, readEnvBackup, type EnvVariable } fro
 import { envName, sameEnvName } from './resources/env-key.js';
 import { declaredSecretKeys, resolveSecretDeclarations, type KnownNamespaces, type SecretDeclarations } from './resources/secrets.js';
 import {
-  getMachineSecretsPath, getTeamSecretsPath, readSecretStore, storedEntryKind, storedSecretValue, type SecretStore,
+  getMachineSecretsPath, getTeamSecretsPath, getWorkspaceEnvPath, readSecretStore, storedEntryKind, storedSecretValue, type SecretStore,
   type SecretStoreRead, type StoredEntryKind, type StoredSecret,
 } from './secret-store.js';
 import { getDataHome, getEnvBackupPath, type LocalConfig } from './types.js';
@@ -27,7 +27,7 @@ import { isReservedTeamEnvKey } from './env-reserved.js';
 import type { EnvFacts } from './workflow/requirements.js';
 
 export interface SecretValue {
-  readonly source: 'team' | 'global' | 'environment';
+  readonly source: 'workspace' | 'team' | 'global' | 'environment';
   readonly value: string;
 }
 
@@ -45,7 +45,7 @@ export type SecretState = SecretValue['source'] | 'missing' | 'unreadable';
  * it is the value every other member of the team gets.
  */
 export interface VariableValue {
-  readonly source: 'team' | 'env.yaml';
+  readonly source: 'workspace' | 'team' | 'env.yaml';
   readonly value: string;
   readonly fromEnv: boolean;
 }
@@ -129,10 +129,15 @@ export async function resolveTeamEnv(
   const plain = received.filter((variable) => !secretKeys.has(variable.name));
   const envYaml = new Map(received.map((variable) => [variable.name, variable.entry.value]));
   const member = await memberEnvironment(localConfig, { secretKeys, envYaml }, env);
+  const workspacePath = getWorkspaceEnvPath(localConfig);
+
+  const workspace = workspacePath && (secretKeys.size > 0 || plain.length > 0)
+    ? await readSecretStore(workspacePath) : NO_VALUES;
+
   const team = secretKeys.size > 0 || plain.length > 0 ? await readSecretStore(getTeamSecretsPath(localConfig)) : NO_VALUES;
   const machine = secretKeys.size > 0 ? await readSecretStore(getMachineSecretsPath()) : NO_VALUES;
-  const secrets = secretValues(secretKeys, team, machine, member, env);
-  const ownValues = variableValues(plain, team, env);
+  const secrets = secretValues(secretKeys, workspace, team, machine, member, env);
+  const ownValues = variableValues(plain, workspace, team, env);
   const ownResolves = variables.kind === 'resolved' && declarations.kind !== 'failed' && ownValues.kind === 'resolved';
   const lastPull = ownResolves ? null : await lastPullOf(localConfig);
   const keptValues = lastPull && new Map([...lastPull.values].filter(([key]) => sameEnvName(secretKeys, key) === undefined && !isReservedTeamEnvKey(key)));
@@ -176,7 +181,7 @@ export async function resolveTeamEnv(
     secrets: secrets.values,
     unsetReferences: secrets.unsetReferences,
     variableValues: ownValues,
-    staleEntries: staleEntries(secretKeys, plain, team),
+    staleEntries: staleEntries(secretKeys, plain, workspace, team),
     member,
   };
 }
@@ -285,15 +290,19 @@ function storeEntry(store: SecretStore, key: string, kind: StoredEntryKind): Sto
 function staleEntries(
   secretKeys: ReadonlySet<string>,
   variables: readonly ResolvedEntry<EnvVariable>[],
+  workspace: SecretStoreRead,
   team: SecretStoreRead,
 ): ReadonlyMap<string, StoredEntryKind> {
   const stale = new Map<string, StoredEntryKind>();
 
-  if (!team.ok) return stale;
+  if (!workspace.ok || !team.ok) return stale;
 
   const check = (key: string, kind: StoredEntryKind): void => {
-    const stored = sameEnvName(Object.keys(team.values), key);
-    const entry = stored === undefined ? undefined : team.values[stored];
+    const workspaceKey = sameEnvName(Object.keys(workspace.values), key);
+    const workspaceEntry = workspaceKey === undefined ? undefined : workspace.values[workspaceKey];
+    const teamKey = sameEnvName(Object.keys(team.values), key);
+    const teamEntry = teamKey === undefined ? undefined : team.values[teamKey];
+    const entry = workspaceEntry ?? teamEntry;
 
     if (entry && storedEntryKind(entry) !== kind) stale.set(key, storedEntryKind(entry));
   };
@@ -313,6 +322,7 @@ interface SecretValues {
 
 function secretValues(
   keys: ReadonlySet<string>,
+  workspace: SecretStoreRead,
   team: SecretStoreRead,
   machine: SecretStoreRead,
   member: MemberEnvironment,
@@ -324,21 +334,25 @@ function secretValues(
 
   if (keys.size === 0) return result;
 
+  if (!workspace.ok) return { values: { kind: 'store-unreadable', reason: workspace.reason }, unsetReferences };
+
   if (!team.ok) return { values: { kind: 'store-unreadable', reason: team.reason }, unsetReferences };
 
   if (!machine.ok) return { values: { kind: 'store-unreadable', reason: machine.reason }, unsetReferences };
 
   for (const key of keys) {
+    const workspaceEntry = storeEntry(workspace.values, key, 'secret');
     const teamEntry = storeEntry(team.values, key, 'secret');
     const machineEntry = storeEntry(machine.values, key, 'secret');
-    const entry = teamEntry ?? machineEntry;
+    const entry = workspaceEntry ?? teamEntry ?? machineEntry;
 
-    const [source, value]: [SecretValue['source'], string | undefined] = teamEntry ? ['team', storedSecretValue(teamEntry, env)]
+    const [source, value]: [SecretValue['source'], string | undefined] = workspaceEntry ? ['workspace', storedSecretValue(workspaceEntry, env)]
+      : teamEntry ? ['team', storedSecretValue(teamEntry, env)]
       : machineEntry ? ['global', storedSecretValue(machineEntry, env)]
       : ['environment', member(key) || undefined];
 
     if (value !== undefined) values.set(key, { source, value });
-    else if (entry && 'env' in entry) unsetReferences.set(key, { variable: entry.env, global: teamEntry === undefined });
+    else if (entry && 'env' in entry) unsetReferences.set(key, { variable: entry.env, global: workspaceEntry === undefined && teamEntry === undefined });
   }
 
   return result;
@@ -346,6 +360,7 @@ function secretValues(
 
 function variableValues(
   variables: readonly ResolvedEntry<EnvVariable>[],
+  workspace: SecretStoreRead,
   team: SecretStoreRead,
   env: NodeJS.ProcessEnv,
 ): StoreResolution<VariableValue> {
@@ -353,14 +368,18 @@ function variableValues(
 
   if (variables.length === 0) return { kind: 'resolved', values };
 
+  if (!workspace.ok) return { kind: 'store-unreadable', reason: workspace.reason };
+
   if (!team.ok) return { kind: 'store-unreadable', reason: team.reason };
 
   for (const variable of variables) {
+    const workspaceEntry = storeEntry(workspace.values, variable.name, 'variable');
     const entry = storeEntry(team.values, variable.name, 'variable');
-    const member = entry ? storedSecretValue(entry, env) : undefined;
-    const fromEnv = entry !== undefined && 'env' in entry;
+    const resolvedEntry = workspaceEntry ?? entry;
+    const member = resolvedEntry ? storedSecretValue(resolvedEntry, env) : undefined;
+    const fromEnv = resolvedEntry !== undefined && 'env' in resolvedEntry;
     values.set(variable.name, member !== undefined
-      ? { source: 'team', value: member, fromEnv }
+      ? { source: workspaceEntry ? 'workspace' : 'team', value: member, fromEnv }
       : { source: 'env.yaml', value: variable.entry.value, fromEnv });
   }
 

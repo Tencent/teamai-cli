@@ -45,7 +45,8 @@ vi.mock('../utils/prompt.js', async (importOriginal) => ({
 
 import { envList, envAdd, envRemove, envSet, envUnset } from '../env-commands.js';
 import { askSecret, readStdin } from '../utils/prompt.js';
-import { getMachineSecretsPath, getTeamSecretsPath, writeSecretStore } from '../secret-store.js';
+import { getMachineSecretsPath, getTeamSecretsPath, getWorkspaceEnvPath, writeSecretStore } from '../secret-store.js';
+import { resolveTeamEnv } from '../env-resolution.js';
 import { NotInitializedError, detectProjectConfig, requireInit } from '../config.js';
 import { resolveAnchors } from '../utils/git.js';
 import { projectDataHome } from '../utils/partition.js';
@@ -268,6 +269,58 @@ scope: 'user',
   // ─── envSet / envUnset (#875) ────────────────────────────
 
   describe('envSet / envUnset', () => {
+    it('stores a workspace override and gives it precedence over the team value', async () => {
+      await fse.outputFile(path.join(repoPath, 'env', 'env.yaml'), YAML.stringify({
+        variables: [{ key: 'API_ENDPOINT', value: 'https://team.example' }],
+      }));
+      await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), YAML.stringify({
+        secrets: [{ key: 'TOKEN' }],
+      }));
+      localConfig = {
+        ...localConfig,
+        scope: 'project',
+        projectRoot: repoPath,
+        dataHome: path.join(tmpDir, 'partition'),
+      };
+      vi.mocked(detectProjectConfig).mockResolvedValueOnce(localConfig);
+      vi.stubEnv('WORKSPACE_API_ENDPOINT', 'https://workspace.example');
+      vi.stubEnv('WORKSPACE_TOKEN', 'workspace-secret');
+
+      await envSet('API_ENDPOINT', { workspace: true, fromEnv: 'WORKSPACE_API_ENDPOINT' });
+      vi.mocked(detectProjectConfig).mockResolvedValueOnce(localConfig);
+      await writeSecretStore(getTeamSecretsPath(localConfig), { TOKEN: { value: 'team-secret' } });
+      await envSet('TOKEN', { workspace: true, fromEnv: 'WORKSPACE_TOKEN' });
+
+      const workspaceFile = getWorkspaceEnvPath(localConfig);
+      expect(workspaceFile).not.toBeNull();
+      expect(await fse.pathExists(workspaceFile!)).toBe(true);
+      const resolved = await resolveTeamEnv(localConfig);
+      expect(resolved.variableValues).toMatchObject({ kind: 'resolved' });
+      if (resolved.variableValues.kind === 'resolved') {
+        expect(resolved.variableValues.values.get('API_ENDPOINT')).toMatchObject({
+          source: 'workspace',
+          value: 'https://workspace.example',
+        });
+      }
+      expect(resolved.secrets).toMatchObject({ kind: 'resolved' });
+      if (resolved.secrets.kind === 'resolved') {
+        expect(resolved.secrets.values.get('TOKEN')).toEqual({
+          source: 'workspace',
+          value: 'workspace-secret',
+        });
+      }
+
+      vi.mocked(detectProjectConfig).mockResolvedValueOnce(localConfig);
+      await envUnset('API_ENDPOINT', { workspace: true });
+      const afterUnset = await resolveTeamEnv(localConfig);
+      if (afterUnset.variableValues.kind === 'resolved') {
+        expect(afterUnset.variableValues.values.get('API_ENDPOINT')).toMatchObject({
+          source: 'env.yaml',
+          value: 'https://team.example',
+        });
+      }
+    });
+
     const logged = (): string => [log.info, log.success, log.warn, log.error, log.dim]
       .flatMap((fn) => vi.mocked(fn).mock.calls.map((c) => String(c[0])))
       .concat(consoleSpy.mock.calls.map((c) => String(c[0])))

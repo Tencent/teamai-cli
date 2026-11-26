@@ -19,7 +19,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { ENV_KEY_RE, envTable, envValue } from './resources/env-key.js';
 import { isRepoReference } from './models/profile.js';
-import { getTeamaiHomeDir, type LocalConfig } from './types.js';
+import { getDataHome, getTeamaiHomeDir, type LocalConfig } from './types.js';
 import { acquireLock, releaseLock } from './update.js';
 import { writeJsonAtomic } from './utils/fs.js';
 import { NotRegularFileError, readRegularFile } from '@teamai/shared/regular-file';
@@ -144,6 +144,13 @@ function decodeUser(user: string): string {
 /** The values file for every team on this machine (`teamai env set --global`). */
 export function getMachineSecretsPath(): string {
   return path.join(getTeamaiHomeDir(), 'secrets', 'machine.json');
+}
+
+/** A project's directory-scoped override values, outside the checkout in the partition data home. */
+export function getWorkspaceEnvPath(localConfig: LocalConfig): string | null {
+  return localConfig.scope === 'project'
+    ? path.join(getDataHome(localConfig), 'env.local.json')
+    : null;
 }
 
 /**
