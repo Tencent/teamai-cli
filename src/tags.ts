@@ -1,3 +1,4 @@
+import path from 'node:path';
 import {
     requireInit,
     saveLocalConfig,
@@ -7,6 +8,7 @@ import {
     saveStateForScope,
     loadTeamConfig,
 } from './config.js';
+import { pathExists } from './utils/fs.js';
 import { buildRolePullContext, resolveDesiredSkills } from './resources/desired.js';
 import { loadTagsConfig, collectTagStats, saveTagsConfig } from './utils/tags.js';
 import { log } from '@teamai/shared/log';
@@ -108,6 +110,7 @@ export async function tagsList(): Promise<void> {
 export async function tagsSubscribe(tags: string[], options: GlobalOptions): Promise<void> {
     if (tags.length === 0) {
         log.error('Please specify at least one tag. Example: teamai tags subscribe hai gpu');
+        process.exitCode = 1;
 
         return;
     }
@@ -152,6 +155,7 @@ export async function tagsSubscribe(tags: string[], options: GlobalOptions): Pro
 export async function tagsUnsubscribe(tags: string[], options: GlobalOptions): Promise<void> {
     if (tags.length === 0) {
         log.error('Please specify at least one tag. Example: teamai tags unsubscribe hai');
+        process.exitCode = 1;
 
         return;
     }
@@ -202,6 +206,7 @@ export async function tagsAdd(
 ): Promise<void> {
     if (tags.length === 0) {
         log.error('Please specify at least one tag. Example: teamai tags add skills hai-deploy hai infra');
+        process.exitCode = 1;
 
         return;
     }
@@ -212,6 +217,15 @@ export async function tagsAdd(
     let tagsConfig = await loadTagsConfig(repoPath);
 
     if (!tagsConfig) {
+        // A file that exists but does not parse must not be replaced: that would
+        // drop every tag the team had. Only a missing file starts a new one.
+        if (await pathExists(path.join(repoPath, 'tags.yaml'))) {
+            log.error(`tags.yaml in ${repoPath} could not be read, so it was left unchanged. Fix it, then run the command again.`);
+            process.exitCode = 1;
+
+            return;
+        }
+
         tagsConfig = { skills: {}, rules: {} };
     }
 
@@ -246,6 +260,7 @@ export async function tagsRemove(
 ): Promise<void> {
     if (tags.length === 0) {
         log.error('Please specify at least one tag to remove.');
+        process.exitCode = 1;
 
         return;
     }
@@ -256,7 +271,12 @@ export async function tagsRemove(
     const tagsConfig = await loadTagsConfig(repoPath);
 
     if (!tagsConfig) {
-        log.error('No tags.yaml found in team repo.');
+        const exists = await pathExists(path.join(repoPath, 'tags.yaml'));
+
+        log.error(exists
+            ? `tags.yaml in ${repoPath} could not be read, so nothing was removed. Fix it, then run the command again.`
+            : 'No tags.yaml found in team repo.');
+        process.exitCode = 1;
 
         return;
     }
