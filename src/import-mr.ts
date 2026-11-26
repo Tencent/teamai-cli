@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { fetchGitCodeMR } from './providers/gitcode/mr-fetch.js';
 import { fetchGitHubPR } from './providers/github/mr-fetch.js';
+import { parseGitHubPullUrl } from './providers/github/api-url.js';
 import { fetchGitLabMR } from './providers/gitlab/mr-fetch.js';
 import { fetchTGitMR } from './providers/tgit/mr-fetch.js';
 import type { MRData, MRFetchOptions, MRThread } from './types.js';
@@ -30,7 +31,7 @@ export async function fetchMR(url: string, opts: MRFetchOptions): Promise<MRData
     // GitLab check and the same Unsupported MR URL error as before.
   }
 
-  if (host === 'github.com') {
+  if (parseGitHubPullUrl(url)) {
     return fetchGitHubPR(url, opts);
   }
 
@@ -176,10 +177,9 @@ export function parseLearningDraft(raw: string): ParsedLearningDraft {
  * @returns      Inferred repo .git URL
  */
 export function extractRepoUrlFromMrUrl(mrUrl: string): string {
-  // GitHub: https://github.com/owner/repo/pull/123 → https://github.com/owner/repo.git
-  const ghMatch = mrUrl.match(/^(https:\/\/github\.com\/[^/]+\/[^/]+)\/pull\//);
+  const pull = parseGitHubPullUrl(mrUrl);
 
-  if (ghMatch) return `${ghMatch[1]}.git`;
+  if (pull) return `https://${pull.host}/${pull.owner}/${pull.repo}.git`;
   // TGit: https://git.woa.com/group[/subgroup]/repo/merge_requests/123
   const tgitMatch = mrUrl.match(/^(https:\/\/git\.woa\.com\/.+\/[^/]+)\/merge_requests\//);
 

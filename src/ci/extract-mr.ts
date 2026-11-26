@@ -14,11 +14,11 @@ import { ImportLearnings } from '../import-local.js';
 import { getDefaultBranch, pushRepoDirectly } from '../utils/git.js';
 import { log } from '@teamai/shared/log';
 import type { LearningDraft } from '../types.js';
-import { githubApiUrl, postOrUpdateMrComment, postIndividualComments, postCodebaseGraphComment, parseMrUrl } from './mr-comment.js';
+import { postOrUpdateMrComment, postIndividualComments, postCodebaseGraphComment, parseMrUrl } from './mr-comment.js';
+import { githubApiUrlFor, githubTokenFor, parseGitHubPullUrl } from '../providers/github/api-url.js';
 import { readRejections, shouldWrite } from './read-rejections.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { readRegularFile } from '@teamai/shared/regular-file';
-import { getGitHubToken } from '../providers/github/gh-cli.js';
 
 const WORKFLOW = 'teamai-ci-extract-mr';
 
@@ -66,17 +66,17 @@ const TGitUserSchema = z.object({ username: z.string(), email: z.string() });
  * - GitLab: GITLAB_TOKEN → GET /api/v4/user
  * - TGit: TGIT_TOKEN → GET /api/v3/user
  */
-async function configureGitUser(repoPath: string, provider: 'github' | 'tgit' | 'gitlab'): Promise<void> {
+async function configureGitUser(repoPath: string, provider: 'github' | 'tgit' | 'gitlab', githubHost: string): Promise<void> {
   const { execFileSync } = await import('node:child_process');
   let name = 'teamai-ci';
   let email = 'teamai-ci@noreply';
 
   try {
     if (provider === 'github') {
-      const token = getGitHubToken();
+      const token = githubTokenFor(githubHost);
 
       if (token) {
-        const resp = await fetch(`${githubApiUrl()}/user`, {
+        const resp = await fetch(`${githubApiUrlFor(githubHost)}/user`, {
           headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'teamai-cli' },
           signal: AbortSignal.timeout(8000),
         });
@@ -158,11 +158,13 @@ async function writeKnowledgeToRepo(
 
   if (!dryRun && changedFiles.length > 0) {
     try {
-      const provider = mrUrl.includes('github.com') ? 'github' as const
+      const pull = parseGitHubPullUrl(mrUrl);
+
+      const provider = pull ? 'github' as const
         : mrUrl.includes('git.woa.com') ? 'tgit' as const
           : 'gitlab' as const;
 
-      await configureGitUser(teamRepo, provider);
+      await configureGitUser(teamRepo, provider, pull?.host ?? 'github.com');
       await pushRepoDirectly(teamRepo, `[teamai] CI extract knowledge from MR`, changedFiles);
       log.success('Pushed to the team repo');
     } catch (err) {

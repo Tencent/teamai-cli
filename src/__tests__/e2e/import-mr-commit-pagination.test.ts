@@ -89,10 +89,13 @@ syncBuiltinESMExports();
 
   afterEach(() => { if (sandbox) fs.rmSync(sandbox, { recursive: true, force: true }); });
 
-  it.each([[false, false], [false, true], [true, false], [true, true]])('reads later commits before extraction (gh: %s, second page fails: %s)', async (useGh, failSecondPage) => {
+  it.each([[false, false, false], [false, true, false], [true, false, false], [true, true, false], [false, false, true]])('reads later commits before extraction (gh: %s, second page fails: %s, Enterprise: %s)', async (useGh, failSecondPage, enterprise) => {
     const pages: number[] = [];
+    const requests: { path: string; authorization?: string }[] = [];
     const server = http.createServer((req, res) => {
+      requests.push({ path: req.url!, authorization: req.headers.authorization });
       const url = new URL(req.url!, 'http://fixture');
+      url.pathname = url.pathname.replace(/^\/api\/v3(?=\/)/, '');
       if (url.pathname === `${PR}/commits`) {
         const page = Number(url.searchParams.get('page') ?? 1);
         const size = Number(url.searchParams.get('per_page'));
@@ -121,13 +124,15 @@ syncBuiltinESMExports();
       const outputDir = path.join(sandbox, 'output');
       const result = await new Promise<{ code: number | null; output: string }>((resolve, reject) => {
         const child = spawn(process.execPath, [
-          CLI, 'import', '--from-mr', 'https://github.com/team/repo/pull/42',
+          CLI, 'import', '--from-mr', `https://${enterprise ? 'ghe.example.com' : 'github.com'}/team/repo/pull/42`,
           '--all', '--no-discussions', '--output', outputDir,
         ], {
           cwd: sandbox,
           env: {
             ...process.env, HOME: sandbox, USERPROFILE: sandbox, FORCE_COLOR: '0',
-            GITHUB_TOKEN: '', GH_TOKEN: '', FIXTURE_PORT: String(address.port), PROMPT_FILE: promptFile,
+            GITHUB_TOKEN: enterprise ? 'local-fixture-token' : '', GH_TOKEN: '',
+            GITHUB_SERVER_URL: enterprise ? 'https://ghe.example.com' : '',
+            GITHUB_API_URL: enterprise ? `http://127.0.0.1:${address.port}/api/v3/` : '', FIXTURE_PORT: String(address.port), PROMPT_FILE: promptFile,
             USE_GH: useGh ? '1' : '0', GH_PAGES_FILE: ghPagesFile, FAIL_SECOND_PAGE: failSecondPage ? '1' : '0',
             // Each step of the run is a process of its own, which loads the fixture too.
             NODE_OPTIONS: `--import ${pathToFileURL(preload).href}`,
@@ -143,6 +148,13 @@ syncBuiltinESMExports();
       });
       expect(result.code, result.output).toBe(failSecondPage ? 1 : 0);
       expect(pages).toEqual(useGh && !failSecondPage ? [] : [1, 2]);
+      if (enterprise) {
+        expect(requests).toHaveLength(4);
+        for (const request of requests) {
+          expect(request.path).toMatch(/^\/api\/v3\/repos\/team\/repo\/pulls\/42/);
+          expect(request.authorization).toBe('Bearer local-fixture-token');
+        }
+      }
       if (useGh) expect(fs.readFileSync(ghPagesFile, 'utf8')).toBe('1\n2\n');
       if (failSecondPage) {
         expect(result.output).toContain('GitHub API error 429');

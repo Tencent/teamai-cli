@@ -34,6 +34,9 @@ vi.mock('@teamai/shared/log', () => ({
 // ─── Imports after mocks ────────────────────────────────
 
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { parseGitHubRepoInput } from '../providers/github/repo-url.js';
 import {
   ghPrCreate,
@@ -43,6 +46,7 @@ import {
   redactCredential,
   ghIsAuthenticated,
   getGitHubToken,
+  ensureGhAvailable,
   ensureGhAuthenticated,
   RepoNotFoundError,
 } from '../providers/github/gh-cli.js';
@@ -171,6 +175,14 @@ describe('ghIsAuthenticated', () => {
     delete process.env.GITHUB_TOKEN;
     delete process.env.GH_TOKEN;
     expect(ghIsAuthenticated()).toBe(false);
+  });
+
+  it('does not count a GITHUB_SERVER_URL server\'s token as available for github.com without gh', async () => {
+    process.env.GITHUB_TOKEN = 'ghp_xxx';
+    await expect(ensureGhAvailable()).resolves.toBeUndefined();
+
+    process.env.GITHUB_SERVER_URL = 'https://ghe.example.com';
+    await expect(ensureGhAvailable()).rejects.toThrow('GitHub authentication unavailable');
   });
 });
 
@@ -323,11 +335,47 @@ describe('ghRepoClone', () => {
     // branch itself is covered by the built-CLI harness (fake gh on PATH)
     // rather than a unit test. This pins the decision rule.
     expect(ghCredentialHelperFor('/usr/local/bin/gh', false)).toBe(
-      '!"/usr/local/bin/gh" auth git-credential',
+      '!f() { unset GITHUB_TOKEN GH_TOKEN; "/usr/local/bin/gh" auth git-credential "$@"; }; f',
     );
     expect(ghCredentialHelperFor('/usr/local/bin/gh', true)).toBe(
       '!f() { echo username=x-access-token; echo "password=${GITHUB_TOKEN:-$GH_TOKEN}"; }; f',
     );
+  });
+
+  it.each([
+    { GITHUB_TOKEN: 'enterprise-actions-token', GH_TOKEN: undefined },
+    { GITHUB_TOKEN: undefined, GH_TOKEN: 'enterprise-gh-token' },
+    { GITHUB_TOKEN: 'enterprise-actions-token', GH_TOKEN: 'enterprise-gh-token' },
+  ])('does not pass another server\'s env tokens to the stored-login helper (%j)', async (tokens) => {
+    const { spawnSync: realSpawnSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-gh-helper-'));
+
+    try {
+      const ghPath = path.join(dir, 'gh with spaces').replaceAll('\\', '/');
+      fs.writeFileSync(ghPath, '#!/bin/sh\n'
+        + '[ "$1 $2 $3" = "auth git-credential get" ] || exit 2\n'
+        + 'printf "username=x-access-token\\npassword=%s\\n" "${GH_TOKEN:-${GITHUB_TOKEN:-stored-public-token}}"\n');
+      fs.chmodSync(ghPath, 0o755);
+
+      // git invokes the actual helper through its shell. Neither git nor this fake gh makes a network request.
+      const result = realSpawnSync('git', [
+        '-c', 'credential.https://github.com.helper=',
+        '-c', `credential.https://github.com.helper=${ghCredentialHelperFor(ghPath, false)}`,
+        'credential', 'fill',
+      ], {
+        input: 'protocol=https\nhost=github.com\n\n',
+        encoding: 'utf-8',
+        env: { ...process.env, ...tokens, GITHUB_SERVER_URL: 'https://ghe.example.com', GIT_TERMINAL_PROMPT: '0' },
+        timeout: 5000,
+        windowsHide: true,
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toMatch(/^password=stored-public-token$/m);
+      expect(result.stdout).not.toContain('enterprise-');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('persists the ABSOLUTE gh path, never a bare `gh`', () => {
@@ -337,11 +385,11 @@ describe('ghRepoClone', () => {
     // would resolve at detection time and then fail the push with
     // "gh: command not found" if the bare name were persisted.
     expect(ghCredentialHelperFor('/opt/homebrew/bin/gh', false)).toBe(
-      '!"/opt/homebrew/bin/gh" auth git-credential',
+      '!f() { unset GITHUB_TOKEN GH_TOKEN; "/opt/homebrew/bin/gh" auth git-credential "$@"; }; f',
     );
     // Windows paths usually contain a space, hence the quoting.
     expect(ghCredentialHelperFor('C:\\Program Files\\GitHub CLI\\gh.exe', false)).toBe(
-      '!"C:\\Program Files\\GitHub CLI\\gh.exe" auth git-credential',
+      '!f() { unset GITHUB_TOKEN GH_TOKEN; "C:\\Program Files\\GitHub CLI\\gh.exe" auth git-credential "$@"; }; f',
     );
     // No gh resolvable → there is nothing to call back, so the env helper is
     // the only shape left that can still authenticate.
@@ -435,7 +483,11 @@ describe('ghCreateRepo', () => {
     expect(calls.some(([url]) => url.endsWith('/user/repos'))).toBe(true);
   });
 
-  it('creates repo under org when owner differs from login', async () => {
+  it.each([
+    [undefined, 'https://ghe.example.com/api/v3'],
+  ])('creates repo under org when owner differs from login, with GITHUB_SERVER_URL=%s through %s', async (server, api) => {
+    process.env.GITHUB_API_URL = 'https://ghe.example.com/api/v3/';
+    if (server) process.env.GITHUB_SERVER_URL = server;
     global.fetch = vi.fn(async (url: string) => {
       if (url.endsWith('/user')) {
         return new Response(JSON.stringify({ login: 'alice' }), { status: 200 });
@@ -449,7 +501,7 @@ describe('ghCreateRepo', () => {
     await expect(ghCreateRepo('teamai', 'cli')).resolves.toBeUndefined();
 
     const calls = (global.fetch as Mock).mock.calls;
-    expect(calls.some(([url]) => url.includes('/orgs/teamai/repos'))).toBe(true);
+    expect(calls.map(([url]) => url)).toEqual([`${api}/user`, `${api}/orgs/teamai/repos`]);
   });
 
   it('throws on non-OK response', async () => {
@@ -463,11 +515,17 @@ describe('ghCreateRepo', () => {
     await expect(ghCreateRepo('teamai', 'cli')).rejects.toThrow(/403/);
   });
 
-  it('throws when no token is available', async () => {
-    delete process.env.GITHUB_TOKEN;
+  it.each([undefined, 'https://ghe.example.com'])('does not create a repository without a github.com token (server: %s)', async (server) => {
     delete process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    if (server) {
+      process.env.GITHUB_SERVER_URL = server;
+      process.env.GITHUB_TOKEN = 'enterprise-token';
+    }
+    global.fetch = vi.fn();
 
     await expect(ghCreateRepo('teamai', 'cli')).rejects.toThrow(/Cannot retrieve GitHub token/);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });
 
@@ -511,7 +569,8 @@ describe('ghPrCreate via REST API', () => {
     expect(url).toBe('https://github.com/org/repo/pull/42');
   });
 
-  it('requests reviewers in a separate call when provided', async () => {
+  it('requests reviewers in a separate call when provided, through the API GITHUB_API_URL names', async () => {
+    process.env.GITHUB_API_URL = 'https://ghe.example.com/api/v3';
     const calls: string[] = [];
     global.fetch = vi.fn(async (url: string) => {
       calls.push(url);
@@ -535,7 +594,10 @@ describe('ghPrCreate via REST API', () => {
       reviewers: ['alice', 'bob'],
     });
 
-    expect(calls.some((u) => u.includes('/requested_reviewers'))).toBe(true);
+    expect(calls).toEqual([
+      'https://ghe.example.com/api/v3/repos/org/repo/pulls',
+      'https://ghe.example.com/api/v3/repos/org/repo/pulls/7/requested_reviewers',
+    ]);
   });
 
   it('throws on non-OK response from pulls endpoint', async () => {

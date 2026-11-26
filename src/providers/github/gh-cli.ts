@@ -8,10 +8,7 @@ import { isInteractive } from '../../utils/prompt.js';
 import { longPathArgs } from '../../utils/git.js';
 import { endedRequest, mergedAs, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
 import { signalChild } from '@teamai/shared/process-group';
-
-// ─── Constants ───────────────────────────────────────────
-
-const GITHUB_API = 'https://api.github.com';
+import { githubApiUrlFor, githubTokenFor } from './api-url.js';
 
 // ─── gh CLI detection ────────────────────────────────────
 
@@ -137,7 +134,7 @@ export async function ensureGhAvailable(): Promise<void> {
     return;
   }
 
-  if (getGitHubToken()) {
+  if (githubTokenFor('github.com')) {
     log.debug('GITHUB_TOKEN env var detected — will use REST API directly');
 
     return;
@@ -155,11 +152,11 @@ export async function ensureGhAvailable(): Promise<void> {
 // ─── Authentication ──────────────────────────────────────
 
 /**
- * Read GITHUB_TOKEN / GH_TOKEN from environment.
- * Returns null if neither is set.
+ * Read github.com's GITHUB_TOKEN / GH_TOKEN from the environment.
+ * Returns null if neither is set or GITHUB_SERVER_URL assigns them to another server.
  */
 export function getGitHubToken(): string | null {
-  return process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? null;
+  return githubTokenFor('github.com');
 }
 
 /**
@@ -176,7 +173,9 @@ export function ghGetOAuthToken(): string | null {
   if (!isGhInstalled()) return null;
 
   try {
-    const result = ghExec(['auth', 'token']);
+    const result = ghExec(['auth', 'token', '--hostname', 'github.com'], {
+      env: { GITHUB_TOKEN: undefined, GH_TOKEN: undefined },
+    });
 
     if (result.status !== 0) return null;
     const token = result.stdout.trim();
@@ -211,7 +210,7 @@ export function ghIsAuthenticated(): boolean {
  */
 export async function ghFetchLogin(token: string): Promise<string | null> {
   try {
-    const resp = await fetch(`${GITHUB_API}/user`, {
+    const resp = await fetch(`${githubApiUrlFor('github.com')}/user`, {
       headers: {
         'Accept': 'application/vnd.github+json',
         'Authorization': `Bearer ${token}`,
@@ -245,7 +244,7 @@ export async function ghAuthWhoami(): Promise<string | null> {
     }
   }
 
-  const token = getGitHubToken();
+  const token = githubTokenFor('github.com');
 
   if (token) {
     return ghFetchLogin(token);
@@ -367,11 +366,13 @@ function ghCredentialHelper(): string {
  * that does not. A `gh` reachable only from a login shell (nvm, ~/.local/bin …)
  * therefore resolves at detection time and still fails the first push with
  * "gh: command not found". The quotes keep paths containing spaces intact.
+ * Clear env tokens before gh resolves its stored login, just as ghGetOAuthToken
+ * does: a later Enterprise CI token must not replace the clone's github.com login.
  */
 export function ghCredentialHelperFor(ghPath: string | null, hasEnvToken: boolean): string {
   if (hasEnvToken || !ghPath) return GH_ENV_CREDENTIAL_HELPER;
 
-  return `!"${ghPath}" auth git-credential`;
+  return `!f() { unset GITHUB_TOKEN GH_TOKEN; "${ghPath}" auth git-credential "$@"; }; f`;
 }
 
 /**
@@ -516,8 +517,8 @@ export async function ghCreateRepo(owner: string, repo: string): Promise<void> {
   const isOwnerSelf = login && login.toLowerCase() === owner.toLowerCase();
 
   const endpoint = isOwnerSelf
-    ? `${GITHUB_API}/user/repos`
-    : `${GITHUB_API}/orgs/${encodeURIComponent(owner)}/repos`;
+    ? `${githubApiUrlFor('github.com')}/user/repos`
+    : `${githubApiUrlFor('github.com')}/orgs/${encodeURIComponent(owner)}/repos`;
 
   const body = {
     name: repo,
@@ -572,7 +573,7 @@ export async function ghPrCreate(opts: GhPrCreateOptions): Promise<string> {
     return ghPrCreateViaCli(opts);
   }
 
-  if (getGitHubToken()) {
+  if (githubTokenFor('github.com')) {
     return ghPrCreateViaApi(opts);
   }
 
@@ -621,7 +622,7 @@ function ghPrCreateViaCli(opts: GhPrCreateOptions): string {
 }
 
 async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
-  const token = getGitHubToken();
+  const token = githubTokenFor('github.com');
 
   if (!token) {
     throw new Error('GITHUB_TOKEN is not set.');
@@ -635,7 +636,7 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
   };
 
   const resp = await fetch(
-    `${GITHUB_API}/repos/${opts.repo}/pulls`,
+    `${githubApiUrlFor('github.com')}/repos/${opts.repo}/pulls`,
     {
       method: 'POST',
       headers: authHeaders,
@@ -664,7 +665,7 @@ async function ghPrCreateViaApi(opts: GhPrCreateOptions): Promise<string> {
   if (opts.reviewers && opts.reviewers.length > 0 && pr.number) {
     try {
       await fetch(
-        `${GITHUB_API}/repos/${opts.repo}/pulls/${pr.number}/requested_reviewers`,
+        `${githubApiUrlFor('github.com')}/repos/${opts.repo}/pulls/${pr.number}/requested_reviewers`,
         {
           method: 'POST',
           headers: authHeaders,
@@ -806,11 +807,11 @@ async function ghApiGet(path: string, timeoutMs: number, lookup: GhLookup): Prom
     }
   }
 
-  const token = getGitHubToken();
+  const token = githubTokenFor('github.com');
 
   if (!token) throw new Error('GitHub credentials are unavailable: install gh and log in, or set GITHUB_TOKEN or GH_TOKEN.');
 
-  const response = await fetch(`${GITHUB_API}/${path}`, {
+  const response = await fetch(`${githubApiUrlFor('github.com')}/${path}`, {
     headers: { 'Accept': 'application/vnd.github+json', 'Authorization': `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28' },
     redirect: 'manual',
     signal: AbortSignal.timeout(timeoutMs),

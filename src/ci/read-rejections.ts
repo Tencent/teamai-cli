@@ -8,10 +8,10 @@
  */
 
 import { z } from 'zod';
-import { githubApiUrl, parseMrUrl } from './mr-comment.js';
+import { parseMrUrl } from './mr-comment.js';
+import { githubApiUrlFor, githubTokenFor, type GitHubPull } from '../providers/github/api-url.js';
 import { tgitFetch } from '../providers/tgit/rest-auth.js';
 import { getGitLabToken } from '../providers/gitlab/gitlab-api.js';
-import { getGitHubToken } from '../providers/github/gh-cli.js';
 import { parseGitLabMRUrl } from '../providers/gitlab/mr-fetch.js';
 import { paginateGitLab } from './gitlab-paginate.js';
 import { log } from '@teamai/shared/log';
@@ -64,12 +64,12 @@ const GitHubReactionSchema = z.object({
   content: z.string().optional().catch(undefined), // "+1", "-1", "laugh", etc.
 });
 
-async function githubRequest(path: string): Promise<Response> {
-  const token = getGitHubToken();
+async function githubRequest(host: string, path: string): Promise<Response> {
+  const token = githubTokenFor(host);
 
   if (!token) throw new Error('GITHUB_TOKEN or GH_TOKEN is not set');
 
-  return fetch(`${githubApiUrl()}${path}`, {
+  return fetch(`${githubApiUrlFor(host)}${path}`, {
     headers: {
       Authorization: `Bearer ${token}`,
       Accept: 'application/vnd.github+json',
@@ -79,12 +79,12 @@ async function githubRequest(path: string): Promise<Response> {
   });
 }
 
-async function readGitHubRejections(owner: string, repo: string, prNumber: string): Promise<RejectionResult> {
+async function readGitHubRejections({ host, owner, repo, number: prNumber }: GitHubPull): Promise<RejectionResult> {
   const result: RejectionResult = { rejectedIds: new Set(), approvedIds: new Set(), allIds: new Set() };
 
   // Read all comments
   const comments = await paginateGitLab(
-    (page) => githubRequest(`/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`),
+    (page) => githubRequest(host, `/repos/${owner}/${repo}/issues/${prNumber}/comments?per_page=100&page=${page}`),
     20,
     'GitHub comments',
     { item: GitHubCommentSchema, pagination: 'link' },
@@ -100,6 +100,7 @@ async function readGitHubRejections(owner: string, repo: string, prNumber: strin
     const reactions = await paginateGitLab(
       async (page) => {
         const resp = await githubRequest(
+          host,
           `/repos/${owner}/${repo}/issues/comments/${comment.id}/reactions?per_page=100&page=${page}`,
         );
 
@@ -277,7 +278,7 @@ export async function readRejections(mrUrl: string): Promise<RejectionResult> {
   if (parsed.provider === 'github') {
     log.debug('Reading GitHub reactions...');
 
-    return readGitHubRejections(parsed.owner, parsed.repo, parsed.number);
+    return readGitHubRejections(parsed);
   }
 
   if (parsed.provider === 'gitlab') {

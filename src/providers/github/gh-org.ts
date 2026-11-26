@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { log } from '@teamai/shared/log';
 import type { OrgRepoInfo } from '../types.js';
-import { ghExec, isGhInstalled, getGitHubToken } from './gh-cli.js';
+import { ghExec, isGhInstalled } from './gh-cli.js';
+import { githubApiUrlFor, githubTokenFor } from './api-url.js';
 
 // ─── GitHub API types ────────────────────────────────────
 
@@ -227,7 +228,7 @@ export async function ghListOrgRepos(
     }
   } else {
     // 使用 GITHUB_TOKEN 直接调用 REST API
-    const token = getGitHubToken();
+    const token = githubTokenFor('github.com');
 
     if (!token) {
       throw new Error(
@@ -235,7 +236,7 @@ export async function ghListOrgRepos(
       );
     }
 
-    const BASE = opts?.apiBaseUrl ?? 'https://api.github.com';
+    const BASE = opts?.apiBaseUrl ?? githubApiUrlFor('github.com');
 
     const tryUrl = async (urlPrefix: string, allowFallback = false): Promise<boolean> => {
       let page = 1;
