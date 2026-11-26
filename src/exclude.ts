@@ -26,6 +26,14 @@ function excludedNames(skills: string[]): string[] | null {
   return trimmed;
 }
 
+/**
+ * Stored exclusions from versions that accepted padded and blank names keep
+ * them; compare and rewrite through this so those names stay removable.
+ */
+function normalizedExclusions(skills: string[] | undefined): Set<string> {
+  return new Set((skills ?? []).map((skill) => skill.trim()).filter(Boolean));
+}
+
 async function resolveExcludeScope(options: GlobalOptions = {}): Promise<LocalConfig> {
   const projectConfig = await detectProjectConfig(undefined, undefined, options);
 
@@ -72,7 +80,7 @@ export async function excludeAdd(skills: string[], options: GlobalOptions): Prom
   if (!names) return;
 
   const config = await resolveExcludeScope(options);
-  const existing = new Set(config.excludedSkills ?? []);
+  const existing = normalizedExclusions(config.excludedSkills);
 
   const added = names.filter((skill) => {
     if (existing.has(skill)) return false;
@@ -104,7 +112,7 @@ export async function excludeRemove(skills: string[], options: GlobalOptions): P
   if (!names) return;
 
   const config = await resolveExcludeScope(options);
-  const existing = new Set(config.excludedSkills ?? []);
+  const existing = normalizedExclusions(config.excludedSkills);
   const removed = names.filter((skill) => existing.delete(skill));
 
   if (removed.length === 0) {

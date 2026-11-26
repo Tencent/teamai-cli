@@ -80,8 +80,9 @@ describe('skill exclude commands', () => {
       excludedSkills: ['a-skill', 'z-skill'],
     }));
 
+    // An earlier version stored a padded name and a blank entry; both stay removable.
     vi.mocked(requireInit).mockResolvedValue({
-      localConfig: { ...userConfig, excludedSkills: ['a-skill', 'z-skill'] },
+      localConfig: { ...userConfig, excludedSkills: [' a-skill ', 'z-skill', '   '] },
       teamConfig: {} as never,
     });
     vi.mocked(saveLocalConfig).mockClear();
