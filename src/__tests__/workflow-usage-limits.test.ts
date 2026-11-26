@@ -33,6 +33,22 @@ describe('when a usage limit resets', () => {
   });
 
   it.each([
+    ['2026-11-01T05:00:00Z', '2026-11-01T05:30:00Z'],
+    ['2026-11-01T06:00:00Z', '2026-11-01T06:30:00Z'],
+    ['2026-11-01T07:00:00Z', '2026-11-02T06:30:00Z'],
+  ])('reads the next repeated reset time from %s', (observed, expected) => {
+    const text = 'You\'ve hit your limit · resets 1:30am (America/New_York)';
+
+    expect(UsageLimits.resetOf(text, { now: Date.parse(observed), zone })).toBe(Date.parse(expected));
+  });
+
+  it('treats a reset time skipped by daylight saving as unknown', () => {
+    const text = 'You\'ve hit your limit · resets 2:30am (America/New_York)';
+
+    expect(UsageLimits.resetOf(text, { now: Date.parse('2026-03-08T06:00:00Z'), zone })).toBeUndefined();
+  });
+
+  it.each([
     ['an API rate limit', 'claude hit its usage limit: API Error: Request rejected (429) · Rate limit exceeded'],
     ['OpenCode\'s free limit', 'opencode hit its usage limit: Free usage limit reached. Connect a provider or subscribe to OpenCode Go to keep going, or switch models.'],
     ['an unknown zone', 'You\'ve hit your limit · resets 3pm (Mars/Olympus)'],
