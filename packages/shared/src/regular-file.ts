@@ -401,7 +401,7 @@ const RENAME_RETRY_MS = 60_000;
  * EPERM or EBUSY for a moment, so it is tried again, backing off, while nothing has taken `to`, or, `isReplacing` a file
  * at `to`, however long that file stays.
  */
-async function renameRetrying(from: string, to: string, { isReplacing = false }: { isReplacing?: boolean } = {}): Promise<void> {
+export async function renameRetrying(from: string, to: string, { isReplacing = false }: { isReplacing?: boolean } = {}): Promise<void> {
   const started = Date.now();
 
   for (let backoff = 0; ; backoff = Math.min(backoff + 10, 100)) {
