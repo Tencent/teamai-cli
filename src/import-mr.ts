@@ -22,6 +22,7 @@ export async function fetchMR(url: string, opts: MRFetchOptions): Promise<MRData
   // Each provider's own URL parser still validates the host before any token is
   // sent, so this is only about routing to the right parser.
   let host: string | undefined;
+
   try {
     host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
   } catch {
