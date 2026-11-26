@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { z } from 'zod';
 import { autoDetectInit, loadTeamConfig } from './config.js';
 import { log } from '@teamai/shared/log';
 import { redactWithEnv } from '@teamai/shared/redact';
@@ -61,8 +62,10 @@ async function sendToEndpoint(
   // through the shared redact module rather than hand-masking at the call site.
   const outbound = redactWithEnv(serialized);
 
+  // Feishu and WeCom custom bots require a JSON body; every formatMessage()
+  // branch produces JSON. text/plain made those endpoints reject the payload.
   const headerEntries: [string, string][] = [
-    ['Content-Type', type === 'json' ? 'application/json' : 'text/plain; charset=utf-8'],
+    ['Content-Type', 'application/json; charset=utf-8'],
   ];
 
   if (secret) {
@@ -91,18 +94,26 @@ async function sendToEndpoint(
       });
 
       if (response.ok) {
-        log.debug(`Webhook sent successfully to ${url}`);
+        // Feishu and WeCom acknowledge with HTTP 200 even on business-level
+        // rejection (bad token, rate limit, invalid payload) and put the real
+        // outcome in the JSON body. Treat a non-zero code as a delivery failure
+        // so it is logged and retried instead of silently reported as success.
+        const rejection = await businessRejection(type, response);
 
-        return true;
-      }
+        if (rejection === undefined) {
+          log.debug(`Webhook sent successfully to ${url}`);
 
-      if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+          return true;
+        }
+
+        failure = rejection;
+      } else if (response.status >= 400 && response.status < 500 && response.status !== 429) {
         log.warn(`Webhook to ${url} failed with status ${response.status} (not retrying)`);
 
         return false;
+      } else {
+        failure = `status ${response.status}`;
       }
-
-      failure = `status ${response.status}`;
     } catch (error) {
       failure = error instanceof Error && error.name === 'AbortError'
         ? `timed out after ${timeout}ms`
@@ -121,6 +132,52 @@ async function sendToEndpoint(
   }
 
   return false;
+}
+
+/**
+ * Business-level rejection carried in an HTTP 200 response body. Feishu uses
+ * `{ code, msg }` (0 = ok), WeCom uses `{ errcode, errmsg }` (0 = ok). Both are
+ * documented to answer 200 on failures such as invalid credentials, rate
+ * limits and bad message types. Returns a description of the rejection, or
+ * undefined when the endpoint accepted the event (or its body is not a
+ * machine-readable rejection we understand).
+ *
+ * Parsing is deliberately best-effort: a webhook must never fail the command
+ * that fired it, so an unreadable/non-JSON body is treated as accepted.
+ */
+const FeishuAck = z.object({ code: z.number(), msg: z.string().optional() });
+const WecomAck = z.object({ errcode: z.number(), errmsg: z.string().optional() });
+
+export async function businessRejection(
+  type: WebhookEndpoint['type'],
+  response: Response,
+): Promise<string | undefined> {
+  if (type === 'json') return undefined;
+
+  // Parse at the I/O boundary with a schema so malformed/foreign bodies never
+  // reach a `typeof` narrowing. A body that is not readable or not the expected
+  // shape is not a machine-readable rejection: treat it as accepted (fail soft).
+  let body: unknown;
+
+  try {
+    body = await response.json();
+  } catch {
+    return undefined;
+  }
+
+  if (type === 'feishu') {
+    const ack = FeishuAck.safeParse(body);
+
+    return ack.success && ack.data.code !== 0
+      ? `business code ${ack.data.code}${ack.data.msg ? `: ${ack.data.msg}` : ''}`
+      : undefined;
+  }
+
+  const ack = WecomAck.safeParse(body);
+
+  return ack.success && ack.data.errcode !== 0
+    ? `business code ${ack.data.errcode}${ack.data.errmsg ? `: ${ack.data.errmsg}` : ''}`
+    : undefined;
 }
 
 /**
