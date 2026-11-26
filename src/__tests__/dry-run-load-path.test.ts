@@ -508,18 +508,12 @@ describe('--dry-run on a fresh self-mode clone (#866)', () => {
   // directory. `dryRun` now reaches that `acquireLock` as it already reached the
   // partition locks in `pull` and `push` (#866), so the preview creates neither
   // and this list is empty.
-  const FETCH_HEAD = path.join('app', '.git', 'FETCH_HEAD');
-  // `git fetch` — which the preview performs on purpose, so that its plan is
-  // based on the same `origin/<default>` the real push would branch from —
-  // leaves its own one-line record behind. It names no ref, changes no working
-  // tree, and git overwrites it on the next fetch. Declared and counted, so any
-  // other new entry still fails this test.
-  const SELF_COMMANDS: Array<[string, () => Promise<void>, string[]]> = [
-    ['pull --dry-run', () => pull({ dryRun: true }), []],
-    ['push --dry-run', () => push({ dryRun: true }), [FETCH_HEAD]],
+  const SELF_COMMANDS: Array<[string, () => Promise<void>]> = [
+    ['pull --dry-run', () => pull({ dryRun: true })],
+    ['push --dry-run', () => push({ dryRun: true })],
   ];
 
-  it.each(SELF_COMMANDS)('%s creates no partition, worktree or lock file', async (_command, run, allowed) => {
+  it.each(SELF_COMMANDS)('%s creates no partition, worktree or lock file', async (_command, run) => {
     // The reported symptom, named so a failure here reads as #866 rather than
     // as an anonymous tree diff: taking the sync-lock used to create this
     // directory, and releasing it removed the lock file but not the directory.
@@ -533,7 +527,7 @@ describe('--dry-run on a fresh self-mode clone (#866)', () => {
     const after = snapshotTree(root);
     const appeared = Object.keys(after).filter((key) => !(key in before));
     const vanished = Object.keys(before).filter((key) => !(key in after));
-    expect({ appeared, vanished }).toEqual({ appeared: allowed, vanished: [] });
+    expect({ appeared, vanished }).toEqual({ appeared: [], vanished: [] });
     // Nothing that already existed may be rewritten, whatever it is.
     for (const key of Object.keys(before)) expect(after[key]).toBe(before[key]);
     // A dry run may parse the remote, but nothing else may reach a provider.
