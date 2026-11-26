@@ -5000,6 +5000,8 @@ async function runHookRuleCommand(
     throw new Error(`${command.type}: missing slug`);
   }
 
+  assertSafeResourceName(slug);
+
   const manifest = await loadAgentHookManifest();
 
   if (command.type === 'uninstall_hook_rule') {
