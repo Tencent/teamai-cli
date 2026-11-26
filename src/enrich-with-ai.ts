@@ -89,11 +89,16 @@ function modulesSummary(moduleResults: Array<{ name: string; result: ModuleAIRes
  * 2. Dot-separated (Python): `framework.adapter.haiflow` — first segment is the module
  * 3. Absolute/bare (JS/TS): `@scope/pkg/foo` or `lodash/fp` — first non-scope segment
  */
-function resolveImportToModule(importerFile: string, importPath: string): string | undefined {
+export function resolveImportToModule(importerFile: string, importPath: string): string | undefined {
   // Case 1: relative paths (./foo, ../bar)
   if (importPath.startsWith('.')) {
-    const importerDir = path.dirname(importerFile);
-    const resolved = path.normalize(path.join(importerDir, importPath));
+    // `importerFile` comes from code facts, whose paths are normalized to '/'
+    // by toPosix() in the collector. Use path.posix so the resolved path keeps
+    // forward slashes on every platform: path.win32 would emit backslashes and
+    // the split('/') below would then return the whole path, silently dropping
+    // the edge on Windows.
+    const importerDir = path.posix.dirname(importerFile);
+    const resolved = path.posix.normalize(path.posix.join(importerDir, importPath));
     const topLevel = resolved.split('/')[0];
 
     // Guard against resolving outside repo root
