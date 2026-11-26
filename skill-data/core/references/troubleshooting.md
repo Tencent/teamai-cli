@@ -334,9 +334,9 @@ teamai hooks list      # per-tool status + the settings file it checked
 ```
 
 Under each team hook, `hooks list` prints `runs in:` and `not in:`. A tool in
-`not in:` has no hook on that event (Cursor has no `PreToolUse`; OpenCode, Oh My
-Pi, Pi, OpenClaw, Kiro and Hermes run only `SessionStart`, `UserPromptSubmit`,
-`PreToolUse`, `PostToolUse` and `Stop`), so the hook does not run there.
+`not in:` has no hook on that event (OpenCode, Oh My Pi, Pi, OpenClaw, Kiro and
+Hermes run only `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`
+and `Stop`), so the hook does not run there.
 
 What you will typically see, and why (this is expected CLI behaviour, **not** a
 broken machine):
@@ -399,7 +399,7 @@ Codex path that Codex does not load is reported as `not loaded` by doctor.
 
 ### Cursor
 
-Cursor writes hooks to `~/.cursor/hooks.json` and also runs `~/.claude/settings.json`. `hook-dispatch --tool claude` and team hook commands written for `claude` exit only when `CURSOR_VERSION` is set and `~/.cursor/hooks.json` or `$CURSOR_PROJECT_DIR/.cursor/hooks.json` contains `--tool cursor`. A setup with only Claude has no second copy, so those hooks still run inside Cursor. Claude Code does not set `CURSOR_VERSION`. An already installed team hook picks up the guard on the next `teamai pull` or `teamai hooks inject`. If `teamai hooks list` shows Cursor without hooks, run `teamai pull` at the start of the session.
+Cursor writes hooks to `~/.cursor/hooks.json` and also runs `~/.claude/settings.json`. Team hooks are stored in `~/.teamai/team-hooks/cursor.json`; Cursor's native file gets one `hook-dispatch --tool cursor --team-hooks` entry per bridged event. `hook-dispatch --tool claude` and team hook commands written for `claude` exit only when `CURSOR_VERSION` is set and `~/.cursor/hooks.json` or `$CURSOR_PROJECT_DIR/.cursor/hooks.json` contains `--tool cursor`. A setup with only Claude has no second copy, so those hooks still run inside Cursor. Claude Code does not set `CURSOR_VERSION`. An already installed team hook picks up the guard on the next `teamai pull` or `teamai hooks inject`. If `teamai hooks list` shows Cursor without hooks, run `teamai pull` at the start of the session.
 
 ### Copilot CLI
 

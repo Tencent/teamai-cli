@@ -414,6 +414,62 @@ describe('pull delivers the team hooks to a bridged tool', () => {
     expect(saved['cursor:bridge'].map((record: { id: string }) => record.id)).toEqual([hook.key]);
   });
 
+  it('Cursor: reads an unrecorded bridge entry as Claude and updates it once', async () => {
+    const previous = teamHook({ command: 'echo previous-hook' });
+    const current = teamHook({ command: 'echo current-hook' });
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.cursor', 'hooks.json'), JSON.stringify({ version: 1, hooks: {} }));
+    fs.mkdirSync(path.dirname(bridgedTeamHookFile('cursor')), { recursive: true });
+    fs.writeFileSync(bridgedTeamHookFile('cursor'), JSON.stringify({
+      hooks: {
+        PreToolUse: [{
+          matcher: previous.matcher,
+          description: previous.description,
+          hooks: [{ type: 'command', command: previous.command, timeout: previous.timeout }],
+        }],
+      },
+    }));
+    fs.mkdirSync(path.dirname(manifest()), { recursive: true });
+    fs.writeFileSync(manifest(), '{}');
+
+    await reconcileHooksToAllTools(
+      { cursor: { settings: '.cursor/hooks.json' } },
+      home,
+      [current],
+      manifest(),
+      { teamHookHistory: async () => [previous, current] },
+    );
+
+    const hooks = JSON.parse(fs.readFileSync(bridgedTeamHookFile('cursor'), 'utf8')).hooks;
+    expect(hooks.PreToolUse).toHaveLength(1);
+    expect(hooks.PreToolUse[0].hooks[0].command).toContain('echo current-hook');
+  });
+
+  it('Cursor: keeps a held bridge entry in the Claude-format file', async () => {
+    const previous = teamHook({ command: 'echo held-hook-v1' });
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.cursor', 'hooks.json'), JSON.stringify({ version: 1, hooks: {} }));
+    await reconcileHooksToAllTools({ cursor: { settings: '.cursor/hooks.json' } }, home, [previous], manifest());
+
+    await reconcileHooksToAllTools(
+      { cursor: { settings: '.cursor/hooks.json' } },
+      home,
+      [],
+      manifest(),
+      { heldTeamHookIds: [previous.key] },
+    );
+
+    const hooks = JSON.parse(fs.readFileSync(bridgedTeamHookFile('cursor'), 'utf8')).hooks;
+    expect(hooks.PreToolUse).toHaveLength(1);
+    expect(hooks.PreToolUse[0].hooks[0].command).toContain('echo held-hook-v1');
+    expect(JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'hooks.json'), 'utf8')).hooks.preToolUse)
+      .toContainEqual(expect.objectContaining({
+        command: expect.stringContaining('hook-dispatch PreToolUse --tool cursor --team-hooks'),
+      }));
+    expect(JSON.parse(fs.readFileSync(manifest(), 'utf8'))['cursor:bridge'])
+      .toContainEqual(expect.objectContaining({ id: previous.key, command: expect.stringContaining('held-hook-v1') }));
+  });
+
   it('a pull keeps the agent hook the HTTP local agent installed beside the team\'s', async () => {
     fs.mkdirSync(path.join(home, '.omp', 'agent'), { recursive: true });
     await applyBridgedAgentHook('omp', { slug: 'no-rm', event: 'PreToolUse', matcher: 'Bash', command: 'grep -q "rm -rf" && { echo "No rm -rf" >&2; exit 2; } || true' });

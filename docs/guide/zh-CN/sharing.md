@@ -368,11 +368,11 @@ pull 会复制这个目录，并把 `${TEAMAI_HOOK_DIR}` 换成它的路径（�
 | 有团队仓库的工作区 | `~/.teamai/projects/<slug>/hooks/block-secrets.e246f037/`，所有 worktree 共用一份，因为它们运行同一组 hook 条目 |
 | self 模式 | 每个 worktree 的 `.teamai/delivered/hooks/block-secrets.e246f037/`，git 会忽略它 |
 
-self 模式下，Claude Code 的命令写成 `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"`，所以每个 worktree 的 `.claude/settings.json` 都一样。只改一个脚本也会让目录换成新版本，pull 会改写 `.claude/settings.json` 里的这个路径：团队如果提交这个文件，也要一起提交这个改动。其他工具拿到的是 worktree 的绝对路径，所以它们的项目文件在每个 worktree 里都不一样。以 Cursor 的 `.cursor/hooks.json` 为例：
+self 模式下，Claude Code 的命令写成 `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"`，所以每个 worktree 的 `.claude/settings.json` 都一样。只改一个脚本也会让目录换成新版本，pull 会改写 `.claude/settings.json` 里的这个路径：团队如果提交这个文件，也要一起提交这个改动。其他工具拿到的是 worktree 的绝对路径，所以原生项目文件在每个 worktree 里都不一样。以 CodeBuddy 的 `.codebuddy/settings.json` 为例：
 
 ```text
-~/work/shop/.cursor/hooks.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
-~/work/shop-hotfix/.cursor/hooks.json  bash "/Users/ana/work/shop-hotfix/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
+~/work/shop/.codebuddy/settings.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
+~/work/shop-hotfix/.codebuddy/settings.json  bash "/Users/ana/work/shop-hotfix/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
 ```
 
 删除一个 worktree 后，下次在另一个 worktree 里 pull，或运行 `teamai doctor --fix`，会删掉它留在 HOME 里的条目。`HOOK.yaml` 的键和 `hooks.yaml` 的条目相同，只是没有 `id`、`roles` 和 `projects`。只给一个 namespace 的 hook 放在 `hooks/<ns>/<id>/`。
@@ -449,11 +449,10 @@ hook 能做什么取决于事件。下表是每个运行该事件的工具都做
 
 ```text
   [no-force-push] PreToolUse [Bash]  →  jq -r '.tool_input.command' | grep -Eq 'git push.* (-f|--force)( |$)' && { echo 'Use git push --force-with-lease' >&2; exit 2; } || true  (tools: all)  from root
-      runs in: claude, omp, opencode
-      not in: cursor (no PreToolUse hook there)
+      runs in: claude, cursor, omp, opencode
 ```
 
-OpenCode、Oh My Pi、Pi、OpenClaw、Kiro、Hermes 和 Antigravity 没有 Claude Code 那样的 hook 文件，它们的 hook 由 teamai 来跑，payload 和工具名都按 Claude Code 的（`matcher: Bash` 能匹配 OpenCode 的 `bash` 和 Hermes 的 `terminal`）。在这些工具里：
+Cursor 的团队 hook 也由 teamai 的 bridge 来跑：`~/.cursor/hooks.json` 每个事件只有一条 dispatcher，teamai 会把 Cursor 的 `Shell`、`StrReplace` 和 `ApplyPatch` 映射到 Claude 的 matcher。OpenCode、Oh My Pi、Pi、OpenClaw、Kiro、Hermes 和 Antigravity 没有 Claude Code 那样的 hook 文件，它们的 hook 也由 teamai 来跑，payload 和工具名都按 Claude Code 的（`matcher: Bash` 能匹配 OpenCode 的 `bash` 和 Hermes 的 `terminal`）。在这些工具里：
 
 - 只跑 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse` 和 `Stop`。其他事件上的团队 hook，pull 会警告。
 - `UserPromptSubmit` 能加上下文，但拦不下这次输入。

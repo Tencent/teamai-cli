@@ -360,6 +360,11 @@ function isMarkedTeamaiHookCommand(command: string): boolean {
   return TEAMAI_COMMAND_MARKERS.some((marker) => command.includes(marker));
 }
 
+/** A Cursor dispatcher entry, which a built-ins-only pass must leave for its bridge. */
+function isCursorTeamDispatcherCommand(command: string): boolean {
+  return command.includes('hook-dispatch') && command.includes('--tool cursor') && command.includes('--team-hooks');
+}
+
 /**
  * Whether `command` invokes any teamai subcommand. A conservative probe for
  * uninstall deciding a hook file may hold teamai's entries, never proof that
@@ -646,7 +651,7 @@ async function judgeUnrecordedTeamEntries(
   opts: ReconcileHooksOptions,
 ): Promise<UnrecordedTeamEntries> {
   const result: UnrecordedTeamEntries = { adopted: [], kept: [] };
-  const format = hookFormatOf(tool);
+  const format = opts.hookFormatOverride ?? hookFormatOf(tool);
 
   // A Claude file outside a project is swept by marker: every marked entry is teamai's already.
   if (!opts.teamHookHistory || (format === 'claude' && !opts.teamOnly && !opts.teamHookProjectRoot)) return result;
@@ -1180,8 +1185,9 @@ function heldEntryCheck(
   held: readonly ManagedHookRecord[],
   found: Map<ManagedHookRecord, string>,
   byMarker: boolean,
+  formatOverride?: HookFormat,
 ): HeldEntryCheck {
-  const format = hookFormatOf(tool);
+  const format = formatOverride ?? hookFormatOf(tool);
 
   const fileEvent = (event: string): string | undefined => format === 'cursor' ? CLAUDE_TO_CURSOR_EVENTS[event]
     : format === 'copilot' ? CLAUDE_TO_COPILOT_EVENTS[event] : event;
@@ -1965,15 +1971,25 @@ export async function releaseRemovedCheckoutHooks(teamConfig: TeamaiConfig, loca
     const manifestPath = getManagedHooksPath({ ...localConfig, projectRoot: root });
     const gateRoot = await canonicalRemovedRoot(root);
 
-    for (const tool of Object.keys(await readManifest(manifestPath))) {
+    for (const manifestKey of Object.keys(await readManifest(manifestPath))) {
+      const bridge = manifestKey.endsWith(':bridge');
+      const tool = bridge ? manifestKey.slice(0, -':bridge'.length) : manifestKey;
       const settings = toolPaths[tool]?.settings;
 
-      const file = isBridgedTeamHookTool(tool) ? bridgedTeamHookFile(tool)
+      const file = bridge || (isBridgedTeamHookTool(tool) && tool !== 'cursor') ? bridgedTeamHookFile(tool)
+        : tool === 'cursor' ? hookSettingsFile(tool, getUserHome(), settings ?? '.cursor/hooks.json')
         : channelsOf(tool).hooks.self === 'user' && hookSettingsFormatOf(tool) !== null && settings !== undefined
           ? hookSettingsFile(tool, getUserHome(), settings) : null;
 
       if (file !== null && await pathExists(file)) {
-        await reconcileHooks(file, tool, [], { manifestPath, removeAll: true, teamOnly: true, teamHookProjectRoot: gateRoot });
+        const options: ReconcileHooksOptions = { manifestPath, removeAll: true, teamOnly: true, teamHookProjectRoot: gateRoot };
+
+        if (bridge) {
+          options.hookFormatOverride = 'claude';
+          options.manifestKey = manifestKey;
+        }
+
+        await reconcileHooks(file, tool, [], options);
       }
     }
   }
@@ -2444,6 +2460,7 @@ async function reconcileCursorFormat(
   tool: string,
   teamDefs: HookDef[],
   opts: ReconcileHooksOptions,
+  teamActive: boolean,
   priorTeamCommands: Set<string>,
   isHeld: HeldEntryCheck,
 ): Promise<void> {
@@ -2458,7 +2475,11 @@ async function reconcileCursorFormat(
   const isManaged = (entry: JsonValue): boolean => {
     const command = hookFileEntryOf(entry)?.command;
 
-    return command !== undefined && (isMarkedTeamaiHookCommand(command) || priorTeamCommands.has(command));
+    if (command === undefined) return false;
+
+    if (!teamActive && !opts.removeAll && isCursorTeamDispatcherCommand(command)) return false;
+
+    return isMarkedTeamaiHookCommand(command) || priorTeamCommands.has(command);
   };
 
   const defs = opts.removeAll ? [] : desiredDefs(tool, teamDefs, opts);
@@ -3570,7 +3591,7 @@ export async function reconcileHooks(
     : held;
 
   const keptHeld = new Map<ManagedHookRecord, string>();
-  const isHeld = heldEntryCheck(tool, heldRecords, keptHeld, !opts.teamHookProjectRoot);
+  const isHeld = heldEntryCheck(tool, heldRecords, keptHeld, !opts.teamHookProjectRoot, opts.hookFormatOverride);
   const recorded = projectRecords.filter((r) => !heldIds.has(r.id));
   const priorRecords = [...recorded, ...adopted.filter((r) => !heldIds.has(r.id))];
   const desiredTeamCommands = new Set(scopedDefs.filter((d) => !d.tools || d.tools.includes(tool)).map((d) => d.command));
@@ -3580,7 +3601,7 @@ export async function reconcileHooks(
   let codex: Awaited<ReturnType<typeof reconcileCodexFormat>> | undefined;
 
   if (format === 'cursor') {
-    await reconcileCursorFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands, isHeld);
+    await reconcileCursorFormat(settingsPath, tool, scopedDefs, opts, teamActive, priorTeamCommands, isHeld);
   } else if (format === 'copilot') {
     await reconcileCopilotFormat(settingsPath, tool, scopedDefs, opts, priorTeamCommands, isHeld);
   } else if (format === 'codex') {
@@ -3805,12 +3826,14 @@ export async function hasTeamaiHooks(
   manifestPath?: string,
 ): Promise<boolean> {
   const manifest = manifestPath ? await readManifest(manifestPath) : null;
+  const bridgeFile = path.resolve(expandHome(settingsPath)) === path.resolve(bridgedTeamHookFile(tool));
+  const manifestKey = bridgeFile && tool === 'cursor' ? `${tool}:bridge` : tool;
   // Manifest records are only a signal when the recorded command still exists in
   // the settings file. A stale manifest entry (user hand-stripped the hook) must
   // NOT count as "still using teamai" — intersect manifest with actual content.
-  const priorTeamCommands = new Set((manifest?.[tool] ?? []).map((r) => r.command));
+  const priorTeamCommands = new Set((manifest?.[manifestKey] ?? []).map((r) => r.command));
 
-  const format = hookFormatOf(tool);
+  const format = bridgeFile ? 'claude' : hookFormatOf(tool);
   const settings = await readJsonObject(expandHome(settingsPath), hookSyntaxOf(tool));
   const events = hookEventsOf(settings.kind === 'ok' && isJsonValue(settings.value) ? settings.value : null, format);
 
@@ -3879,12 +3902,21 @@ async function reconcileOpencodePlugin(baseDir: string, removeAll = false, insta
 }
 
 /** Whether `tool`'s hook adapter is installed here: the gate its reconcile applies, and the bridged file follows. */
-async function isBridgedToolInstalled(tool: string, baseDir: string, installedBaseDir: string | undefined): Promise<boolean> {
+async function isBridgedToolInstalled(
+  tool: string,
+  baseDir: string,
+  installedBaseDir: string | undefined,
+  settingsPath?: string,
+): Promise<boolean> {
   if (tool === 'cursor') {
     const roots = [toolHome('cursor'), path.join(baseDir, '.cursor')];
 
     if (installedBaseDir) {
       roots.push(path.join(installedBaseDir, '.cursor'));
+    }
+
+    if (settingsPath) {
+      roots.push(path.dirname(expandHome(settingsPath)));
     }
 
     return (await Promise.all(roots.map(pathExists))).some(Boolean);
@@ -3971,22 +4003,43 @@ async function reconcileBridgedTeamHooks(
   const options: ReconcileHooksOptions = {
     ...opts,
     hookFormatOverride: 'claude',
-    teamOnly: true,
   };
 
   // Cursor's native file and bridge share a tool id, so keep their records apart.
   // A bridge that existed before this split keeps its original manifest key.
-  if (tool === 'cursor') options.manifestKey = `${tool}:bridge`;
+  if (tool === 'cursor') {
+    options.manifestKey = `${tool}:bridge`;
+    options.teamOnly = true;
+  }
+
   await reconcileHooks(bridgedTeamHookFile(tool), tool, defs.filter((d) => !unbridged.includes(d)), options);
 }
 
 /** One Cursor-native entry per event: all team hooks for that event run in teamai's bridge. */
-function cursorTeamDispatcherDefs(defs: HookDef[]): HookDef[] {
+async function cursorTeamDispatcherDefs(defs: HookDef[]): Promise<HookDef[]> {
   const timeouts = new Map<string, number>();
 
   for (const def of teamDefsForTool(defs, 'cursor')) {
     if (!BRIDGED_TEAM_HOOK_EVENTS.has(def.event)) continue;
     timeouts.set(def.event, Math.max(timeouts.get(def.event) ?? 0, def.timeout ?? 60));
+  }
+
+  // A held hook can stay in the bridge file after it leaves the current defs.
+  const bridge = await readJsonObject(bridgedTeamHookFile('cursor'));
+
+  if (bridge.kind === 'ok' && isJsonValue(bridge.value)) {
+    for (const [event, entries] of hookEventsOf(bridge.value, 'claude') ?? []) {
+      if (!BRIDGED_TEAM_HOOK_EVENTS.has(event)) continue;
+
+      for (const entry of entries) {
+        for (const hook of hookFileEntryOf(entry)?.hooks ?? []) {
+          if (hook.command === undefined) continue;
+          const timeout = hook.timeout !== undefined && hook.timeout > 0 ? hook.timeout : 60;
+
+          timeouts.set(event, Math.max(timeouts.get(event) ?? 0, timeout));
+        }
+      }
+    }
   }
 
   return [...timeouts].map(([event, timeout]) => ({
@@ -4284,8 +4337,8 @@ export async function reconcileHooksToAllTools(
 
   // A bridged tool keeps its user hooks in HOME, so a project install gates its team hooks there, as for ZCode.
   // Before the adapter: Kiro's and Hermes's hook entries are written from this file.
-  const reconcileBridged = async (tool: string): Promise<void> => {
-    if (!opts.removeAll && !await isBridgedToolInstalled(tool, baseDir, opts.installedBaseDir)) return;
+  const reconcileBridged = async (tool: string, settingsPath?: string): Promise<void> => {
+    if (!opts.removeAll && !await isBridgedToolInstalled(tool, baseDir, opts.installedBaseDir, settingsPath)) return;
     const homeHooks = opts.scope === 'project';
 
     const options: ReconcileHooksOptions = {
@@ -4536,8 +4589,8 @@ export async function reconcileHooksToAllTools(
       let fileDefs = placed?.dispatched ? [] : [...defs, ...placed?.heldIntoFile ?? []];
 
       if (tool === 'cursor' && !opts.builtinsOnly && !opts.settingsOnly) {
-        await reconcileBridged(tool);
-        fileDefs = cursorTeamDispatcherDefs(defs);
+        await reconcileBridged(tool, settingsPath);
+        fileDefs = await cursorTeamDispatcherDefs(defs);
       }
 
       const heldTeamHookIds = placed?.heldOutOfFile.length

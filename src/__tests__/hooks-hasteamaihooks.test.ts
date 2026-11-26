@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -11,6 +11,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -77,5 +78,27 @@ describe('hasTeamaiHooks', () => {
     }));
 
     expect(await hasTeamaiHooks(hooksPath, 'codex', manifestPath)).toBe(true);
+  });
+
+  it('reads a bridged Claude-shaped file under its bridge manifest key', async () => {
+    vi.stubEnv('HOME', tmpDir);
+    const hooksPath = path.join(tmpDir, '.teamai', 'team-hooks', 'cursor.json');
+    fs.mkdirSync(path.dirname(hooksPath), { recursive: true });
+    fs.writeFileSync(hooksPath, JSON.stringify({
+      hooks: {
+        PreToolUse: [{
+          matcher: 'Bash',
+          hooks: [{ type: 'command', command: 'echo team-hook' }],
+          description: '[teamai:hook:team-hook] fixture',
+        }],
+      },
+    }));
+
+    const manifestPath = path.join(tmpDir, 'managed-hooks.json');
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      'cursor:bridge': [{ id: 'team-hook', event: 'PreToolUse', matcher: 'Bash', command: 'echo team-hook' }],
+    }));
+
+    expect(await hasTeamaiHooks(hooksPath, 'cursor', manifestPath)).toBe(true);
   });
 });
