@@ -1544,6 +1544,57 @@ describe('local-agent: one access token per agent', () => {
   });
 });
 
+describe('HTTP endpoint validation', () => {
+  const BAD = ['not-a-url', 'ftp://example.com/api', 'file:///tmp/team'];
+  const ENDPOINT = 'https://test.example.com/api';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    process.exitCode = undefined;
+  });
+
+  it.each(BAD)('initLocalAgentHttp rejects %s', async (endpoint) => {
+    const { initLocalAgentHttp } = await import('../local-agent.js');
+
+    await expect(initLocalAgentHttp({ endpoint, token: 'sk-x', force: true }))
+      .rejects.toThrow('Endpoint must be an http(s) URL');
+  });
+
+  it('initLocalAgentHttp still accepts an http(s) endpoint', async () => {
+    const { initLocalAgentHttp } = await import('../local-agent.js');
+
+    await initLocalAgentHttp({ endpoint: ENDPOINT, token: 'sk-x', force: true });
+
+    expect((await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'config.json'))).endpoint).toBe(ENDPOINT);
+  });
+
+  it.each(BAD)('init --http refuses %s before writing anything', async (endpoint) => {
+    const { init } = await import('../init.js');
+    const { log } = await import('@teamai/shared/log');
+
+    await init({ http: endpoint, token: 'sk-x', scope: 'user', force: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Endpoint must be an http(s) URL'));
+    expect(fse.existsSync(path.join(tmpDir, '.teamai', 'config.yaml'))).toBe(false);
+  });
+
+  it.each(BAD)('source add-http refuses %s', async (endpoint) => {
+    const { sourceAddHttp } = await import('../source.js');
+    const { log } = await import('@teamai/shared/log');
+
+    await sourceAddHttp(endpoint, { token: 'sk-x' });
+
+    expect(process.exitCode).toBe(1);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Endpoint must be an http(s) URL'));
+    expect(fse.existsSync(path.join(tmpDir, '.teamai', 'local-agent', 'config.json'))).toBe(false);
+  });
+});
+
 describe('local-agent: skill directory naming (SKILL.md name vs server slug)', () => {
   // Build a real skill zip whose SKILL.md `name:` may differ from the slug.
   async function makeSkillZip(skillName: string): Promise<Uint8Array> {
