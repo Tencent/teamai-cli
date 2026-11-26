@@ -18,7 +18,12 @@ import { syncTeamUpdatesToLocal } from './utils/pre-push-sync.js';
 import { getProvider } from './providers/index.js';
 import { log, spinner } from '@teamai/shared/log';
 import { getUserHome } from '@teamai/shared/home';
-import { getHandler, RepoResourceHandler } from './resources/index.js';
+import { getHandler } from './resources/index.js';
+// Imported from the module that defines the class, not from the barrel: tests
+// that mock `resources/index.js` provide `getHandler` only, and reading
+// `RepoResourceHandler` off that mock threw "no export is defined" instead of
+// falling back to the layout default.
+import { RepoResourceHandler } from './resources/repo-resource.js';
 import { createSkillPushItem, scanTeamRepoNamespaces } from './resources/skills.js';
 import { AgentsHandler } from './resources/agents.js';
 import { deliversEveryNamespace, resolveResourceNamespaces } from './resource-namespaces.js';
