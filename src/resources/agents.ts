@@ -260,6 +260,7 @@ export class AgentsHandler extends ResourceHandler {
       // A folded sibling that DOES sit beside an owned directory is the excluded
       // one: its tombstone must not hide a new agent in the owning directory.
       const ownedFoldKeys = new Set([...(owned ?? [])].map((directory) => caseFoldKey(directory)));
+
       const deliveredHere = activeNamespaces === null
         || activeNamespaces.includes(namespace)
         || (owned !== undefined && owned.has(namespace))
@@ -1368,7 +1369,13 @@ export class AgentsHandler extends ResourceHandler {
     // revoking an agent this machine published would delete the copy pull had
     // just written, and a root agent a namespace replaces is not delivered.
     const { placedAgents } = await loadStateForScope(localConfig);
-    const resolution = resolveAgentsForDirectory(items, activeNamespaces, placedAgents);
+    // The OWNED set too, not only the declarations: delivery reads a stem's
+    // claiming folder from the directory each declaration owns, so the undo pass
+    // must ask the same question. Without it a folded sibling counts as claiming
+    // the stem here only, and the copy pull just wrote is revoked again in the
+    // same run — a write-then-delete churn on every pull.
+    const owned = await ownedAgentDirectories(localConfig, activeNamespaces);
+    const resolution = resolveAgentsForDirectory(items, activeNamespaces, placedAgents, owned);
 
     // `pull` stops the scope on a collision before it gets here; with nothing
     // settled about what is delivered, nothing is revoked either.

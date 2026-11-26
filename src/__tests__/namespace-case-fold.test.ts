@@ -11,7 +11,7 @@ import {
 } from '../namespace-resolver.js';
 import { filterRulesByKnowledgeNamespaces } from '../resources/desired.js';
 import { readTeamSkillIndex } from '../resources/skills.js';
-import type { LocalConfig, ResourceItem } from '../types.js';
+import type { ResourceItem } from '../types.js';
 
 /**
  * A declared namespace names its directory case-folded, as the entry types

@@ -49,6 +49,7 @@ export function activeNamespaceRank(active: readonly string[], namespace: string
   if (namespace === null) return 0;
 
   const exact = active.indexOf(namespace);
+
   if (exact >= 0) return exact + 1;
 
   const folded = caseFoldKey(namespace);

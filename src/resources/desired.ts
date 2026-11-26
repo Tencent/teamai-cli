@@ -252,10 +252,9 @@ export async function scanRoleAwareSkills(
   // `Frontend` declaration, and must not hand it to the folded sibling that does
   // have one. The skills themselves are added too, for a candidate list supplied
   // without a listing.
-  const directories = [...new Set([
-    ...await listDirs(path.join(localConfig.repo.localPath, 'skills')),
-    ...skills.flatMap((item) => (item.namespace === undefined ? [] : [item.namespace])),
-  ])];
+  const listed = await listDirs(path.join(localConfig.repo.localPath, 'skills'));
+  const named = skills.flatMap((item) => (item.namespace === undefined ? [] : [item.namespace]));
+  const directories = [...new Set([...listed, ...named])];
   const owned = declaredDirectories(namespaces.skills, directories);
   const items = skills.filter((item) => item.namespace !== undefined && owned.has(item.namespace));
   const resolution = resolveNamespacedItems(items.map(itemCandidate), namespaces.skills);
@@ -661,9 +660,9 @@ export async function resolveDesiredRules(
   // The tag channel first: only a namespace rule this member receives
   // replaces the root rule of its name.
   const ruleDirs = knowledgeNs ? await listDirs(path.join(localConfig.repo.localPath, 'rules')) : [];
-  const { included, skipped } = filterByTags(
-    filterRulesByKnowledgeNamespaces(allItems, knowledgeNs, ruleDirs), tagsConfig, usesMemberFilters(localConfig) ? localConfig.subscribedTags : undefined, 'rules',
-  );
+  const namespaced = filterRulesByKnowledgeNamespaces(allItems, knowledgeNs, ruleDirs);
+  const subscribed = usesMemberFilters(localConfig) ? localConfig.subscribedTags : undefined;
+  const { included, skipped } = filterByTags(namespaced, tagsConfig, subscribed, 'rules');
 
   if (!knowledgeNs) return { items: included, overrides: [], replaced: [], skippedByTags: skipped.length };
 

@@ -208,6 +208,7 @@ export function resolveRoleNamespace(
     // `--role frontend` resolved to `frontend/`, the sibling pull excludes.
     const declaration = onAxis.find((entry) => entry === namespace)
       ?? onAxis.find((entry) => caseFoldKey(entry) === caseFoldKey(namespace));
+
     const [owned] = declaration === undefined ? [] : declaredDirectories([declaration], directories);
 
     return { ok: true, namespace: owned ?? declaration ?? namespace };

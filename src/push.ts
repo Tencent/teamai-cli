@@ -18,7 +18,7 @@ import { syncTeamUpdatesToLocal } from './utils/pre-push-sync.js';
 import { getProvider } from './providers/index.js';
 import { log, spinner } from '@teamai/shared/log';
 import { getUserHome } from '@teamai/shared/home';
-import { getHandler } from './resources/index.js';
+import { getHandler, RepoResourceHandler } from './resources/index.js';
 import { createSkillPushItem, scanTeamRepoNamespaces } from './resources/skills.js';
 import { AgentsHandler } from './resources/agents.js';
 import { deliversEveryNamespace, resolveResourceNamespaces } from './resource-namespaces.js';
@@ -261,14 +261,14 @@ type NewResourceDestination =
  * `…/FRONTEND/` that pull reads.
  */
 async function namespaceRootsOf(localConfig: LocalConfig, type: PlaceableType): Promise<string[]> {
-  const handler = getHandler(type) as unknown as {
-    dir?: string;
-    dirResolver?: (repoPath: string) => Promise<string[]>;
-  };
+  const handler = getHandler(type);
 
-  if (handler.dirResolver) return handler.dirResolver(localConfig.repo.localPath);
+  // A repo-backed type carries its own layout: `wiki` keeps namespaces under
+  // `teamwiki/evidence/code`, and a repo chooses between `claudemd/` and
+  // `agentsmd/`. Every other type sits at `<repo>/<type>`.
+  if (handler instanceof RepoResourceHandler) return handler.dirsIn(localConfig.repo.localPath);
 
-  return [handler.dir ?? type];
+  return [type];
 }
 
 /** Every namespace directory of `type` the team repo holds. */

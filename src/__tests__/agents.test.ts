@@ -30,7 +30,7 @@ vi.mock('../utils/git.js', async () => ({
   getFileContentAtRev: (...args: [string, string, string]) => mockGetFileContentAtRev(...args),
 }));
 
-import { AgentsHandler } from '../resources/agents.js';
+import { AgentsHandler, ownedAgentDirectories, resolveAgentsForDirectory } from '../resources/agents.js';
 import { recordDelivery } from './helpers/delivered-checkout.js';
 import { shippedAgentRender } from '../builtin-agents.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
@@ -938,6 +938,40 @@ projects:
 
     expect(await fse.pathExists(deployed)).toBe(false);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'does not revoke the agent that delivery just recovered from a placement record',
+    async () => {
+      // Needs a case-sensitive filesystem: `agents/Frontend/` has to sit beside
+      // `agents/frontend/` for the two to compete for one declaration.
+      const other = 'name: other\ndescription: Other\ninstructions: Read it.\n';
+      const reviewer = 'name: reviewer\ndescription: Shared\ninstructions: Read it.\n';
+      await fse.outputFile(path.join(repoPath, 'agents/Frontend/other.yaml'), other);
+      await fse.outputFile(path.join(repoPath, 'agents/frontend/reviewer.yaml'), reviewer);
+      await fse.outputFile(path.join(repoPath, 'agents/backend/reviewer.yaml'), reviewer);
+      const placedAgents = { reviewer: 'agents/backend/reviewer.yaml' };
+      await fse.outputJson(path.join(getDataHome(localConfig), 'state.json'), { placedAgents });
+
+      // What this run delivers: `Frontend/` owns the declaration, so the folded
+      // sibling claims nothing and the recorded `backend` copy is recovered.
+      const items = await handler.scanTeamForPull(teamConfig, localConfig);
+      const owned = await ownedAgentDirectories(localConfig, ['Frontend']);
+      const resolution = resolveAgentsForDirectory(items, ['Frontend'], placedAgents, owned);
+      expect(resolution.kind).toBe('resolved');
+      const delivered = resolution.kind === 'resolved' ? resolution.items.map((item) => item.value) : [];
+      expect(delivered.filter((item) => item.namespace === 'backend').map((item) => item.name)).toEqual(['reviewer']);
+      for (const item of delivered) await handler.pullItem(item, teamConfig, localConfig);
+
+      const deployed = path.join(homeDir, '.claude/agents/reviewer.md');
+      expect(await fse.pathExists(deployed)).toBe(true);
+
+      // The undo pass of the same run reads the ownership delivery used, or it
+      // classifies the copy written a moment ago as inactive and deletes it.
+      await handler.cleanupInactiveNamespaces(teamConfig, localConfig, ['Frontend']);
+
+      expect(await fse.pathExists(deployed)).toBe(true);
+    },
+  );
 
   it('still skips an inactive agent this machine never published', async () => {
     await fse.outputFile(path.join(repoPath, 'manifest/projects.yaml'),
