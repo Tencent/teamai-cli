@@ -3619,7 +3619,7 @@ export async function reconcileHooks(
 
     const nextRecords = [...retained, ...records];
     const sameAsPrev = JSON.stringify(prev) === JSON.stringify(nextRecords);
-      const hadEntry = Object.prototype.hasOwnProperty.call(manifest, manifestKey);
+    const hadEntry = Object.prototype.hasOwnProperty.call(manifest, manifestKey);
 
     if (nextRecords.length === 0) {
       if (hadEntry) {
@@ -3880,7 +3880,16 @@ async function reconcileOpencodePlugin(baseDir: string, removeAll = false, insta
 
 /** Whether `tool`'s hook adapter is installed here: the gate its reconcile applies, and the bridged file follows. */
 async function isBridgedToolInstalled(tool: string, baseDir: string, installedBaseDir: string | undefined): Promise<boolean> {
-  if (tool === 'cursor') return await pathExists(path.join(getUserHome(), '.cursor'));
+  if (tool === 'cursor') {
+    const roots = [toolHome('cursor'), path.join(baseDir, '.cursor')];
+
+    if (installedBaseDir) {
+      roots.push(path.join(installedBaseDir, '.cursor'));
+    }
+
+    return (await Promise.all(roots.map(pathExists))).some(Boolean);
+  }
+
   const channel = channelsOf(tool).hooks.user;
 
   if (channel === 'none' || channel === 'unknown' || channel.channel !== 'adapter') return false;
@@ -3958,19 +3967,24 @@ async function reconcileBridgedTeamHooks(
   opts: Pick<ReconcileHooksOptions, 'manifestPath' | 'removeAll' | 'teamHookProjectRoot' | 'teamHookChildRoots' | 'heldTeamHookIds' | 'teamHookHistory' | 'keepRecords' | 'teamOnly'>,
 ): Promise<void> {
   const unbridged = opts.removeAll ? [] : reportUnbridgedTeamHooks(tool, defs);
-  await reconcileHooks(bridgedTeamHookFile(tool), tool, defs.filter((d) => !unbridged.includes(d)), {
+
+  const options: ReconcileHooksOptions = {
     ...opts,
     hookFormatOverride: 'claude',
-    manifestKey: `${tool}:bridge`,
     teamOnly: true,
-  });
+  };
+
+  // Cursor's native file and bridge share a tool id, so keep their records apart.
+  // A bridge that existed before this split keeps its original manifest key.
+  if (tool === 'cursor') options.manifestKey = `${tool}:bridge`;
+  await reconcileHooks(bridgedTeamHookFile(tool), tool, defs.filter((d) => !unbridged.includes(d)), options);
 }
 
 /** One Cursor-native entry per event: all team hooks for that event run in teamai's bridge. */
 function cursorTeamDispatcherDefs(defs: HookDef[]): HookDef[] {
   const timeouts = new Map<string, number>();
 
-  for (const def of defs) {
+  for (const def of teamDefsForTool(defs, 'cursor')) {
     if (!BRIDGED_TEAM_HOOK_EVENTS.has(def.event)) continue;
     timeouts.set(def.event, Math.max(timeouts.get(def.event) ?? 0, def.timeout ?? 60));
   }

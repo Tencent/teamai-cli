@@ -331,6 +331,89 @@ describe('pull delivers the team hooks to a bridged tool', () => {
     });
   });
 
+  it('Cursor: a hook for another tool does not add a native dispatcher entry', async () => {
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+
+    await reconcileHooksToAllTools(
+      { cursor: { settings: '.cursor/hooks.json' } },
+      home,
+      [teamHook({ tools: ['claude'] })],
+      manifest(),
+    );
+
+    const hooks = JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'hooks.json'), 'utf8')).hooks;
+    expect(hooks.preToolUse).toBeUndefined();
+  });
+
+  it('Cursor: project scope writes the bridge when only the project .cursor directory exists', async () => {
+    fs.mkdirSync(path.join(project, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.cursor', 'hooks.json'), JSON.stringify({ version: 1, hooks: {} }));
+
+    await reconcileHooksToAllTools(
+      { cursor: { settings: '.cursor/hooks.json' } },
+      project,
+      [teamHook()],
+      manifest(),
+      { scope: 'project' },
+    );
+
+    expect(fs.existsSync(bridgedTeamHookFile('cursor'))).toBe(true);
+    const hooks = JSON.parse(fs.readFileSync(path.join(project, '.cursor', 'hooks.json'), 'utf8')).hooks;
+    expect(hooks.preToolUse[0].command).toContain('hook-dispatch PreToolUse --tool cursor --team-hooks');
+  });
+
+  it('an upgrade from a tool-keyed manifest keeps one hook for another bridged tool', async () => {
+    const hook = teamHook();
+    fs.mkdirSync(path.join(home, '.omp', 'agent'), { recursive: true });
+    fs.mkdirSync(path.dirname(bridgedTeamHookFile('omp')), { recursive: true });
+    fs.writeFileSync(bridgedTeamHookFile('omp'), JSON.stringify({
+      hooks: {
+        PreToolUse: [{
+          matcher: hook.matcher,
+          description: hook.description,
+          hooks: [{ type: 'command', command: hook.command, timeout: hook.timeout }],
+        }],
+      },
+    }));
+    fs.mkdirSync(path.dirname(manifest()), { recursive: true });
+    fs.writeFileSync(manifest(), JSON.stringify({
+      omp: [{ id: hook.key, event: hook.event, matcher: hook.matcher, command: hook.command }],
+    }));
+
+    await reconcileHooksToAllTools({ omp: {} }, home, [hook], manifest());
+
+    const hooks = JSON.parse(fs.readFileSync(bridgedTeamHookFile('omp'), 'utf8')).hooks;
+    expect(hooks.PreToolUse).toHaveLength(1);
+  });
+
+  it('Cursor: an upgrade replaces its old native team hook and moves records to the bridge key', async () => {
+    const hook = teamHook();
+    const memberHook = { command: 'echo member-hook' };
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.cursor', 'hooks.json'), JSON.stringify({
+      version: 1,
+      hooks: {
+        preToolUse: [{ command: hook.command, matcher: hook.matcher, timeout: hook.timeout }],
+        stop: [memberHook],
+      },
+    }));
+    fs.mkdirSync(path.dirname(manifest()), { recursive: true });
+    fs.writeFileSync(manifest(), JSON.stringify({
+      cursor: [{ id: hook.key, event: hook.event, matcher: hook.matcher, command: hook.command }],
+    }));
+
+    await reconcileHooksToAllTools({ cursor: { settings: '.cursor/hooks.json' } }, home, [hook], manifest());
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'hooks.json'), 'utf8')).hooks;
+    expect(cursor.preToolUse).toHaveLength(1);
+    expect(cursor.preToolUse[0].command).toContain('hook-dispatch PreToolUse --tool cursor --team-hooks');
+    expect(cursor.preToolUse[0].command).not.toContain('force-with-lease');
+    expect(cursor.stop).toContainEqual(memberHook);
+    const saved = JSON.parse(fs.readFileSync(manifest(), 'utf8'));
+    expect(saved.cursor.map((record: { id: string }) => record.id)).toEqual(['cursor-team-hooks-PreToolUse']);
+    expect(saved['cursor:bridge'].map((record: { id: string }) => record.id)).toEqual([hook.key]);
+  });
+
   it('a pull keeps the agent hook the HTTP local agent installed beside the team\'s', async () => {
     fs.mkdirSync(path.join(home, '.omp', 'agent'), { recursive: true });
     await applyBridgedAgentHook('omp', { slug: 'no-rm', event: 'PreToolUse', matcher: 'Bash', command: 'grep -q "rm -rf" && { echo "No rm -rf" >&2; exit 2; } || true' });
