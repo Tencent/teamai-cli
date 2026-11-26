@@ -230,7 +230,7 @@ export async function projectsMembers(
           members.push(`${member.username}${display}`);
         }
       } catch {
-        // Skip invalid member files silently (listMembers already warns on `members`).
+        log.warn(`Invalid member file: ${file}`);
       }
     }
   }
