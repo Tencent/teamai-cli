@@ -2,6 +2,7 @@ import path from 'node:path';
 import {
   managedMcpManifestPath,
   legacyManagedMcpManifestPath,
+  managedMcpManifestKey,
   managedMcpWorkspaceId,
   type ManagedMcpManifest,
   type ManagedMcpRecord,
@@ -88,7 +89,11 @@ export async function loadProjectMcpManifest(
       if (claimsThisWorkspace(key, workspaceRoot, src.workspaceLocal)) {
         const tool = key.split(':')[0];
         // Merge (a worktree could have records split across both sources).
-        const destKey = `${tool}:project`;
+        // Use the same alias-normalized key every reader uses (e.g. trae-cn
+        // claims trae's record): writing the raw tool name here leaves an
+        // orphan key nobody reads, so the migrated ownership is lost on the
+        // next uninstall.
+        const destKey = managedMcpManifestKey(tool, true);
         manifest[destKey] = mergeRecords(manifest[destKey], records);
         migratedFrom.push(key);
       }
