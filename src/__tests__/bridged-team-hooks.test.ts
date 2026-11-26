@@ -73,6 +73,38 @@ describe('the team hooks a bridge runs', () => {
     expect(JSON.parse(reply.stdout)).toEqual({ block: 'No writes under migrations/' });
   });
 
+  it('Cursor reads a block as permission deny with the reason in both messages', async () => {
+    install('cursor', { PreToolUse: [entry('echo "Use --force-with-lease" >&2; exit 2', 'Bash')] });
+    const reply = await runBridgedTeamHooks('cursor', 'PreToolUse', JSON.stringify({
+      cwd: project, tool_name: 'Shell', tool_input: { command: 'git push -f' },
+    }));
+    expect(reply).toEqual({
+      code: 0,
+      stdout: JSON.stringify({
+        permission: 'deny',
+        agent_message: 'Use --force-with-lease',
+        user_message: 'Use --force-with-lease',
+      }),
+      stderr: '',
+    });
+  });
+
+  it('Cursor gets PostToolUse context and updated input in its top-level fields', async () => {
+    const context = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'Lint is still running.' } });
+    const rewrite = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { file_path: 'src/fixed.ts' } } });
+    install('cursor', {
+      PreToolUse: [entry(`echo '${rewrite}'`, 'Edit')],
+      PostToolUse: [entry(`echo '${context}'`, 'Edit')],
+    });
+    const input = JSON.stringify({ cwd: project, tool_name: 'StrReplace', tool_input: { file_path: 'src/a.ts' } });
+    expect(JSON.parse((await runBridgedTeamHooks('cursor', 'PreToolUse', input)).stdout)).toEqual({
+      updated_input: { file_path: 'src/fixed.ts' },
+    });
+    expect(JSON.parse((await runBridgedTeamHooks('cursor', 'PostToolUse', input)).stdout)).toEqual({
+      additional_context: 'Lint is still running.',
+    });
+  });
+
   it('UserPromptSubmit hooks add their stdout, plain or as additionalContext, to the context', async () => {
     const json = JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'Sprint 42 ends Friday.' } });
     install('omp', { UserPromptSubmit: [entry('echo "On-call: @ana"', '*', 'oncall'), entry(`echo '${json}'`, '*', 'sprint')] });
@@ -153,9 +185,9 @@ describe('the team hooks a bridge runs', () => {
       expect(reply.code).toBe(2);
     });
 
-  it('only the adapter tools run team hooks through the bridge', () => {
-    expect(['opencode', 'omp', 'pi', 'openclaw', 'kiro', 'hermes'].filter(isBridgedTeamHookTool)).toHaveLength(6);
-    expect(['claude', 'codex', 'cursor', 'dsh', 'joycode', 'trae', 'my-tool'].filter(isBridgedTeamHookTool)).toEqual([]);
+  it('only the adapter tools and Cursor run team hooks through the bridge', () => {
+    expect(['opencode', 'omp', 'pi', 'openclaw', 'kiro', 'hermes', 'cursor'].filter(isBridgedTeamHookTool)).toHaveLength(7);
+    expect(['claude', 'codex', 'dsh', 'joycode', 'trae', 'my-tool'].filter(isBridgedTeamHookTool)).toEqual([]);
   });
 
   it('a hand-edited file that is not a hook file runs nothing, and says how to fix it', async () => {
@@ -274,6 +306,29 @@ describe('pull delivers the team hooks to a bridged tool', () => {
     expect(hooks.PreToolUse.map((e: { description: string }) => e.description)).toEqual(['[teamai:hook:no-force-push] Refuse a force push']);
     expect(JSON.parse((await runBridgedTeamHooks('omp', 'PreToolUse', bash('jj push -f origin main'))).stdout)).toEqual({ block: 'Use --force-with-lease' });
     expect((await runBridgedTeamHooks('omp', 'PreToolUse', bash('jj push origin main'))).stdout).toBe('');
+  });
+
+  it('Cursor: one native dispatcher entry runs the team file instead of copying team commands into hooks.json', async () => {
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    await reconcileHooksToAllTools(
+      { cursor: { settings: '.cursor/hooks.json' } },
+      home,
+      [teamHook()],
+      manifest(),
+    );
+    const hooks = JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'hooks.json'), 'utf8')).hooks;
+    expect(hooks.preToolUse).toHaveLength(1);
+    expect(hooks.preToolUse[0].command).toContain('hook-dispatch PreToolUse --tool cursor --team-hooks');
+    expect(hooks.preToolUse[0].command).not.toContain('force-with-lease');
+    expect(JSON.parse(fs.readFileSync(bridgedTeamHookFile('cursor'), 'utf8')).hooks.PreToolUse)
+      .toHaveLength(1);
+    expect(JSON.parse((await runBridgedTeamHooks('cursor', 'PreToolUse', JSON.stringify({
+      cwd: project, tool_name: 'Shell', tool_input: { command: 'jj push -f origin main' },
+    }))).stdout)).toEqual({
+      permission: 'deny',
+      agent_message: 'Use --force-with-lease',
+      user_message: 'Use --force-with-lease',
+    });
   });
 
   it('a pull keeps the agent hook the HTTP local agent installed beside the team\'s', async () => {

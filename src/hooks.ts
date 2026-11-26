@@ -39,7 +39,7 @@ import {
   resolveGitExclude,
   resolveToolRootDir,
 } from './types.js';
-import { BUILTIN_HOOK_FORMS, builtinHookDefs, builtinHookForm, applyBuiltinOverride, getCodebuddyTeamHookDispatchCommand, getRawDispatchCommand, recognisedBuiltinHookDefs, skipToolsWithoutShell, WAITED_LOGIN_FORM } from './builtin-hooks.js';
+import { BUILTIN_HOOK_FORMS, builtinHookDefs, builtinHookForm, applyBuiltinOverride, getCodebuddyTeamHookDispatchCommand, getRawDispatchCommand, getTeamHookDispatchCommand, getTeamHookDispatchCommandWindows, recognisedBuiltinHookDefs, skipToolsWithoutShell, WAITED_LOGIN_FORM } from './builtin-hooks.js';
 import { codebuddyTeamHookPayload, encodeCodebuddyProjectGate, isCodebuddyTeamGateForProject, parseCodebuddyTeamGate, regateCodebuddyTeamHookCommand } from './codebuddy-team-hooks.js';
 import type { BuiltinHookForm, BuiltinHookOverride } from './builtin-hooks.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
@@ -93,6 +93,7 @@ export interface HookEventNames {
 /** Claude PascalCase event → Cursor camelCase event (for tests / docs). */
 export const CLAUDE_TO_CURSOR_EVENTS: HookEventNames = {
   SessionStart: 'sessionStart',
+  PreToolUse: 'preToolUse',
   Stop: 'stop',
   PostToolUse: 'postToolUse',
   UserPromptSubmit: 'beforeSubmitPrompt',
@@ -397,7 +398,8 @@ function desiredDefs(
   opts: { builtinOverride?: BuiltinHookOverride; teamOnly?: boolean; builtinForm?: BuiltinHookForm },
 ): HookDef[] {
   // A bridged tool's file holds its team hooks alone: its bridge dispatches the built-ins itself.
-  const builtins = opts.teamOnly || isBridgedTeamHookTool(tool) ? [] : applyBuiltinOverride(builtinHookDefs(tool, opts.builtinForm), opts.builtinOverride);
+  const builtins = opts.teamOnly || (isBridgedTeamHookTool(tool) && tool !== 'cursor')
+    ? [] : applyBuiltinOverride(builtinHookDefs(tool, opts.builtinForm), opts.builtinOverride);
 
   return [...builtins, ...teamDefsForTool(teamDefs, tool)];
 }
@@ -444,6 +446,10 @@ export interface ReconcileHooksOptions {
   teamOnly?: boolean;
   /** Render CodeBuddy project hooks through its Windows IDE/CLI dual-runner dispatcher. */
   codebuddyDualRunner?: boolean;
+  /** The on-disk format to reconcile, when a bridge file differs from the tool's native format. */
+  hookFormatOverride?: HookFormat;
+  /** The manifest key to own, when one tool also has a separate bridge file. */
+  manifestKey?: string;
   /**
    * With `removeAll`, leave the built-in entries: another install runs them
    * from the same file. Read by the settings.json format, the one a
@@ -3505,6 +3511,7 @@ export async function reconcileHooks(
   given: ReconcileHooksOptions = {},
 ): Promise<void> {
   const opts = { ...given, builtinForm: given.removeAll ? WAITED_LOGIN_FORM : await builtinHookFormOf({ tool, settingsPath, from: given.builtinFormFrom ?? 'version', toolRoots: given.toolRoots }) };
+  const manifestKey = opts.manifestKey ?? tool;
 
   if (opts.mainCheckout) {
     const target = opts.mainCheckout;
@@ -3531,11 +3538,11 @@ export async function reconcileHooks(
     ? await readManifest(opts.legacyManifestPath) : null;
 
   if (legacy?.[tool]?.length && manifest && opts.manifestPath) {
-    manifest[tool] = [...(manifest[tool] ?? []), ...legacy[tool]];
+    manifest[manifestKey] = [...(manifest[manifestKey] ?? []), ...legacy[tool]];
     await writeJson(expandHome(opts.manifestPath), manifest);
   }
 
-  const allPriorRecords = manifest?.[tool] ?? [];
+  const allPriorRecords = manifest?.[manifestKey] ?? [];
   const renderCodebuddyWindows = tool === 'codebuddy' && process.platform === 'win32' && opts.codebuddyDualRunner === true;
   const scopedDefs = scopedTeamDefs(teamDefs, opts.teamHookProjectRoot, { tool, file: settingsPath }, false, opts.teamHookChildRoots, renderCodebuddyWindows);
 
@@ -3569,7 +3576,7 @@ export async function reconcileHooks(
   const desiredTeamCommands = new Set(scopedDefs.filter((d) => !d.tools || d.tools.includes(tool)).map((d) => d.command));
   const priorTeamCommands = new Set(priorRecords.map((r) => r.command));
 
-  const format = hookFormatOf(tool);
+  const format = opts.hookFormatOverride ?? hookFormatOf(tool);
   let codex: Awaited<ReturnType<typeof reconcileCodexFormat>> | undefined;
 
   if (format === 'cursor') {
@@ -3602,7 +3609,7 @@ export async function reconcileHooks(
       ...heldRecords.filter((r) => keptHeld.has(r)).map((r) => followCodexMove({ ...r, command: keptHeld.get(r)! })),
     ];
 
-    const prev = manifest[tool] ?? [];
+    const prev = manifest[manifestKey] ?? [];
 
     // Main-checkout team-only files belong to one project; their old gated
     // records are consumed on migration. HOME retains the other projects.
@@ -3612,15 +3619,15 @@ export async function reconcileHooks(
 
     const nextRecords = [...retained, ...records];
     const sameAsPrev = JSON.stringify(prev) === JSON.stringify(nextRecords);
-    const hadEntry = Object.prototype.hasOwnProperty.call(manifest, tool);
+      const hadEntry = Object.prototype.hasOwnProperty.call(manifest, manifestKey);
 
     if (nextRecords.length === 0) {
       if (hadEntry) {
-        delete manifest[tool];
+        delete manifest[manifestKey];
         await writeJson(expandHome(opts.manifestPath), manifest);
       }
     } else if (!sameAsPrev) {
-      manifest[tool] = nextRecords;
+      manifest[manifestKey] = nextRecords;
       await writeJson(expandHome(opts.manifestPath), manifest);
     }
   }
@@ -3873,6 +3880,7 @@ async function reconcileOpencodePlugin(baseDir: string, removeAll = false, insta
 
 /** Whether `tool`'s hook adapter is installed here: the gate its reconcile applies, and the bridged file follows. */
 async function isBridgedToolInstalled(tool: string, baseDir: string, installedBaseDir: string | undefined): Promise<boolean> {
+  if (tool === 'cursor') return await pathExists(path.join(getUserHome(), '.cursor'));
   const channel = channelsOf(tool).hooks.user;
 
   if (channel === 'none' || channel === 'unknown' || channel.channel !== 'adapter') return false;
@@ -3950,7 +3958,33 @@ async function reconcileBridgedTeamHooks(
   opts: Pick<ReconcileHooksOptions, 'manifestPath' | 'removeAll' | 'teamHookProjectRoot' | 'teamHookChildRoots' | 'heldTeamHookIds' | 'teamHookHistory' | 'keepRecords' | 'teamOnly'>,
 ): Promise<void> {
   const unbridged = opts.removeAll ? [] : reportUnbridgedTeamHooks(tool, defs);
-  await reconcileHooks(bridgedTeamHookFile(tool), tool, defs.filter((d) => !unbridged.includes(d)), opts);
+  await reconcileHooks(bridgedTeamHookFile(tool), tool, defs.filter((d) => !unbridged.includes(d)), {
+    ...opts,
+    hookFormatOverride: 'claude',
+    manifestKey: `${tool}:bridge`,
+    teamOnly: true,
+  });
+}
+
+/** One Cursor-native entry per event: all team hooks for that event run in teamai's bridge. */
+function cursorTeamDispatcherDefs(defs: HookDef[]): HookDef[] {
+  const timeouts = new Map<string, number>();
+
+  for (const def of defs) {
+    if (!BRIDGED_TEAM_HOOK_EVENTS.has(def.event)) continue;
+    timeouts.set(def.event, Math.max(timeouts.get(def.event) ?? 0, def.timeout ?? 60));
+  }
+
+  return [...timeouts].map(([event, timeout]) => ({
+    source: 'team',
+    key: `cursor-team-hooks-${event}`,
+    event,
+    command: process.platform === 'win32'
+      ? getTeamHookDispatchCommandWindows(event, 'cursor')
+      : getTeamHookDispatchCommand(event, 'cursor'),
+    timeout,
+    description: `[teamai:hook:cursor-team-hooks-${event}] Run Cursor team hooks through teamai`,
+  }));
 }
 
 /**
@@ -4485,7 +4519,12 @@ export async function reconcileHooksToAllTools(
       ], { removeAll: opts.removeAll, teamHookHistory: opts.teamHookHistory, heldTeamHookIds: opts.heldTeamHookIds, codexTrust: opts.codexTrust });
 
       // Dispatched: teamai's entries leave the file, through its manifest, a held one the dispatcher took over included.
-      const fileDefs = placed?.dispatched ? [] : [...defs, ...placed?.heldIntoFile ?? []];
+      let fileDefs = placed?.dispatched ? [] : [...defs, ...placed?.heldIntoFile ?? []];
+
+      if (tool === 'cursor' && !opts.builtinsOnly && !opts.settingsOnly) {
+        await reconcileBridged(tool);
+        fileDefs = cursorTeamDispatcherDefs(defs);
+      }
 
       const heldTeamHookIds = placed?.heldOutOfFile.length
         ? opts.heldTeamHookIds?.filter((id) => !placed.heldOutOfFile.includes(id)) : opts.heldTeamHookIds;

@@ -540,7 +540,7 @@ describe('hooks', () => {
       expect(cursorSubcmds).toEqual([...TEAMAI_HOOK_SUBCOMMANDS].sort());
     });
 
-    it('Claude PascalCase events map 1:1 to Cursor camelCase events', async () => {
+    it('Claude built-in events map to Cursor camelCase events, while PreToolUse is reserved for the team bridge', async () => {
       await injectHooks('/test/claude.json', 'claude');
       await injectHooks('/test/cursor.json', 'cursor');
 
@@ -551,6 +551,7 @@ describe('hooks', () => {
       const claudeEvents = Object.keys(claudeResult.hooks).filter((e) => e !== 'SubagentStop').sort();
       const cursorEvents = Object.keys(cursorResult.hooks).sort();
       expect(cursorEvents).not.toContain('subagentStop');
+      expect(cursorEvents).not.toContain('preToolUse');
 
       expect(claudeEvents).toHaveLength(cursorEvents.length);
 
@@ -561,7 +562,7 @@ describe('hooks', () => {
       }
     });
 
-    it('Claude and Cursor have the same number of hooks per event', async () => {
+    it('Claude and Cursor built-ins have the same number of hooks per shared event', async () => {
       await injectHooks('/test/claude.json', 'claude');
       await injectHooks('/test/cursor.json', 'cursor');
 
@@ -569,6 +570,7 @@ describe('hooks', () => {
       const cursorResult = mockFiles['/test/cursor.json'] as { hooks: Record<string, unknown[]> };
 
       for (const [claudeEvent, cursorEvent] of Object.entries(CLAUDE_TO_CURSOR_EVENTS)) {
+        if (!claudeResult.hooks[claudeEvent]) continue;
         // Cursor has same hooks per event as Claude (contribute-check now in Stop for both)
         expect(cursorResult.hooks[cursorEvent].length).toEqual(
           claudeResult.hooks[claudeEvent].length

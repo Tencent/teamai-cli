@@ -30,16 +30,25 @@ type ReplyFormat =
   /** Kiro's hook contract: exit 2 with the reason on stderr blocks; stdout is context. */
   | 'kiro'
   /** Hermes's shell-hook contract: `{"decision":"block","reason"}` or `{"context": text}` on stdout. */
-  | 'hermes';
+  | 'hermes'
+  /** Cursor's hook contract: `permission: "deny"`, `additional_context`, or `updated_input`. */
+  | 'cursor';
 
 interface Bridge {
   reply: ReplyFormat;
   /** The host's tool names, as Claude names them, so a team's `matcher: Bash` selects the host's shell tool. */
   tools: Readonly<Record<string, string>>;
+  /** Events whose output the host can add to model context. Defaults to SessionStart and UserPromptSubmit. */
+  contextEvents?: ReadonlySet<string>;
 }
 
 /** Which hook adapters run the team hooks through this bridge: DSH's host plugin runs its Claude file itself. */
-const BRIDGES: Readonly<Record<HookAdapterId, Bridge | null>> = {
+const BRIDGES: Readonly<Record<HookAdapterId | 'cursor', Bridge | null>> = {
+  cursor: {
+    reply: 'cursor',
+    tools: { Shell: 'Bash', StrReplace: 'Edit', ApplyPatch: 'Edit' },
+    contextEvents: new Set(['SessionStart', 'UserPromptSubmit', 'PostToolUse']),
+  },
   'opencode-plugin': {
     reply: 'bridge',
     tools: {
@@ -82,6 +91,7 @@ const BRIDGES: Readonly<Record<HookAdapterId, Bridge | null>> = {
 export const BRIDGED_TEAM_HOOK_EVENTS: ReadonlySet<string> = new Set(['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop']);
 
 function bridgeOf(tool: string): Bridge | null {
+  if (tool === 'cursor') return BRIDGES.cursor;
   const channel = channelsOf(tool).hooks.user;
 
   return channel !== 'none' && channel !== 'unknown' && channel.channel === 'adapter' ? BRIDGES[channel.adapter] : null;
@@ -222,13 +232,17 @@ function claudePayload(tool: string, event: string, host: HookStdin, bridge: Bri
 }
 
 /** What the team hooks decided for the host. */
-type Decision = { kind: 'block'; reason: string } | { kind: 'context'; text: string } | { kind: 'none' };
+type Decision =
+  | { kind: 'block'; reason: string }
+  | { kind: 'context'; text: string }
+  | { kind: 'rewrite'; input: JsonValue }
+  | { kind: 'none' };
 
 /** Events whose plain stdout Claude adds to the model's context. */
 const CONTEXT_EVENTS: ReadonlySet<string> = new Set(['SessionStart', 'UserPromptSubmit']);
 
 /** One hook's decision, read as Claude Code reads it: exit 2, a JSON decision, or context. */
-function decisionOf(event: string, run: HookRun, id: string): Decision {
+function decisionOf(event: string, run: HookRun, id: string, contextEvents: ReadonlySet<string>): Decision {
   if (run.code === 2) return { kind: 'block', reason: run.stderr.trim() || `Blocked by team hook ${id}` };
 
   if (run.code !== 0 || !run.stdout.trim()) return { kind: 'none' };
@@ -244,7 +258,7 @@ function decisionOf(event: string, run: HookRun, id: string): Decision {
 
   if (json) return jsonDecisionOf(json, id);
 
-  return CONTEXT_EVENTS.has(event) ? { kind: 'context', text: run.stdout.trim() } : { kind: 'none' };
+  return contextEvents.has(event) ? { kind: 'context', text: run.stdout.trim() } : { kind: 'none' };
 }
 
 /** The fields of a hook's JSON output that decide; a `hookSpecificOutput` that is not an object counts as absent. */
@@ -255,6 +269,7 @@ const HookOutputSchema = z.object({
     permissionDecision: JsonValueSchema.optional(),
     permissionDecisionReason: JsonValueSchema.optional(),
     additionalContext: JsonValueSchema.optional(),
+    updatedInput: JsonValueSchema.optional(),
   }).optional().catch(undefined),
 });
 
@@ -274,14 +289,22 @@ function jsonDecisionOf(json: HookOutput, id: string): Decision {
 
   const context = NonEmptyTextSchema.safeParse(specific?.additionalContext);
 
-  return context.success ? { kind: 'context', text: context.data } : { kind: 'none' };
+  if (context.success) return { kind: 'context', text: context.data };
+
+  const updatedInput = z.record(z.string(), JsonValueSchema).safeParse(specific?.updatedInput);
+
+  return updatedInput.success ? { kind: 'rewrite', input: updatedInput.data } : { kind: 'none' };
 }
 
 /** The decisions merged for `event`: the first block of a PreToolUse, the contexts of a SessionStart or UserPromptSubmit. */
-function merge(event: string, decisions: readonly Decision[]): Decision {
-  if (event === 'PreToolUse') return decisions.find((d) => d.kind === 'block') ?? { kind: 'none' };
+function merge(event: string, decisions: readonly Decision[], contextEvents: ReadonlySet<string>): Decision {
+  if (event === 'PreToolUse') {
+    return decisions.find((d) => d.kind === 'block')
+      ?? decisions.find((d) => d.kind === 'rewrite')
+      ?? { kind: 'none' };
+  }
 
-  if (!CONTEXT_EVENTS.has(event)) return { kind: 'none' };
+  if (!contextEvents.has(event)) return { kind: 'none' };
   const texts = decisions.flatMap((d) => d.kind === 'context' ? [d.text] : []);
 
   return texts.length ? { kind: 'context', text: texts.join('\n\n') } : { kind: 'none' };
@@ -306,24 +329,43 @@ function render(format: ReplyFormat, decision: Decision, stderr: string): Bridge
         case 'bridge': return { code: 0, stdout: JSON.stringify({ block: decision.reason }), stderr };
         case 'kiro': return { code: 2, stdout: '', stderr: `${stderr}${decision.reason}\n` };
         case 'hermes': return { code, stdout: JSON.stringify({ decision: 'block', reason: decision.reason }), stderr };
+        case 'cursor': {
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              permission: 'deny',
+              agent_message: decision.reason,
+              user_message: decision.reason,
+            }),
+            stderr,
+          };
+        }
+
         default: {
           const unhandled: never = format;
 
           return unhandled;
         }
       }
+
 
     case 'context':
       switch (format) {
         case 'bridge': return { code: 0, stdout: JSON.stringify({ context: decision.text }), stderr };
         case 'kiro': return { code: 0, stdout: `${decision.text}\n`, stderr };
         case 'hermes': return { code, stdout: JSON.stringify({ context: decision.text }), stderr };
+        case 'cursor': return { code: 0, stdout: JSON.stringify({ additional_context: decision.text }), stderr };
         default: {
           const unhandled: never = format;
 
           return unhandled;
         }
       }
+
+    case 'rewrite':
+      return format === 'cursor'
+        ? { code: 0, stdout: JSON.stringify({ updated_input: decision.input }), stderr }
+        : { code, stdout: '', stderr };
 
     default: {
       const unhandled: never = decision;
@@ -335,6 +377,7 @@ function render(format: ReplyFormat, decision: Decision, stderr: string): Bridge
 
 /** Run the hooks of `tool`'s file that select `event` and the host's tool, and merge what they decided. */
 async function runEvent(tool: string, event: string, teamHooks: TeamHooks, host: HookStdin, bridge: Bridge): Promise<{ decision: Decision; stderr: string }> {
+  const contextEvents = bridge.contextEvents ?? CONTEXT_EVENTS;
   const payload = claudePayload(tool, event, host, bridge);
   const names = [stdinString(payload, 'tool_name'), stdinString(host, 'tool_name')].flatMap((name) => (name === undefined ? [] : [name]));
   const cwd = stdinString(payload, 'cwd') || undefined;
@@ -352,8 +395,8 @@ async function runEvent(tool: string, event: string, teamHooks: TeamHooks, host:
     hook, run: await runHookCommand(hook.command, { cwd, timeout: hook.timeout, stdin: JSON.stringify(payload) }),
   })));
 
-  const decided = runs.map(({ hook, run }) => ({ hook, run, decision: decisionOf(event, run, hook.id) }));
-  const decision = merge(event, decided.map((d) => d.decision));
+  const decided = runs.map(({ hook, run }) => ({ hook, run, decision: decisionOf(event, run, hook.id, contextEvents) }));
+  const decision = merge(event, decided.map((d) => d.decision), contextEvents);
   let stderr = '';
 
   for (const d of decided) {
@@ -403,5 +446,5 @@ export async function runBridgedTeamHooks(tool: string, event: string, raw: stri
     stderr += ran.stderr;
   }
 
-  return render(bridge.reply, merge(event, decisions), stderr);
+  return render(bridge.reply, merge(event, decisions, bridge.contextEvents ?? CONTEXT_EVENTS), stderr);
 }
