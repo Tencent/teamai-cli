@@ -78,6 +78,7 @@ export async function envAdvisories(
         break;
       // Nobody knows while the store can't be read; the command reports that itself.
       case 'unreadable':
+      case 'workspace':
       case 'team':
       case 'global':
       case 'environment':
