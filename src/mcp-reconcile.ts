@@ -273,7 +273,7 @@ export async function buildVarTable(localConfig: LocalConfig, teamEnv?: TeamEnv)
 
 // ─── Security gate ───────────────────────────────────────────
 
-function hostAllowed(url: string, allowedHosts: string[]): boolean {
+export function hostAllowed(url: string, allowedHosts: string[]): boolean {
   if (allowedHosts.length === 0) return true;
   let host: string;
 
@@ -283,11 +283,16 @@ function hostAllowed(url: string, allowedHosts: string[]): boolean {
     return false;
   }
 
-  return allowedHosts.some((pattern) =>
-    pattern.startsWith('*.')
+  // WHATWG URL lowercases hostname, but the configured patterns are not
+  // normalized. DNS names are case-insensitive, so a team writing
+  // '*.Trusted.com' must not have every HTTP/SSE server rejected.
+  return allowedHosts.some((raw) => {
+    const pattern = raw.toLowerCase();
+
+    return pattern.startsWith('*.')
       ? host === pattern.slice(2) || host.endsWith(pattern.slice(1))
-      : host === pattern,
-  );
+      : host === pattern;
+  });
 }
 
 /** Reject a server that the team's security policy disallows. Returns a reason, or null when OK. */
