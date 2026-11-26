@@ -310,15 +310,39 @@ function policyViolation(def: McpServerDef, sharing: ReturnType<typeof getMcpSha
   return null;
 }
 
+/** True when a URL's scheme or authority (userinfo/host/port) contains a `${VAR}` placeholder. */
+function urlHasDynamicAuthority(url: string): boolean {
+  const sep = url.indexOf('://');
+
+  if (sep === -1) return hasPlaceholder(url);
+  const scheme = url.slice(0, sep);
+  const rest = url.slice(sep + 3);
+  const authorityEnd = rest.search(/[/?#]/);
+  const authority = authorityEnd === -1 ? rest : rest.slice(0, authorityEnd);
+
+  return hasPlaceholder(scheme) || hasPlaceholder(authority);
+}
+
+/** True when the policy-governed field (`command` for stdio, URL scheme/authority for HTTP/SSE) contains `${VAR}`. */
+function hasDynamicPolicyField(def: McpServerDef): boolean {
+  return def.transport === 'stdio'
+    ? hasPlaceholder(def.command)
+    : Boolean(def.url && urlHasDynamicAuthority(def.url));
+}
+
+/** True when `sharing` enforces a non-empty allowlist for `def`'s transport. */
+function hasActivePolicy(def: McpServerDef, sharing: ReturnType<typeof getMcpSharing>): boolean {
+  return def.transport === 'stdio' ? sharing.allowedCommands.length > 0 : sharing.allowedHosts.length > 0;
+}
+
 /**
- * Policy check before `${VAR}` expansion. Defers when the policy-governed field
- * (`command` for stdio, `url` for HTTP/SSE) contains a placeholder so the real
- * resolved value is evaluated once variables are expanded.
+ * Policy check before `${VAR}` expansion. Defers only when the policy-governed
+ * portion (`command` for stdio, URL scheme/authority for HTTP/SSE) contains a
+ * placeholder; placeholders solely in a URL path/query/fragment do not prevent
+ * rejecting a forbidden host statically.
  */
 function staticPolicyViolation(def: McpServerDef, sharing: ReturnType<typeof getMcpSharing>): string | null {
-  const dynamicField = def.transport === 'stdio' ? hasPlaceholder(def.command) : hasPlaceholder(def.url);
-
-  if (dynamicField) return null;
+  if (hasDynamicPolicyField(def)) return null;
 
   return policyViolation(def, sharing);
 }
@@ -1470,7 +1494,11 @@ export function desiredMcpForTarget(
         reason: `unresolved variable(s): ${missing.join(', ')}`,
       });
 
-      if (missing.every((key) => declared?.has(key) ?? true)) kept.add(raw.name);
+      // Never keep an installed entry whose policy-governed field was deferred
+      // and cannot be verified against an active allowlist.
+      const unverifiedUnderPolicy = hasDynamicPolicyField(raw) && hasActivePolicy(raw, ctx.sharing);
+
+      if (!unverifiedUnderPolicy && missing.every((key) => declared?.has(key) ?? true)) kept.add(raw.name);
       continue;
     }
 

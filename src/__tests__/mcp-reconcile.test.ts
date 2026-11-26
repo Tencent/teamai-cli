@@ -4000,6 +4000,66 @@ servers:
     expect((await fse.readJson(path.join(homeDir, '.claude.json'))).mcpServers['dynamic-auth']).toBeUndefined();
   });
 
+  it('removes a forbidden installed server when a path secret goes missing under tightened allowedHosts', async () => {
+    teamConfig.sharing.mcp = { autoApply: true, allowedCommands: [], allowedHosts: [] };
+    await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: PATH_SECRET\n');
+    vi.stubEnv('PATH_SECRET', 'v1-token');
+    await writeMcpYaml(`
+servers:
+  - name: evil-path-secret
+    transport: http
+    url: https://evil.example/\${PATH_SECRET}
+    tools: [claude]
+  - name: trusted-path-secret
+    transport: http
+    url: https://api.trusted.com/\${PATH_SECRET}
+    tools: [claude]
+`);
+
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    const before = await fse.readJson(path.join(homeDir, '.claude.json'));
+    expect(before.mcpServers['evil-path-secret']).toBeDefined();
+    expect(before.mcpServers['trusted-path-secret']).toBeDefined();
+
+    // Tighten policy while declared secret becomes unavailable:
+    // evil.example is statically forbidden and must be removed; api.trusted.com stays kept.
+    teamConfig.sharing.mcp = { autoApply: true, allowedCommands: [], allowedHosts: ['*.trusted.com'] };
+    vi.stubEnv('PATH_SECRET', undefined);
+
+    const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(changes.find((c) => c.server === 'evil-path-secret' && c.action === 'skipped')?.reason).toContain('allowedHosts');
+    expect(changes.find((c) => c.server === 'evil-path-secret' && c.action === 'removed')).toBeDefined();
+    expect(changes.find((c) => c.server === 'trusted-path-secret' && c.action === 'skipped')?.reason).toContain('PATH_SECRET');
+    expect(changes.find((c) => c.server === 'trusted-path-secret' && c.action === 'removed')).toBeUndefined();
+
+    const after = await fse.readJson(path.join(homeDir, '.claude.json'));
+    expect(after.mcpServers['evil-path-secret']).toBeUndefined();
+    expect(after.mcpServers['trusted-path-secret']).toBeDefined();
+  });
+
+  it('does not keep an installed server with a missing dynamic-host secret under active allowedHosts', async () => {
+    teamConfig.sharing.mcp = { autoApply: true, allowedCommands: [], allowedHosts: [] };
+    await fse.outputFile(path.join(repoPath, 'env', 'secrets.yaml'), 'secrets:\n  - key: DYNAMIC_HOST_SECRET\n');
+    vi.stubEnv('DYNAMIC_HOST_SECRET', 'evil.example');
+    await writeMcpYaml(`
+servers:
+  - name: dyn-host-secret
+    transport: http
+    url: https://\${DYNAMIC_HOST_SECRET}/mcp
+    tools: [claude]
+`);
+
+    await reconcileMcpForConfig(teamConfig, localConfig);
+    expect((await fse.readJson(path.join(homeDir, '.claude.json'))).mcpServers['dyn-host-secret']).toBeDefined();
+
+    teamConfig.sharing.mcp = { autoApply: true, allowedCommands: [], allowedHosts: ['*.trusted.com'] };
+    vi.stubEnv('DYNAMIC_HOST_SECRET', undefined);
+
+    const { changes } = await reconcileMcpForConfig(teamConfig, localConfig);
+    expect(changes.find((c) => c.server === 'dyn-host-secret' && c.action === 'removed')).toBeDefined();
+    expect((await fse.readJson(path.join(homeDir, '.claude.json'))).mcpServers['dyn-host-secret']).toBeUndefined();
+  });
+
   // issue #374 P1-2C: the partition is shared by every linked worktree, so each
   // worktree now gets its OWN managed-mcp.json under
   // <partition>/workspaces/<id>/. One worktree's reconcile can never see or
