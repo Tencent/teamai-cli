@@ -47,6 +47,14 @@ function taggedResourceName(name: string): string | null {
 }
 
 /**
+ * Stored tag lists from versions that accepted padded and blank values keep
+ * them; compare and rewrite through this so those values stay removable.
+ */
+function normalizeStoredTags(tags: string[] | undefined): string[] {
+    return [...new Set((tags ?? []).map((tag) => tag.trim()).filter(Boolean))].sort();
+}
+
+/**
  * Resolve the active scope for tag operations: project scope when the cwd has
  * a project-scope install, otherwise user scope. Mirrors recall.ts/contribute.ts
  * so `tags list/subscribe/unsubscribe` agree with what `recall` actually queries
@@ -151,7 +159,7 @@ export async function tagsSubscribe(tags: string[], options: GlobalOptions): Pro
     if (!requested) return;
 
     const localConfig = await resolveTagsScope(options);
-    const existing = new Set(localConfig.subscribedTags ?? []);
+    const existing = new Set(normalizeStoredTags(localConfig.subscribedTags));
 
     const newTags: string[] = [];
 
@@ -200,7 +208,7 @@ export async function tagsUnsubscribe(tags: string[], options: GlobalOptions): P
     if (!requested) return;
 
     const localConfig = await resolveTagsScope(options);
-    const existing = new Set(localConfig.subscribedTags ?? []);
+    const existing = new Set(normalizeStoredTags(localConfig.subscribedTags));
 
     const removed: string[] = [];
 
@@ -340,7 +348,7 @@ export async function tagsRemove(
     }
 
     const toRemove = new Set(requested);
-    const remaining = existing.filter((t) => !toRemove.has(t));
+    const remaining = existing.filter((t) => !toRemove.has(t.trim()));
 
     if (remaining.length === existing.length) {
         log.info(`None of the specified tags were found on ${resourceType}/${resourceName}.`);
@@ -348,20 +356,23 @@ export async function tagsRemove(
         return;
     }
 
-    if (remaining.length === 0) {
+    // Earlier versions stored padded and blank values; the rewrite drops them.
+    const kept = [...new Set(remaining.map((t) => t.trim()).filter(Boolean))];
+
+    if (kept.length === 0) {
         delete map[resourceName];
     } else {
-        map[resourceName] = remaining;
+        map[resourceName] = kept;
     }
 
     if (options.dryRun) {
-        log.info(`[dry-run] Would update ${resourceType}/${resourceName} tags to: ${remaining.join(', ') || '(none)'}`);
+        log.info(`[dry-run] Would update ${resourceType}/${resourceName} tags to: ${kept.join(', ') || '(none)'}`);
 
         return;
     }
 
     await saveTagsConfig(repoPath, tagsConfig);
-    log.success(`Updated ${resourceType}/${resourceName} tags: ${remaining.join(', ') || '(removed all)'}`);
+    log.success(`Updated ${resourceType}/${resourceName} tags: ${kept.join(', ') || '(removed all)'}`);
 }
 
 /**

@@ -85,6 +85,30 @@ describe('tag subscription commands', () => {
     }));
   });
 
+  it('removes a padded subscription an earlier version stored, and drops blank ones', async () => {
+    vi.mocked(requireInit).mockResolvedValue({
+      localConfig: { ...userConfig, subscribedTags: [' backend ', '   '] },
+      teamConfig: {} as never,
+    });
+
+    await tagsUnsubscribe([' backend '], {});
+
+    expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({ subscribedTags: undefined }));
+  });
+
+  it('writes back trimmed subscriptions without the blank entries an earlier version stored', async () => {
+    vi.mocked(requireInit).mockResolvedValue({
+      localConfig: { ...userConfig, subscribedTags: [' testing ', '   '] },
+      teamConfig: {} as never,
+    });
+
+    await tagsSubscribe(['frontend'], {});
+
+    expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({
+      subscribedTags: ['frontend', 'testing'],
+    }));
+  });
+
   it('subscribes and invalidates the pull revision cache', async () => {
     await tagsSubscribe(['testing', 'frontend'], {});
 
@@ -365,6 +389,19 @@ describe('tags add and remove', () => {
     expect(log.error).toHaveBeenCalledWith('Specify the name of the skill or rule to tag.');
     expect(existsSync(path.join(repoPath, 'tags.yaml'))).toBe(false);
     expect(process.exitCode).toBe(1);
+  });
+
+  it('removes a tag an earlier version stored with padding', async () => {
+    writeFileSync(
+      path.join(repoPath, 'tags.yaml'),
+      'skills:\n  deploy:\n    - " backend "\n    - "   "\nrules: {}\n',
+    );
+
+    await tagsRemove('skills', 'deploy', [' backend '], {});
+
+    const written = readFileSync(path.join(repoPath, 'tags.yaml'), 'utf8');
+
+    expect(written).toContain('skills: {}');
   });
 
   it('trims the resource name and the tags it writes', async () => {
