@@ -127,9 +127,13 @@ it('round-trips repo.ref through workspace config load and save', async () => {
 describe('team ref scope boundary', () => {
   it('allows a standalone workspace', () => { expect(teamRefBlocker(config(), null)).toBeNull(); });
   it('requires a workspace', () => { expect(teamRefBlocker(null, null)?.message).toBe('--team-ref needs a teamai workspace here. Run teamai init --scope workspace here first.'); });
-  it.each(['same-team', 'inherit'])('refuses user scope through %s', (kind) => {
-    expect(teamRefBlocker(config({ inheritUserScope: kind === 'inherit' }), kind === 'same-team' ? config({ scope: 'user' }) : null)?.message)
-      .toBe('--team-ref pins one workspace, but this team also reaches it through user scope, where every workspace shares one copy. Remove the user-scope install, or turn off inheritUserScope, to pin a workspace.');
+  it.each([
+    ['same-team', '--team-ref cannot pin this workspace because user scope uses the same team repository. Use an isolated workspace install without that user-scope install or user-scope inheritance.'],
+    ['inherit', '--team-ref cannot pin a workspace that inherits user scope. Turn off inheritUserScope in this workspace before retrying.'],
+    ['both', '--team-ref cannot pin this workspace because user scope uses the same team repository. Use an isolated workspace install without that user-scope install or user-scope inheritance.'],
+  ])('refuses user scope through %s', (kind, message) => {
+    expect(teamRefBlocker(config({ inheritUserScope: kind !== 'same-team' }), kind !== 'inherit' ? config({ scope: 'user' }) : null)?.message)
+      .toBe(message);
   });
   it('refuses self mode', () => { expect(teamRefBlocker(config({ repo: { localPath: clone, remote: '.', kind: 'self' } }), null)?.message).toBe("--team-ref does not apply in self mode: the project's own commit decides which team resources it has."); });
   it('refuses HTTP', () => { expect(teamRefBlocker(config({ repo: { localPath: clone, remote: 'https://example.com', kind: 'http' } }), null)?.message).toBe('--team-ref needs a git team repo. This team is served over HTTP.'); });
