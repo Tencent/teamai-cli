@@ -64,7 +64,7 @@ describe('webhook', () => {
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
-            'Content-Type': 'text/plain; charset=utf-8',
+            'Content-Type': 'application/json; charset=utf-8',
           }),
         }),
       );
@@ -158,7 +158,7 @@ describe('webhook', () => {
     });
   });
 
-  function singleEndpointConfig(retries: number) {
+  function singleEndpointConfig(retries: number, type: 'feishu' | 'wecom' | 'json' = 'json') {
     return {
       localConfig: { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user' },
       teamConfig: {
@@ -166,7 +166,7 @@ describe('webhook', () => {
         sharing: {
           webhooks: {
             enabled: true,
-            endpoints: [{ url: 'https://example.com/hook', type: 'json', events: ['*'], timeout: 5000, retries }],
+            endpoints: [{ url: 'https://example.com/hook', type, events: ['*'], timeout: 5000, retries }],
           },
         },
       },
@@ -214,6 +214,64 @@ describe('webhook', () => {
       const { testWebhook } = await import('../webhook.js');
       const { log } = await import('@teamai/shared/log');
       mockAutoDetectInit.mockResolvedValueOnce(singleEndpointConfig(0));
+
+      await testWebhook();
+
+      expect(log.success).toHaveBeenCalledWith('Webhook test successful: https://example.com/hook');
+      expect(log.error).not.toHaveBeenCalled();
+    });
+
+    it('reports failure when a 200 response carries a business error code', async () => {
+      const { testWebhook } = await import('../webhook.js');
+      const { log } = await import('@teamai/shared/log');
+      mockAutoDetectInit.mockResolvedValueOnce(singleEndpointConfig(0, 'wecom'));
+      // Feishu/WeCom acknowledge HTTP 200 even for rejected messages.
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ errcode: 40058, errmsg: 'invalid msgtype' }),
+      });
+
+      await testWebhook();
+
+      expect(log.success).not.toHaveBeenCalled();
+      expect(log.error).toHaveBeenCalledWith('Webhook test failed: https://example.com/hook');
+    });
+
+    it('retries a 200 response with a retryable business error code', async () => {
+      vi.useFakeTimers();
+      try {
+        const { testWebhook } = await import('../webhook.js');
+        const { log } = await import('@teamai/shared/log');
+        mockAutoDetectInit.mockResolvedValueOnce(singleEndpointConfig(1, 'feishu'));
+        mockFetch.mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ code: 19007, msg: 'too many requests' }),
+        });
+
+        const run = testWebhook();
+        await vi.advanceTimersByTimeAsync(1000);
+        await run;
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(log.warn).toHaveBeenCalledWith(
+          'Webhook to https://example.com/hook failed after 2 attempt(s): business code 19007: too many requests',
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('reports success when a 200 response carries a zero business code', async () => {
+      const { testWebhook } = await import('../webhook.js');
+      const { log } = await import('@teamai/shared/log');
+      mockAutoDetectInit.mockResolvedValueOnce(singleEndpointConfig(0, 'feishu'));
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ code: 0, msg: 'ok' }),
+      });
 
       await testWebhook();
 
