@@ -226,7 +226,7 @@ describe('repository replacement with unrecorded source destinations', () => {
     expect(vi.mocked(log.warn).mock.calls.some(([message]) => /manual review/i.test(String(message)))).toBe(true);
   });
 
-  it.each(['update', 'withdraw', 'remove'])('keeps explicitly recorded plain paths compatible: %s', async (action) => {
+  it.each(['update', 'withdraw', 'remove', 'remove-missing-cache'])('keeps explicitly recorded plain paths compatible: %s', async (action) => {
     await fse.outputFile(path.join(home, '.claude/skills/legacy/SKILL.md'), '# Previous revision\n');
     await record({
       destinationRoot: home, teamCheckout: config.repo.localPath, repositoryId,
@@ -234,6 +234,20 @@ describe('repository replacement with unrecorded source destinations', () => {
       installedPaths: { legacy: ['.claude/skills/legacy'] },
     });
     await publish(action === 'update' ? ['legacy', 'free'] : []);
+
+    if (action === 'remove-missing-cache') {
+      await fse.remove(path.join(home, '.teamai/source-repos', repositoryId, 'repo'));
+      vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: config, teamConfig: team });
+      await sourceRemove('shared', {});
+      expect(await fse.readFile(path.join(home, '.claude/skills/legacy/SKILL.md'), 'utf8')).toBe('# Previous revision\n');
+      const after = await fse.readJson(getSourceManifestPath('shared', config)) as SourceInstallManifest;
+      expect(after.installedPaths).toEqual({ legacy: [path.join('.claude', 'skills', 'legacy')] });
+      expect(after.repositoryId).toBe(repositoryId);
+      expect(await getSourceSkillOrigins(config)).toEqual(new Map([['legacy', 'shared']]));
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('source cache for shared is missing'));
+      expect(YAML.parse(await fse.readFile(path.join(config.repo.localPath, 'teamai.yaml'), 'utf8')).sources).toEqual([]);
+      return;
+    }
 
     if (action === 'remove') {
       vi.mocked(autoDetectInit).mockResolvedValue({ localConfig: config, teamConfig: team });
