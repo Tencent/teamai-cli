@@ -3166,7 +3166,32 @@ describe('dashboard-report records the git state a session started on', () => {
     expect([stop.gitHead, stop.gitBranch]).toEqual([git(linked, 'rev-parse', 'HEAD'), 'side']);
   });
 
-  it('writes a Stop without its head, in time, when git outlives its time cap with a child holding the pipe (#1387)', async () => {
+  it('writes a Stop without its head when the git reads remain pending after abort (#1387)', async () => {
+    const { repo } = committedRepo();
+    const gitReads = await import('../utils/git.js');
+    let release = () => {};
+    const pending = new Promise<null>((resolve) => { release = () => resolve(null); });
+    const head = vi.spyOn(gitReads, 'getHeadCommit').mockReturnValue(pending);
+    const branch = vi.spyOn(gitReads, 'getCurrentBranch').mockReturnValue(pending);
+    const started = Date.now();
+
+    try {
+      await runHook({ hook_event_name: 'Stop', session_id: 'git-pending', cwd: repo });
+
+      expect(Date.now() - started).toBeLessThan(4_500);
+      expect(head.mock.calls[0]?.[2]?.aborted).toBe(true);
+      expect(branch.mock.calls[0]?.[1]?.aborted).toBe(true);
+      const [stop] = await readEvents();
+      expect(stop).toMatchObject({ type: 'stop', sessionId: 'git-pending' });
+      expect(stop).not.toHaveProperty('gitHead');
+    } finally {
+      release();
+      head.mockRestore();
+      branch.mockRestore();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('writes a Stop without its head, in time, when git outlives its time cap with a child holding the pipe (#1387)', async () => {
     const { repo } = committedRepo();
     const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf-8' }).stdout.trim();
     const wrapperDir = path.join(tmpDir, 'git-wrapper');
