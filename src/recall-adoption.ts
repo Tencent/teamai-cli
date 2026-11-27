@@ -95,7 +95,17 @@ function invokesRecall(command: string): boolean {
     if (words[i] === 'npx') {
       i++;
 
-      while (i < words.length && words[i].startsWith('-')) i++;
+      while (i < words.length && words[i].startsWith('-')) {
+        // `-p`/`--package` take the package name as their value. Skipping only
+        // the flag left that value where the command name is expected, so
+        // `npx -p teamai-cli teamai recall` was read as package `teamai-cli`
+        // followed by subcommand `teamai` and never matched `recall` (#2131).
+        const flag = words[i];
+        const takesValue = flag === '-p' || flag === '--package';
+
+        i += takesValue ? 2 : 1;
+      }
+
       name = TEAMAI_PACKAGE;
     }
 
@@ -901,3 +911,6 @@ function neededForPending(entries: LogEntry[], now: number): Set<LogEntry> {
 
   return needed;
 }
+
+/** Exposed for the invokesRecall regression test. */
+export { invokesRecall };
