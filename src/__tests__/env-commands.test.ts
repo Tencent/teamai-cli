@@ -1513,13 +1513,14 @@ scope: 'user',
   });
 
   describe('envRemove', () => {
-    it('should remove existing variable locally and show push hint', async () => {
+    it.each([false, true])('should remove every declaration of an existing variable locally (duplicate: %s)', async (duplicate) => {
       await fse.writeFile(
         path.join(repoPath, 'env', 'env.yaml'),
         YAML.stringify({
           variables: [
             { key: 'KEEP', value: 'a' },
             { key: 'REMOVE_ME', value: 'b' },
+            ...(duplicate ? [{ key: 'REMOVE_ME', value: 'survives' }] : []),
           ],
         }),
       );
