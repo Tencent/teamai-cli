@@ -58,6 +58,9 @@ const GitCodeFilesSchema = z.array(z.object({
   diff: z.string().nullish(),
 }));
 
+const COMMIT_PAGE_SIZE = 50;
+const MAX_COMMIT_PAGES = 100;
+
 function authHeaders(token: string) {
   return { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' };
 }
@@ -98,15 +101,29 @@ export async function fetchGitCodeMR(url: string): Promise<MRData> {
   let commits: Array<{ hash: string; message: string }> = [];
 
   try {
-    const commitsResp = await fetch(`${base}/commits?per_page=50`, { headers, redirect: 'manual' });
+    const fetched: Array<{ hash: string; message: string }> = [];
+    let page = 1;
 
-    if (commitsResp.ok) {
+    while (page <= MAX_COMMIT_PAGES) {
+      const commitsResp = await fetch(
+        `${base}/commits?per_page=${COMMIT_PAGE_SIZE}&page=${page}`,
+        { headers, redirect: 'manual' },
+      );
+
+      if (!commitsResp.ok) throw new Error(`GitCode API error ${commitsResp.status}`);
       const raw = GitCodeCommitsSchema.parse(await commitsResp.json());
-      commits = raw.map((c) => ({
+      fetched.push(...raw.map((c) => ({
         hash: c.sha,
         message: (c.commit?.message ?? '').split('\n')[0],
-      }));
+      })));
+
+      // Gitee-style APIs have no x-next-page header: a short page ends the list.
+      if (raw.length < COMMIT_PAGE_SIZE) break;
+      page++;
     }
+
+    if (page > MAX_COMMIT_PAGES) throw new Error('GitCode commit page limit reached');
+    commits = fetched;
   } catch (err) {
     log.debug(`GitCode PR commits 获取异常，commits 将为空：${err instanceof Error ? err.message : String(err)}`);
   }
