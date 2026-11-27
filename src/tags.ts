@@ -58,6 +58,15 @@ export async function tagsList(): Promise<void> {
     const tagsConfig = await loadTagsConfig(localConfig.repo.localPath);
 
     if (!tagsConfig) {
+        // loadTagsConfig returns null both for a missing file and for one that
+        // does not parse; saying "not configured yet" hides the broken file.
+        if (await pathExists(path.join(localConfig.repo.localPath, 'tags.yaml'))) {
+            log.error(`tags.yaml in ${localConfig.repo.localPath} could not be read. Fix it in the team repo, then run the command again.`);
+            process.exitCode = 1;
+
+            return;
+        }
+
         log.info('No tags.yaml found in team repo. Tags are not configured yet.');
 
         return;

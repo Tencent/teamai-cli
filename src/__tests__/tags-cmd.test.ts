@@ -234,6 +234,7 @@ describe('tags list', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    process.exitCode = undefined;
     repoPath = mkdtempSync(path.join(os.tmpdir(), 'teamai-tags-list-'));
     writeFileSync(path.join(repoPath, 'teamai.yaml'), 'team: demo\nrepo: owner/repo\nprovider: github\n');
     useConfig({});
@@ -249,7 +250,18 @@ describe('tags list', () => {
   }
 
   afterEach(() => {
+    process.exitCode = undefined;
     rmSync(repoPath, { recursive: true, force: true });
+  });
+
+  it('reports a tags.yaml it cannot read instead of saying there is none', async () => {
+    writeFileSync(path.join(repoPath, 'tags.yaml'), 'skills: [unclosed');
+
+    await tagsList();
+
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('could not be read'));
+    expect(log.info).not.toHaveBeenCalledWith(expect.stringContaining('No tags.yaml found'));
+    expect(process.exitCode).toBe(1);
   });
 
   function addSkill(...segments: string[]): void {
