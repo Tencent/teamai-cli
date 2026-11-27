@@ -189,7 +189,7 @@ async function applyReview(cwd: string, item: PendingReviewItem, dryRun: boolean
 /**
  * review 子命令主函数，分发 list / show / apply / reject / all-apply 模式。
  */
-export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
+export async function reviewCmd(opts: ReviewCmdOptions): Promise<1 | undefined> {
     const cwd = process.cwd();
     const { idArg, apply, reject, allApply, maxRisk = 'medium', json: jsonMode, dryRun = false } = opts;
 
@@ -217,15 +217,16 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
             results.push({ id: item.id, ok: result.ok, reason: result.reason });
         }
 
+        const failed = results.filter((r) => !r.ok);
+
         if (jsonMode) {
             // JSON.stringify drops an undefined dryRun, so the key appears only in dry runs (same below).
             console.log(JSON.stringify({ results, skipped: skipped.map((s) => s.id), dryRun: dryRun ? true : undefined }));
 
-            return;
+            return failed.length > 0 ? 1 : undefined;
         }
 
         const succeeded = results.filter((r) => r.ok);
-        const failed = results.filter((r) => !r.ok);
 
         const summary = dryRun
             ? `[dry-run] [review] --all-apply: ${succeeded.length} would apply, ${failed.length} failed, ${skipped.length} skipped`
@@ -241,7 +242,7 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
             console.log(chalk.dim(`  ○ skipped ${skip.id} (kind=${skip.kind}, risk=${skip.risk})`));
         }
 
-        return;
+        return failed.length > 0 ? 1 : undefined;
     }
 
     // ── 无 idArg → list 模式 ──────────────────────────────
@@ -271,7 +272,7 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
             console.log(JSON.stringify({ ok: false, reason: `not found: id="${idArg}"`, dryRun: dryRun ? true : undefined }));
         }
 
-        return;
+        return apply ? 1 : undefined;
     }
 
     // ── reject 模式 ───────────────────────────────────────
@@ -296,7 +297,7 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
         if (jsonMode) {
             console.log(JSON.stringify({ ok: result.ok, reason: result.reason, id: idArg, dryRun: dryRun ? true : undefined }));
 
-            return;
+            return result.ok ? undefined : 1;
         }
 
         if (result.ok) {
@@ -307,7 +308,7 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
             console.log(chalk.red(`${dryRun ? '[dry-run] ' : ''}[review] apply failed: ${idArg} — ${result.reason}`));
         }
 
-        return;
+        return result.ok ? undefined : 1;
     }
 
     // ── show 模式（默认，无 --apply / --reject）───────────
