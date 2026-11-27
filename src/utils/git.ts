@@ -1,4 +1,5 @@
 import { execFile, spawnSync, type ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import diagnostics from 'node:diagnostics_channel';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
@@ -14,6 +15,7 @@ import { descendantsOf, signalChild, signalStillRunning } from '@teamai/shared/p
 import { errnoCode } from './fs.js';
 import { GitAnswers } from './git-answers.js';
 import { gitFindsNoRepository, linkedWorktreesStamp, repositoryStamp } from './git-discovery.js';
+import { gerritReviewRef, isGerritRemote } from './remote-format.js';
 import { log } from '@teamai/shared/log';
 import { mergeTeamConfig } from './yaml.js';
 
@@ -489,6 +491,45 @@ async function commitWith(git: SimpleGit, message: string, paths: readonly strin
   return git.raw(paths === undefined ? commit : [...commit, '--', ...paths]);
 }
 
+/**
+ * `message` with the `Change-Id` trailer a Gerrit review needs. Gerrit accepts
+ * any `I<40 hex>`; deriving it from the staged tree, the parent and the
+ * author's email makes an unchanged re-push update the same Change, as the
+ * server's commit-msg hook would, instead of opening another one. Hooks are
+ * skipped by the commit itself (see {@link commitSkippingHooks}), so without
+ * this a push to `refs/for` carries no Change-Id at all.
+ *
+ * `changeId` is the id an earlier push of the same review recorded. Reusing it
+ * turns an edit (or a moved default branch) into a new patchset of that Change
+ * rather than a second Change.
+ */
+async function withGerritChangeId(git: SimpleGit, message: string, changeId?: string): Promise<string> {
+  if (/^Change-Id:/m.test(message)) return message;
+
+  if (changeId) return `${message}\n\nChange-Id: ${changeId}`;
+
+  const [tree, parent, email] = await Promise.all([
+    git.raw(['write-tree']).then((out) => out.trim(), () => ''),
+    git.revparse(['HEAD']).then((out) => out.trim(), () => ''),
+    git.raw(['config', '--get', 'user.email']).then((out) => out.trim(), () => ''),
+  ]);
+
+  const id = createHash('sha1').update(`${tree}\n${parent}\n${email}\n${message}`).digest('hex');
+
+  return `${message}\n\nChange-Id: I${id}`;
+}
+
+/** The `Change-Id` trailer of the commit `rev`, or null when it carries none. */
+export async function getChangeIdOf(localPath: string, rev = 'HEAD'): Promise<string | null> {
+  try {
+    const body = await createGit(localPath).raw(['log', '-1', '--format=%B', rev]);
+
+    return /^Change-Id:\s*(I[0-9a-f]{40})$/m.exec(body)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** `-c` arguments setting TeamAI's identity for each unset key, or none when git already resolves an author and committer. */
 async function fallbackIdentityConfig(git: SimpleGit): Promise<string[]> {
   try {
@@ -597,6 +638,24 @@ export async function getConfiguredRemoteUrl(localPath: string, remoteName = 'or
     return url || null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Whether the clone at `localPath` pushes to a Gerrit review host. The
+ * configured URL is read first: `git remote get-url` expands
+ * `url.*.insteadOf`, which can replace the Gerrit host with a local path.
+ * `provider` is the team's configured provider; a host it owns is not Gerrit.
+ */
+export async function isGerritClone(localPath: string, provider?: string): Promise<boolean> {
+  if (provider !== undefined && provider !== 'git') return false;
+
+  try {
+    const url = await getConfiguredRemoteUrl(localPath) ?? await getRemoteUrl(localPath);
+
+    return isGerritRemote(url);
+  } catch {
+    return false;
   }
 }
 
@@ -1091,7 +1150,11 @@ export async function autoPushViaMR(
 ): Promise<MrPush> {
   try {
     const branchName = await unusedBranchName(repoPath, localConfig.username);
-    const pushed = await pushRepoBranch(repoPath, message, files, branchName, { initPush: opts.initPush });
+
+    const pushed = await pushRepoBranch(repoPath, message, files, branchName, {
+      initPush: opts.initPush,
+      provider: localConfig.provider ?? teamConfig.provider,
+    });
 
     if (!pushed) {
       log.debug('[git] autoPushViaMR: nothing to commit');
@@ -1197,6 +1260,11 @@ export async function remoteBranchExists(
  * and extended, or, when only origin has it, created from origin's tip, instead
  * of `checkout -b` failing because the branch already exists.
  *
+ * On a Gerrit review host the commit is pushed to `HEAD:refs/for/<branch>`
+ * instead of a branch, so the branch and PR steps above do not apply.
+ * `opts.provider` names the team's provider (a host it owns is never Gerrit),
+ * and `opts.changeId` the Change-Id an earlier push of this review recorded.
+ *
  * The fetch and the push run under the block timeout (see
  * {@link createGitWithBlockTimeout}); `opts.initPush`, used by init, puts the
  * local steps under it too.
@@ -1206,11 +1274,16 @@ export async function pushRepoBranch(
   message: string,
   files: string[],
   branchName: string,
-  opts: { reuseBranch?: boolean; initPush?: boolean; explicitBranch?: boolean } = {},
+  opts: { reuseBranch?: boolean; initPush?: boolean; explicitBranch?: boolean; reviewTree?: string; changeId?: string; provider?: string } = {},
 ): Promise<boolean> {
   const git = opts.initPush ? createGitWithBlockTimeout(localPath) : createGit(localPath);
   const remote = createGitWithBlockTimeout(localPath);
   await assertAttachedTeamRepo(git, localPath);
+
+  // On Gerrit a push to `refs/for/<branch>` opens a review and no branch of
+  // ours reaches origin, so the branch-only steps below (tree comparison,
+  // publishing a destination branch) do not apply.
+  const gerrit = await isGerritClone(localPath, opts.provider);
 
   if (opts.reuseBranch) {
     // Fetch so the tree comparison below can see the remote branch's content.
@@ -1240,8 +1313,9 @@ export async function pushRepoBranch(
 
   if (status.staged.length === 0) {
     // A destination from an earlier push keeps its unpushed commit: publish it
-    // instead of deleting the branch as a generated one is (#1827).
-    if (opts.explicitBranch) return settleExplicitWithoutCommit(git, remote, localPath, branchName);
+    // instead of deleting the branch as a generated one is (#1827). On Gerrit
+    // nothing was published as a branch, so there is nothing to publish here.
+    if (opts.explicitBranch && !gerrit) return settleExplicitWithoutCommit(git, remote, localPath, branchName);
 
     // checkout would otherwise carry unmatched copied files back to the
     // default branch as unstaged/untracked changes (#331).
@@ -1249,7 +1323,9 @@ export async function pushRepoBranch(
     await git.clean('f', ['-d']);
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Nothing to commit, switching back to ${defaultBranch}`);
-    await leaveAndDeletePushBranch(git, defaultBranch, branchName);
+
+    if (opts.explicitBranch) await switchToDefaultBranch(git, defaultBranch);
+    else await leaveAndDeletePushBranch(git, defaultBranch, branchName);
 
     return false;
   }
@@ -1258,25 +1334,48 @@ export async function pushRepoBranch(
   const diffOutput = await git.diff(['--cached', '--unified=0']);
 
   if (isMetadataOnlyDiff(diffOutput)) {
-    if (opts.explicitBranch) return settleExplicitWithoutCommit(git, remote, localPath, branchName);
+    if (opts.explicitBranch && !gerrit) return settleExplicitWithoutCommit(git, remote, localPath, branchName);
 
     await git.reset(['--hard', 'HEAD']);
     await git.clean('f', ['-d']);
     const defaultBranch = await getDefaultBranch(localPath);
     log.debug(`Only metadata/timestamp changes detected, switching back to ${defaultBranch}`);
-    await leaveAndDeletePushBranch(git, defaultBranch, branchName);
+
+    if (opts.explicitBranch) await switchToDefaultBranch(git, defaultBranch);
+    else await leaveAndDeletePushBranch(git, defaultBranch, branchName);
 
     return false;
   }
 
   // Commit and push branch. Skip hooks: this is a CLI-managed knowledge commit
   // (often inside knowledge-wt, which has hook scripts but no husky.sh).
-  await commitSkippingHooks(git, message);
+  // A Gerrit review keeps no branch to compare against, so the tree the last
+  // successful push carried is compared instead: an unchanged resource must not
+  // open a second Change.
+  if (gerrit && opts.reuseBranch && opts.reviewTree
+    && (await git.raw(['write-tree'])).trim() === opts.reviewTree) {
+    log.debug(`Review for ${branchName} already holds this tree, skipping push`);
+    await git.reset(['--hard', 'HEAD']);
+    await git.clean('f', ['-d']);
+    await leaveAndDeletePushBranch(git, await getDefaultBranch(localPath), branchName);
+
+    return false;
+  }
+
+  await commitSkippingHooks(git, gerrit ? await withGerritChangeId(git, message, opts.changeId) : message);
+
+  // A named destination is the branch under review; a generated push branch is
+  // not, so its commits target the default branch.
+  const reviewRef = gerrit
+    ? gerritReviewRef(opts.explicitBranch ? branchName : await getDefaultBranch(localPath))
+    : null;
 
   if (opts.reuseBranch) {
     // Re-running push with no real change would otherwise force-push an
     // identical tree under a new commit sha, spamming the open PR.
-    if (await treeMatchesRemoteBranch(git, branchName)) {
+    // A Gerrit remote has no source branch to compare the tree with (the push
+    // went to refs/for), so this check is skipped there.
+    if (!reviewRef && await treeMatchesRemoteBranch(git, branchName)) {
       log.debug(`Remote branch ${branchName} already holds this tree, skipping force-push`);
       const defaultBranch = await getDefaultBranch(localPath);
       await leaveAndDeletePushBranch(git, defaultBranch, branchName);
@@ -1284,7 +1383,19 @@ export async function pushRepoBranch(
       return false;
     }
 
+    if (reviewRef) {
+      await remote.push(['--progress', 'origin', `HEAD:${reviewRef}`]);
+
+      return true;
+    }
+
     await remote.push(['--progress', '--force-with-lease', '-u', 'origin', branchName]);
+
+    return true;
+  }
+
+  if (reviewRef) {
+    await remote.push(['--progress', 'origin', `HEAD:${reviewRef}`]);
 
     return true;
   }
@@ -1674,6 +1785,25 @@ async function leaveAndDeletePushBranch(
 
   if (!switched) {
     log.debug(`Leaving ${branchName} in place: default branch busy in another worktree`);
+
+    return;
+  }
+
+  await git.deleteLocalBranch(branchName, true);
+}
+
+/**
+ * Delete a generated push branch the caller has already left. A Gerrit review
+ * publishes no branch of ours, so its push branch has nothing left to back; one
+ * still checked out (the default branch is busy in another worktree) stays, as
+ * in {@link leaveAndDeletePushBranch}.
+ */
+export async function dropPushBranchIfLeft(localPath: string, branchName: string): Promise<void> {
+  const git = createGit(localPath);
+  const current = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+
+  if (current === branchName) {
+    log.debug(`Leaving ${branchName} in place: still checked out here`);
 
     return;
   }
@@ -2287,6 +2417,15 @@ export async function getFileContentWhenAdded(repoPath: string, filePath: string
 export async function getHeadCommit(localPath: string, rev = 'HEAD', abort?: AbortSignal): Promise<string | null> {
   try {
     return (await createGit(localPath, abort).raw(['rev-parse', '--verify', `${rev}^{commit}`])).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The tree the commit `rev` carries, or null when it names none. */
+export async function getTreeOf(localPath: string, rev = 'HEAD'): Promise<string | null> {
+  try {
+    return (await createGit(localPath).raw(['rev-parse', '--verify', `${rev}^{tree}`])).trim() || null;
   } catch {
     return null;
   }

@@ -79,6 +79,7 @@ vi.mock('@teamai/shared/log', () => ({
 }));
 
 import { generateBranchName, pushRepoBranch, checkoutMaster, pushRepoDirectly, initRepo, configureGitUser, getHeadRev, resetToCleanMaster, isMetadataOnlyDiff, isGitRepo, normalizeRepoUrlForCompare, remotesMatch, redactGitCredentials, pullRepo, pullRepoFastForward, pushLearningToOrigin, gitCommonDir, unusedBranchName } from '../utils/git.js';
+import { isGerritRemote, gerritReviewRef, gerritWebUrl } from '../utils/remote-format.js';
 import fse from 'fs-extra';
 import { createGit, createGitWithBlockTimeout, disableGitTerminalPrompt, longPathArgs } from '../utils/git.js';
 
@@ -269,6 +270,57 @@ describe('isGitRepo', () => {
   });
 });
 
+describe('isGerritRemote', () => {
+  it('recognizes a gerrit host, the 29418 port, or a /gerrit/ path', () => {
+    expect(isGerritRemote('ssh://00022287@gerritro.zte.com.cn:29418/zxms10/vtcp/harness')).toBe(true);
+    expect(isGerritRemote('https://gerrit.example.com/group/repo.git')).toBe(true);
+    expect(isGerritRemote('git@gerrit.example.com:group/repo.git')).toBe(true);
+    expect(isGerritRemote('https://git.example.com:29418/group/repo.git')).toBe(true);
+    expect(isGerritRemote('https://git.example.com/gerrit/group/repo.git')).toBe(true);
+    // A scp-style Gerrit remote carries the review port after the host.
+    expect(isGerritRemote('git@gerrit.example.com:29418/group/repo.git')).toBe(true);
+    // The host after `user@`, and the port before the path separator.
+    expect(isGerritRemote('ssh://user@gerrit.example.com/group/repo.git')).toBe(true);
+    expect(isGerritRemote('git@git.example.com:29418/group/repo.git')).toBe(true);
+  });
+
+  it('does not treat a host the configured provider owns as Gerrit', () => {
+    // A GitHub org named `gerrit` is not a Gerrit review host.
+    expect(isGerritRemote('https://github.com/gerrit/org/repo.git', 'github')).toBe(false);
+    expect(isGerritRemote('https://github.com/gerrit/org/repo.git')).toBe(true);
+    expect(isGerritRemote('git@gerrit.example.com:group/repo.git', 'gitlab')).toBe(false);
+  });
+
+  it('leaves non-Gerrit remotes alone', () => {
+    expect(isGerritRemote('https://github.com/org/repo.git')).toBe(false);
+    expect(isGerritRemote('git@git.woa.com:org/repo.git')).toBe(false);
+    expect(isGerritRemote('ssh://git@code.qschou.com/org/repo.git')).toBe(false);
+    expect(isGerritRemote('https://git.example.com/org/repo.git')).toBe(false);
+    expect(isGerritRemote(null)).toBe(false);
+    expect(isGerritRemote('')).toBe(false);
+    // Not a gerrit domain even though the segment is long: only `gerrit` exactly.
+    expect(isGerritRemote('https://mygerrit.example.com/org/repo.git')).toBe(false);
+  });
+});
+
+describe('gerritReviewRef', () => {
+  it('maps a target branch to the refs/for review ref', () => {
+    expect(gerritReviewRef('master')).toBe('refs/for/master');
+    expect(gerritReviewRef('main')).toBe('refs/for/main');
+  });
+});
+
+describe('gerritWebUrl', () => {
+  it('drops userinfo, which may carry a token, from the printed link', () => {
+    expect(gerritWebUrl('https://oauth2:TOKEN@gerrit.example.com/team/repo.git'))
+      .toBe('https://gerrit.example.com/team/repo/');
+    expect(gerritWebUrl('ssh://user@gerrit.example.com:29418/team/repo.git'))
+      .toBe('http://gerrit.example.com/team/repo/');
+    expect(gerritWebUrl('git@gerrit.example.com:team/repo.git'))
+      .toBe('https://gerrit.example.com/team/repo/');
+  });
+});
+
 describe('pushRepoBranch', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -396,6 +448,111 @@ describe('pushRepoBranch', () => {
     expect(mockGit.checkout).toHaveBeenCalledWith('master');
     // The delete is skipped because the switch did not actually happen.
     expect(mockGit.deleteLocalBranch).not.toHaveBeenCalled();
+  });
+
+  it('pushes HEAD:refs/for/<default> on a Gerrit remote', async () => {
+    mockGit.status.mockResolvedValue({ staged: ['file.txt'] });
+    // getDefaultBranch resolves origin/HEAD through revparse.
+    mockGit.revparse.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === '--abbrev-ref' && a[1] === 'origin/HEAD') return 'origin/master';
+      return '';
+    });
+    // isGerritClone reads the literal configured URL, which url.*.insteadOf
+    // cannot rewrite, so a member's transport alias keeps the Gerrit host.
+    mockGit.raw.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === 'config' && a[1] === '--get' && a[2] === 'remote.origin.url') {
+        return 'ssh://00022287@gerritro.zte.com.cn:29418/zxms10/vtcp/harness';
+      }
+      return '';
+    });
+
+    const result = await pushRepoBranch('/repo', 'commit msg', ['file.txt'], 'teamai/push/test/gerrit');
+
+    expect(result).toBe(true);
+    // The push goes to the Gerrit review ref, not to a plain branch.
+    expect(mockGit.push).toHaveBeenCalledWith(['--progress', 'origin', 'HEAD:refs/for/master']);
+    // No -u / branch refs/heads push.
+    expect(mockGit.push).not.toHaveBeenCalledWith(['--progress', '-u', 'origin', 'teamai/push/test/gerrit']);
+    // The commit carries the Change-Id a Gerrit review needs.
+    expect(mockGit.commit).toHaveBeenCalledWith(
+      expect.stringMatching(/Change-Id: I[0-9a-f]{40}$/), { '--no-verify': null },
+    );
+  });
+
+  it('pushes HEAD:refs/for/<default> with reuse on a Gerrit remote, without the tree-compare', async () => {
+    mockGit.status.mockResolvedValue({ staged: ['file.txt'] });
+    mockGit.revparse.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === '--abbrev-ref' && a[1] === 'origin/HEAD') return 'origin/master';
+      return '';
+    });
+    mockGit.raw.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === 'config' && a[1] === '--get' && a[2] === 'remote.origin.url') {
+        return 'https://gerrit.example.com/group/repo.git';
+      }
+      return '';
+    });
+    // Simulate a stale reuse branch whose remote branch is gone (Gerrit has none).
+    mockGit.listRemote.mockResolvedValue('');
+
+    const result = await pushRepoBranch('/repo', 'commit msg', ['file.txt'], 'teamai/push/test/gerrit', { reuseBranch: true });
+
+    expect(result).toBe(true);
+    expect(mockGit.push).toHaveBeenCalledWith(['--progress', 'origin', 'HEAD:refs/for/master']);
+    // treeMatchesRemoteBranch is skipped on Gerrit: no force-with-lease push.
+    expect(mockGit.push).not.toHaveBeenCalledWith(['--progress', '--force-with-lease', '-u', 'origin', 'teamai/push/test/gerrit']);
+  });
+
+  it('keeps the recorded Change-Id on a Gerrit re-push, so an edit updates that Change', async () => {
+    mockGit.status.mockResolvedValue({ staged: ['file.txt'] });
+    mockGit.revparse.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === '--abbrev-ref' && a[1] === 'origin/HEAD') return 'origin/master';
+      return '';
+    });
+    mockGit.raw.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === 'config' && a[1] === '--get' && a[2] === 'remote.origin.url') {
+        return 'https://gerrit.example.com/group/repo.git';
+      }
+      return '';
+    });
+    const changeId = `I${'a'.repeat(40)}`;
+
+    await pushRepoBranch('/repo', 'commit msg', ['file.txt'], 'teamai/push/test/gerrit', {
+      reuseBranch: true, changeId,
+    });
+
+    // The trailer is the recorded one, not a fresh id derived from this tree.
+    expect(mockGit.commit).toHaveBeenCalledWith(
+      `commit msg\n\nChange-Id: ${changeId}`, { '--no-verify': null },
+    );
+  });
+
+  it('reviews a named --branch against that branch on a Gerrit remote', async () => {
+    mockGit.status.mockResolvedValue({ staged: ['b.txt'] });
+    mockGit.diff.mockResolvedValue('+some real content change\n');
+    mockGit.branchLocal.mockResolvedValueOnce({ all: ['main', 'release/2.1'], current: 'main', branches: {} });
+    mockGit.revparse.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === '--abbrev-ref' && a[1] === 'HEAD') return 'release/2.1';
+      return '';
+    });
+    mockGit.raw.mockImplementation(async (args: any) => {
+      const a = Array.isArray(args) ? args : [args];
+      if (a[0] === 'config' && a[1] === '--get' && a[2] === 'remote.origin.url') {
+        return 'https://gerrit.example.com/team/repo.git';
+      }
+      return '';
+    });
+
+    const result = await pushRepoBranch('/repo', 'msg', ['b.txt'], 'release/2.1', { explicitBranch: true });
+
+    expect(result).toBe(true);
+    expect(mockGit.push).toHaveBeenCalledWith(['--progress', 'origin', 'HEAD:refs/for/release/2.1']);
   });
 });
 

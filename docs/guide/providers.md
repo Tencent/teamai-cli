@@ -66,6 +66,10 @@ The generic provider neither reads nor stores a platform token; the system `git`
 - HTTPS: configure a Git credential helper first. Do not put a username, password or token in the URL.
 - SSH: configure an SSH key first and make sure `ssh-agent` can reach the private key.
 
+### Gerrit
+
+A Gerrit remote is recognized by its host, port `29418`, or a `/gerrit/` path segment, and keeps `provider: git`. `teamai push` sends the change to `refs/for/<default branch>` rather than a branch, so it goes straight into review: no pull request is opened, and a later edit pushed again updates the same Change.
+
 ## GitHub provider
 
 ### Authentication

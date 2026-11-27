@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPrWithFallback } from '../push.js';
-import { getDefaultBranch } from '../utils/git.js';
+import { getDefaultBranch, isGerritClone } from '../utils/git.js';
 import { log } from '@teamai/shared/log';
 
 const { fail, succeed } = vi.hoisted(() => ({ fail: vi.fn(), succeed: vi.fn() }));
@@ -8,6 +8,7 @@ const { fail, succeed } = vi.hoisted(() => ({ fail: vi.fn(), succeed: vi.fn() })
 vi.mock('../utils/git.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../utils/git.js')>(),
   getDefaultBranch: vi.fn().mockResolvedValue('main'),
+  isGerritClone: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock('@teamai/shared/log', () => ({
@@ -110,5 +111,26 @@ describe('GitLab guidance after generic Git PR creation fails', () => {
     expect(log.info).not.toHaveBeenCalledWith(expect.stringContaining('Detected GitLab'));
     expect(succeed).not.toHaveBeenCalled();
     expect(teamConfig).toEqual(originalConfig);
+  });
+
+  it('reports a Gerrit remote as pushed for review without opening a pull request', async () => {
+    // A Gerrit remote pushes to refs/for, so createPrWithFallback must not try
+    // to open a PR: it prints the review link and returns null normally.
+    vi.mocked(isGerritClone).mockResolvedValueOnce(true);
+    const gerritConfig = { repo: 'ssh://00022287@gerritro.zte.com.cn:29418/zxms10/vtcp/harness', provider: 'git' };
+    const memberConfig = {
+      ...localConfig,
+      repo: { remote: 'ssh://00022287@gerritro.zte.com.cn:29418/zxms10/vtcp/harness', localPath: localConfig.repo.localPath },
+    };
+
+    await expect(createPrWithFallback(gerritConfig, memberConfig, BRANCH, 'Title', 'Body')).resolves.toBeNull();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getDefaultBranch).toHaveBeenCalledWith(localConfig.repo.localPath);
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('Pushed for review'));
+    expect(log.info).toHaveBeenCalledWith(expect.stringContaining('gerritro.zte.com.cn/zxms10/vtcp/harness'));
+    // No "create a PR manually" fallback is shown for a Gerrit remote.
+    expect(log.info).not.toHaveBeenCalledWith(expect.stringContaining('You can create a PR manually'));
+    expect(fail).not.toHaveBeenCalled();
   });
 });
