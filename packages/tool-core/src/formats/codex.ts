@@ -705,8 +705,22 @@ export class CodexAdapter extends AgentAdapter {
     const legacy = new Map<string, number>();
     const completed = new Map<string, number>();
     const scoped = new Map<string, number>();
+    const scopedKeysByText = new Map<string, string[]>();
+    const scopedResponses = new Map<string, number>();
 
     for (const { type, payload } of records) {
+      if (type === 'response_item' && payload.type === 'message' && payload.role === 'user') {
+        const turn = payload.internal_chat_message_metadata_passthrough?.turn_id;
+
+        if (turn) {
+          const text = joinedItemText(CodexItemListSchema.parse(payload.content)).trim();
+          const key = JSON.stringify([turn, text]);
+          scopedResponses.set(key, (scopedResponses.get(key) ?? 0) + 1);
+        }
+
+        continue;
+      }
+
       if (type !== 'event_msg') continue;
 
       if (payload.type === 'user_message' && payload.message !== undefined) {
@@ -718,6 +732,10 @@ export class CodexAdapter extends AgentAdapter {
         const counts = turn ? scoped : completed;
         const key = turn ? JSON.stringify([turn, text]) : text;
         counts.set(key, (counts.get(key) ?? 0) + 1);
+
+        if (turn && !scopedKeysByText.get(text)?.includes(key)) {
+          scopedKeysByText.set(text, [...scopedKeysByText.get(text) ?? [], key]);
+        }
       }
     }
 
@@ -725,6 +743,23 @@ export class CodexAdapter extends AgentAdapter {
     const remaining = new Map(legacy);
 
     for (const [text, count] of completed) remaining.set(text, Math.max(remaining.get(text) ?? 0, count));
+    // A scoped event can be the turn-aware copy of the same legacy event. Reserve
+    // that legacy allowance so a later injected message with identical text cannot
+    // consume it after the scoped response has matched.
+
+    for (const [text, keys] of scopedKeysByText) {
+      const scopedCount = keys.reduce((count, key) => count + (scoped.get(key) ?? 0), 0);
+      remaining.set(text, Math.max((remaining.get(text) ?? 0) - scopedCount, 0));
+    }
+    // Unscoped responses may fall back to a text match, but must not consume a
+    // scoped event that a later response can match exactly by turn ID.
+
+    const reservedScoped = new Map<string, number>();
+
+    for (const [key, count] of scopedResponses) {
+      reservedScoped.set(key, Math.min(count, scoped.get(key) ?? 0));
+    }
+
     const hasPromptEvents = remaining.size > 0 || scoped.size > 0;
     // Images returned by tools go in a user message of their own after the round's tool results
     let toolImages: ContentBlock[] = [];
@@ -774,11 +809,20 @@ export class CodexAdapter extends AgentAdapter {
         if (irRole === 'user' && hasPromptEvents) {
           const text = joinedItemText(CodexItemListSchema.parse(payload.content)).trim();
           const turn = payload.internal_chat_message_metadata_passthrough?.turn_id;
-          const key = JSON.stringify([turn, text]);
-          const matches = scoped.get(key) ?? 0;
+
+          const key = turn
+            ? JSON.stringify([turn, text])
+            : scopedKeysByText.get(text)?.find((candidate) =>
+              (scoped.get(candidate) ?? 0) > (reservedScoped.get(candidate) ?? 0));
+
+          const matches = key ? (scoped.get(key) ?? 0) : 0;
           const count = remaining.get(text) ?? 0;
 
-          if (matches > 0) scoped.set(key, matches - 1);
+          if (key && matches > 0) {
+            scoped.set(key, matches - 1);
+
+            if (turn) reservedScoped.set(key, Math.max((reservedScoped.get(key) ?? 0) - 1, 0));
+          }
           else if (count > 0) remaining.set(text, count - 1);
           else message.metadata = { synthetic: true };
         }
