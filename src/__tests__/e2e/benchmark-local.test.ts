@@ -275,10 +275,15 @@ describe('benchmark on the local driver', () => {
     expect(fixture.toolLaunches().map((launch) => launch.tool)).toEqual(['claude', 'claude']);
   }, 120_000);
 
-  it('user scope reaches the team, so it refuses before the run', async () => {
+  it.each([false, true])('same-team user scope refuses before the run (inherits: %s)', async (inherits) => {
     const fixture = await benchmarkFixture({ tool: 'fixes', sandbox: true });
     fixtures.push(fixture);
     const user = await fixture.teamai(['init', TEAM_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'user', '--force']);
+
+    if (inherits) {
+      const workspace = await fixture.teamai(['init', TEAM_URL, '--provider', 'git', '--agent', 'claude', '--scope', 'workspace', '--inherit-user-scope', '--force']);
+      expect(workspace.code, said(workspace)).toBe(0);
+    }
 
     const ran = await fixture.teamai(['benchmark', 'run', 'fix']);
 
