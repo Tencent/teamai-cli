@@ -2491,6 +2491,10 @@ async function reconcileCursorFormat(
 
     if (!teamActive && !opts.removeAll && isCursorTeamDispatcherCommand(command)) return false;
 
+    if (opts.teamHookProjectRoot && isCursorTeamDispatcherCommand(command)) {
+      return isGatedForProject(command, opts.teamHookProjectRoot) || priorTeamCommands.has(command);
+    }
+
     return isMarkedTeamaiHookCommand(command) || priorTeamCommands.has(command);
   };
 

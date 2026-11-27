@@ -235,7 +235,7 @@ function claudePayload(tool: string, event: string, host: HookStdin, bridge: Bri
 type Decision =
   | { kind: 'block'; reason: string }
   | { kind: 'context'; text: string }
-  | { kind: 'rewrite'; input: JsonValue }
+  | { kind: 'rewrite'; input: JsonValue; context?: string }
   | { kind: 'none' };
 
 /** Events whose plain stdout Claude adds to the model's context. */
@@ -288,20 +288,33 @@ function jsonDecisionOf(json: HookOutput, id: string): Decision {
   }
 
   const context = NonEmptyTextSchema.safeParse(specific?.additionalContext);
-
-  if (context.success) return { kind: 'context', text: context.data };
-
   const updatedInput = z.record(z.string(), JsonValueSchema).safeParse(specific?.updatedInput);
 
-  return updatedInput.success ? { kind: 'rewrite', input: updatedInput.data } : { kind: 'none' };
+  if (updatedInput.success) {
+    const rewrite: Decision = { kind: 'rewrite', input: updatedInput.data };
+
+    if (context.success) return { ...rewrite, context: context.data };
+
+    return rewrite;
+  }
+
+  return context.success ? { kind: 'context', text: context.data } : { kind: 'none' };
 }
 
 /** The decisions merged for `event`: blocks where the host supports them, and prompt/session contexts. */
 function merge(format: ReplyFormat, event: string, decisions: readonly Decision[], contextEvents: ReadonlySet<string>): Decision {
   if (event === 'PreToolUse') {
-    return decisions.find((d) => d.kind === 'block')
-      ?? decisions.find((d) => d.kind === 'rewrite')
-      ?? { kind: 'none' };
+    const block = decisions.find((d) => d.kind === 'block');
+
+    if (block) return block;
+    const rewrite = decisions.find((d) => d.kind === 'rewrite');
+
+    if (format !== 'cursor' || !rewrite) return rewrite ?? { kind: 'none' };
+
+    const texts = decisions.flatMap((d) => d.kind === 'context' ? [d.text]
+      : d.kind === 'rewrite' && d.context !== undefined ? [d.context] : []);
+
+    return texts.length ? { ...rewrite, context: texts.join('\n\n') } : rewrite;
   }
 
   if (format === 'cursor' && event === 'UserPromptSubmit') {
@@ -376,10 +389,18 @@ function render(format: ReplyFormat, event: string, decision: Decision, stderr: 
         }
       }
 
-    case 'rewrite':
-      return format === 'cursor'
-        ? { code: 0, stdout: JSON.stringify({ updated_input: decision.input }), stderr }
-        : { code, stdout: '', stderr };
+    case 'rewrite': {
+      if (format !== 'cursor') return { code, stdout: '', stderr };
+
+      if (decision.context === undefined) {
+        return { code: 0, stdout: JSON.stringify({ updated_input: decision.input }), stderr };
+      }
+
+      return { code: 0, stdout: JSON.stringify({
+        additional_context: decision.context,
+        updated_input: decision.input,
+      }), stderr };
+    }
 
     default: {
       const unhandled: never = decision;

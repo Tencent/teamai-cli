@@ -120,6 +120,28 @@ describe('the team hooks a bridge runs', () => {
     });
   });
 
+  it('Cursor keeps both the context and input rewrite of one PreToolUse hook', async () => {
+    const both = JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        additionalContext: 'Rewrote the unsafe command.',
+        updatedInput: { command: 'printf safe' },
+      },
+    });
+    install('cursor', { PreToolUse: [entry(`echo '${both}'`, 'Shell')] });
+
+    const reply = await runBridgedTeamHooks('cursor', 'PreToolUse', JSON.stringify({
+      cwd: project,
+      tool_name: 'Shell',
+      tool_input: { command: 'rm -rf build' },
+    }));
+
+    expect(JSON.parse(reply.stdout)).toEqual({
+      additional_context: 'Rewrote the unsafe command.',
+      updated_input: { command: 'printf safe' },
+    });
+  });
+
   it('UserPromptSubmit hooks add their stdout, plain or as additionalContext, to the context', async () => {
     const json = JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'Sprint 42 ends Friday.' } });
     install('omp', { UserPromptSubmit: [entry('echo "On-call: @ana"', '*', 'oncall'), entry(`echo '${json}'`, '*', 'sprint')] });
@@ -375,6 +397,28 @@ describe('pull delivers the team hooks to a bridged tool', () => {
     expect(fs.existsSync(bridgedTeamHookFile('cursor'))).toBe(true);
     const hooks = JSON.parse(fs.readFileSync(path.join(project, '.cursor', 'hooks.json'), 'utf8')).hooks;
     expect(hooks.preToolUse[0].command).toContain('hook-dispatch PreToolUse --tool cursor --team-hooks');
+  });
+
+  it('Cursor: pulling one project keeps the dispatcher another project installed', async () => {
+    const otherProject = path.join(root, 'other-project');
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true });
+    fs.mkdirSync(otherProject, { recursive: true });
+    const tools = { cursor: { settings: '.cursor/hooks.json' } };
+
+    await reconcileHooksToAllTools(tools, home, [teamHook()], manifest(), {
+      scope: 'project',
+      teamHookProjectRoot: project,
+      installedBaseDir: project,
+    });
+    await reconcileHooksToAllTools(tools, home, [teamHook()], manifest(), {
+      scope: 'project',
+      teamHookProjectRoot: otherProject,
+      installedBaseDir: otherProject,
+    });
+
+    const hooks = JSON.parse(fs.readFileSync(path.join(home, '.cursor', 'hooks.json'), 'utf8')).hooks;
+    expect(hooks.preToolUse).toHaveLength(2);
+    expect(new Set(hooks.preToolUse.map((entry: { command: string }) => entry.command)).size).toBe(2);
   });
 
   it('an upgrade from a tool-keyed manifest keeps one hook for another bridged tool', async () => {

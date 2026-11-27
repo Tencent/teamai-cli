@@ -113,7 +113,7 @@ Notes:
 5. Cursor IDE: ✓v
 6. Cursor IDE: ✓t
 7. usage is in the Cursor account dashboard only
-8. teamai refuses agent hooks in the Cursor hook format
+8. team hooks use a dispatcher and bridge; HTTP agent hooks are not installed in the Cursor hook format
 9. one request per model from the session.shutdown totals, priced without long-prompt rates; not run
 10. Qoder bills credits and can write zero token counts
 11. Claude Code-style subagents, transcripts under <id>/subagents/ (qodercli 1.1.78); not run
