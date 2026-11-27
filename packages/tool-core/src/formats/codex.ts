@@ -739,18 +739,21 @@ export class CodexAdapter extends AgentAdapter {
       }
     }
 
-    // A rollout can record both event formats for the same turn.
-    const remaining = new Map(legacy);
+    // A rollout can record both legacy and completed event formats for the same
+    // turn. Combine scoped and unscoped completed events before deduplicating
+    // them against legacy events, then reserve the scoped share for turn matches.
+    const remaining = new Map<string, number>();
+    const eventTexts = new Set([...legacy.keys(), ...completed.keys(), ...scopedKeysByText.keys()]);
 
-    for (const [text, count] of completed) remaining.set(text, Math.max(remaining.get(text) ?? 0, count));
-    // A scoped event can be the turn-aware copy of the same legacy event. Reserve
-    // that legacy allowance so a later injected message with identical text cannot
-    // consume it after the scoped response has matched.
-
-    for (const [text, keys] of scopedKeysByText) {
+    for (const text of eventTexts) {
+      const keys = scopedKeysByText.get(text) ?? [];
       const scopedCount = keys.reduce((count, key) => count + (scoped.get(key) ?? 0), 0);
-      remaining.set(text, Math.max((remaining.get(text) ?? 0) - scopedCount, 0));
+      const completedCount = (completed.get(text) ?? 0) + scopedCount;
+      const total = Math.max(legacy.get(text) ?? 0, completedCount);
+
+      remaining.set(text, total - scopedCount);
     }
+
     // Unscoped responses may fall back to a text match, but must not consume a
     // scoped event that a later response can match exactly by turn ID.
 

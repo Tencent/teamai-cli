@@ -81,6 +81,21 @@ describe('Codex session titles', () => {
     expect(read.messages.slice(0, 2).map((message) => message.metadata?.synthetic === true)).toEqual([true, false]);
   });
 
+  it('preserves separate scoped and unscoped completed prompts with identical text', async () => {
+    const text = 'Continue.';
+    plantRollout(path.join(root, 'app'), text, [
+      { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [{ type: 'text', text }] } } },
+      {
+        type: 'event_msg',
+        payload: { type: 'item_completed', turn_id: 'typed-turn', item: { type: 'UserMessage', content: [{ type: 'text', text }] } },
+      },
+    ], text);
+
+    const read = await getAdapter('codex').readSession({ sessionId: ID });
+
+    expect(read.messages.slice(0, 2).map((message) => message.metadata?.synthetic === true)).toEqual([false, false]);
+  });
+
   it('are the member\'s own first line, also when it starts with the file it names', async () => {
     const cwd = path.join(root, 'app');
     plantRollout(cwd, '/work/app/src/client.ts drops the retry header\nFix it and add a test.');
