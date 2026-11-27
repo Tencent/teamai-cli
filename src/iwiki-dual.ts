@@ -176,6 +176,7 @@ export async function writeSections(flags: SectionsFlags): Promise<Record<string
 
     if (requireReview) {
         const relativeFilePath = path.relative(flags.reviewDir, filePath);
+        const initialPayload: Record<string, string> = await fs.pathExists(filePath) ? {} : { initialContent: buildSkeletonContent() };
 
         for (const sectionKey of SECTIONS) {
             const body = aiOutput[sectionKey] ?? '';
@@ -184,7 +185,7 @@ export async function writeSections(flags: SectionsFlags): Promise<Record<string
             await appendPendingReview(flags.reviewDir, {
                 kind: 'codebase-section',
                 target: { file: relativeFilePath, section: sectionKey },
-                payload: { content: body },
+                payload: { content: body, ...initialPayload },
                 source: flags.source,
             });
         }
