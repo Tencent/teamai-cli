@@ -20,7 +20,7 @@ vi.mock('@teamai/shared/log', () => ({
 }));
 
 import fc from 'fast-check';
-import { applyAgentHook, codexTrustPolicy, readCodexHookTrustForScope, reconcileHooks, reconcileTeamHooksForConfig, removeAgentHook, reportCodexTrust, trustCodexAgentHook, trustCodexForScope, type CodexTrustPolicy } from '../hooks.js';
+import { applyAgentHook, codexTrustPolicy, readCodexHookTrustForScope, reconcileHooks, reconcileTeamHooksForConfig, removeAgentHook, reportCodexTrust, stopCodexTeamHookDispatch, trustCodexAgentHook, trustCodexForScope, type CodexTrustPolicy } from '../hooks.js';
 import { oldestCodexBuildVersion, readCodexHookTrust, removeOwnedCodexProjectTrust, trustCodexHooks, trustCodexProject } from '../codex-trust.js';
 import { reconcileCodexDispatchers, setCodexDispatcherHooks } from '../codex-team-hooks.js';
 import { judgeTeamaiOnlyFiles } from '../teamai-only-files.js';
@@ -1247,21 +1247,35 @@ describe('Codex hook positions (#1250)', () => {
       expect((await trustByCommand(file))['echo after-builtin']).toBe('trusted');
     });
 
-    it('carries the approval of a member group a removed dispatcher moves', async () => {
+    it.each([
+      { keepMember: false, otherProject: false },
+      { keepMember: true, otherProject: false },
+      { keepMember: true, otherProject: true },
+    ])('retires a dispatcher and its approval, member: $keepMember, other project: $otherProject', async ({ keepMember, otherProject }) => {
       const file = hooksFile();
       await setCodexDispatcherHooks(project, stop(30));
+      if (otherProject) {
+        const other = path.join(home, 'other-project');
+        await fse.ensureDir(other);
+        await setCodexDispatcherHooks(other, stop(30));
+      }
       await reconcileCodexDispatchers(file, codexTrust());
-      await editHooks(file, (hooks) => { hooks.Stop.push(member('after-dispatcher')); });
+      if (keepMember) await editHooks(file, (hooks) => { hooks.Stop.push(member('after-dispatcher')); });
       const dispatcher = (await codexEntries(file))[0].command;
-      await approve(file, dispatcher, 'echo after-dispatcher');
+      await approve(file, dispatcher, ...keepMember ? ['echo after-dispatcher'] : []);
 
-      await setCodexDispatcherHooks(project, null);
-      await reconcileCodexDispatchers(file, codexTrust());
+      expect(await stopCodexTeamHookDispatch(teamConfig, userConfig({ scope: 'project', projectRoot: project }))).toBeNull();
 
-      expect((await fse.readJson(file)).hooks.Stop).toEqual([member('after-dispatcher')]);
-      expect(await trustByCommand(file)).toEqual({ 'echo after-dispatcher': 'trusted' });
-      const live = new Set((await codexEntries(file)).map((e) => e.key));
-      expect(trustedKeys().filter((key) => !live.has(key))).toEqual([]);
+      if (otherProject) {
+        expect((await fse.readJson(file)).hooks.Stop.map(isDispatcher)).toEqual([true, false]);
+        expect(await trustByCommand(file)).toEqual({ [dispatcher]: 'trusted', 'echo after-dispatcher': 'trusted' });
+      } else if (keepMember) {
+        expect((await fse.readJson(file)).hooks.Stop).toEqual([member('after-dispatcher')]);
+        expect(await trustByCommand(file)).toEqual({ 'echo after-dispatcher': 'trusted' });
+      } else {
+        expect((await fse.readJson(file)).hooks).toEqual({});
+      }
+      expect(trustedKeys().sort()).toEqual((await codexEntries(file)).map((entry) => entry.key).sort());
     });
   });
 

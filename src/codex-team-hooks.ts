@@ -196,7 +196,11 @@ export async function setCodexDispatcherHooks(project: string, hooks: CodexTeamH
  * rewritten where it is and a new one appended, so only a removed entry moves
  * the groups after it (#1250). Writes only on change.
  */
-export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: CodexTrustPolicy): Promise<void> {
+export async function reconcileCodexDispatchers(
+  hooksFile: string,
+  codexTrust: CodexTrustPolicy,
+  { withdrawsDroppedTrust = false } = {},
+): Promise<void> {
   const timeouts = new Map<string, number>();
 
   for (const [root, record] of Object.entries((await readIndex()).projects)) {
@@ -249,7 +253,7 @@ export async function reconcileCodexDispatchers(hooksFile: string, codexTrust: C
       if (wanted && at < 0) slots.push(wanted);
 
       return [event, slots.length === 0 && existing.length > 0 ? null : slots];
-    })), codexTrust);
+    })), codexTrust, { withdrawsDroppedTrust });
 
   if (written) log.debug(`Updated the Codex team-hook dispatchers in ${hooksFile}`);
 }
