@@ -96,12 +96,23 @@ const SECRET_PATTERNS: ReadonlyArray<readonly [string, RegExp]> = [
   ['provider', /\b(?:npm_|hf_)[A-Za-z0-9]{16,}(?![\w-])/g],
 ];
 
-/** `key=value` / `key: value` — mask only the value, keep the key for readability. */
+/**
+ * `key=value` / `key: value` — mask only the value, keep the key for readability.
+ *
+ * A value may hold any punctuation, so the charset is wide: a password of
+ * `hunter2!@#$%^longlonglong` has to be masked as a whole, and a narrower one stopped
+ * before the `!`, leaving the value in place.
+ */
 const KV_PATTERN =
-  /(secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|password|passwd|auth[_-]?token|private[_-]?key)(["']?\s*[:=]\s*["']?)([A-Za-z0-9._\-/+=]{16,})/gi;
+  /(secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|password|passwd|auth[_-]?token|private[_-]?key)(["']?\s*[:=]\s*["']?)([A-Za-z0-9._\-/+=!@#$%^&*()~]{16,})/gi;
 
-/** `Authorization: Bearer <token>` — keep the scheme, mask the token. */
-const BEARER_PATTERN = /\b(bearer\s+)([A-Za-z0-9._-]{16,})/gi;
+/**
+ * `Authorization: Bearer <token>` — keep the scheme, mask the token.
+ *
+ * The token charset carries `+`, `/` and `=` because a session token handed to an opaque bearer
+ * header is usually standard base64, which uses them.
+ */
+const BEARER_PATTERN = /\b(bearer\s+)([A-Za-z0-9._+/~=-]{16,})/gi;
 
 /** Lowercase words joined by `-`, `_` or `.` read as prose (`Bearer authentication-scheme`), not a token. */
 const JOINED_WORDS_PATTERN = /^[a-z]+(?:[-_.][a-z]+)+$/;
