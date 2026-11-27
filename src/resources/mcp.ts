@@ -86,7 +86,12 @@ function parseMcpContent(content: string | null): McpYamlRead {
 
     return { ok: true, yaml, unknownKeys: unknownEntryKeys(raw, 'servers', yaml.servers, TeamMcpServerFields) };
   } catch (e) {
-    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+    // Zod's message is the issues as JSON; name each as the other readers do, so one wrong field is one line.
+    const reason = e instanceof z.ZodError
+      ? e.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ')
+      : e instanceof Error ? e.message : String(e);
+
+    return { ok: false, reason };
   }
 }
 

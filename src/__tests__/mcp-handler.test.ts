@@ -8,7 +8,7 @@ vi.mock('@teamai/shared/log', () => ({
 }));
 
 import YAML from 'yaml';
-import { McpHandler, TEAM_MCP_ENTRIES } from '../resources/mcp.js';
+import { McpHandler, readTeamMcpFile, TEAM_MCP_ENTRIES } from '../resources/mcp.js';
 import { LayeredEntries } from '../resources/layered-entries.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
@@ -171,5 +171,20 @@ describe('McpHandler server folders', () => {
 
     expect(await new McpHandler().removeItem('broken', teamConfig, member())).toEqual([path.join(repo, 'mcp', 'broken')]);
     expect(await fse.pathExists(path.join(repo, 'mcp', 'broken'))).toBe(false);
+  });
+});
+
+describe('an mcp.yaml that does not match the schema', () => {
+  it('names the entry and field on one line instead of dumping the schema as JSON', async () => {
+    // YAML reads the digit argument as a number, which a server's args do not take.
+    await writeMcpYaml('servers:\n  - name: gpu\n    transport: stdio\n    command: node\n    args: ["--port", 8080]\n');
+
+    const read = await readTeamMcpFile(path.join(repo, 'mcp', 'mcp.yaml'), 'mcp/mcp.yaml');
+
+    expect(read).toMatchObject({ ok: false });
+    if (!read || read.ok) return;
+    expect(read.reason).toContain('servers.0.args.1');
+    expect(read.reason).toContain('expected string, received number');
+    expect(read.reason).not.toContain('\n');
   });
 });
