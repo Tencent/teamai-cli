@@ -139,9 +139,11 @@ export function importVisitors(
 /** Resolve source imports without requiring a built dist directory. */
 export function sourceImport(/** @type {string} */ from, /** @type {string} */ specifier) {
   if (!specifier.startsWith('.')) return undefined;
-  const stem = path.resolve(path.dirname(from), specifier).replace(/\.[cm]?js$/, '');
+  // Callers compare this module id with POSIX paths (`path.posix.relative`, `lintedPath`), so the answer has to be
+  // POSIX as well: `path.resolve` returns backslashes on Windows, where no POSIX path then matches.
+  const stem = path.resolve(path.dirname(from), specifier).replace(/\.[cm]?js$/, '').split(path.sep).join('/');
 
-  return [stem + '.ts', stem + '.tsx', path.join(stem, 'index.ts')].find((candidate) => fs.existsSync(candidate));
+  return [stem + '.ts', stem + '.tsx', `${stem}/index.ts`].find((candidate) => fs.existsSync(candidate));
 }
 
 /** @type {Map<string, { source: string; specifiers: string[] }>} */
