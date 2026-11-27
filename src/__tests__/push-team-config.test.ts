@@ -90,7 +90,11 @@ async function committedYamlOnPushedBranch(teamRepo: string): Promise<string> {
   return (await git.show([`${pushBranch}:teamai.yaml`]));
 }
 
-describe('push carries teamai.yaml (source add regression)', () => {
+// Each case drives a real push - clone, merge, commit, push, PR - and takes 9-12 s on
+// Windows, where every git spawn costs more. The 15 s global budget fails one of them
+// whenever the full Windows subset runs alongside it (`Test timed out in 15000ms`), so
+// this file states the budget its own work needs.
+describe('push carries teamai.yaml (source add regression)', { timeout: 120_000 }, () => {
   let tmpDir: string;
 
   beforeEach(() => {

@@ -27,7 +27,11 @@ function sleeper(dir: string): { command: GroupedCommand; fenced: FencedCommand;
   return { command, pid, fenced: command.group === undefined ? { kind: 'tree', pid } : { kind: 'group', id: pid } };
 }
 
-describe('the fence of a fleet member step', () => {
+// A case waits for a fence point to pass (4 s) and for two guardians to end, and on
+// Windows each sleeper costs a shell plus a node: the case's own 30 s was reached when
+// the full Windows subset ran alongside it (`Test timed out in 30000ms`). The cases stop
+// what they start; this is the budget that work needs.
+describe('the fence of a fleet member step', { timeout: 120_000 }, () => {
   it('retires the guardian of the attempt\'s earlier fence once its restarted member fences it again: only the new fence stops anything', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-fleet-fence-'));
     const left = sleeper(dir);
