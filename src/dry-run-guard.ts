@@ -122,6 +122,7 @@ export const NO_DRY_RUN_PREVIEW = {
   'deep-enrich': 'hidden; writes the docs that `codebase --deep-enrich` previews',
   // Hidden commands that hooks run, never with --dry-run.
   'source reconcile-plugins': 'hook-only',
+  'source a2a-control': 'reports the OpenClaw workspace and reconciles the A2A plugin',
   track: 'hook-only',
   'track-slash': 'hook-only',
   'dashboard-report': 'hook-only',

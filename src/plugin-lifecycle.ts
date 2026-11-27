@@ -59,7 +59,8 @@ export interface ReconcileDeps {
    * Execute a shell command string. Rejects on non-zero exit or timeout.
    * Callers must ensure the command string contains no secret material.
    */
-  execCommand(cmd: string, timeoutMs: number): Promise<void>;
+  execCommand(cmd: string, timeoutMs: number, slug: string): Promise<void>;
+  runTimeoutMs?: number;
   /** Return current epoch milliseconds. Injected so tests can control time. */
   now(): number;
   log: { debug(msg: string): void; warn(msg: string): void };
@@ -142,8 +143,8 @@ export async function reconcilePlugins(
         }
 
         deps.log.debug(`plugin ${d.slug}: installing${d.version ? ' version ' + d.version : ''}`);
-        await deps.execCommand(d.installCmd, INSTALL_TIMEOUT_MS);
-        await deps.execCommand(d.runCmd, RUN_TIMEOUT_MS);
+        await deps.execCommand(d.installCmd, INSTALL_TIMEOUT_MS, d.slug);
+        await deps.execCommand(d.runCmd, deps.runTimeoutMs ?? RUN_TIMEOUT_MS, d.slug);
         await deps.mutatePlugins((m) => {
           m[d.slug] = makeReadyState(d, deps);
         });
@@ -161,8 +162,8 @@ export async function reconcilePlugins(
             : 'command/launch-arg change';
 
           deps.log.debug(`plugin ${d.slug}: updating (${reason})`);
-          await deps.execCommand(d.updateCmd ?? d.installCmd, UPDATE_TIMEOUT_MS);
-          await deps.execCommand(d.runCmd, RUN_TIMEOUT_MS);
+          await deps.execCommand(d.updateCmd ?? d.installCmd, UPDATE_TIMEOUT_MS, d.slug);
+          await deps.execCommand(d.runCmd, deps.runTimeoutMs ?? RUN_TIMEOUT_MS, d.slug);
           await deps.mutatePlugins((m) => {
             m[d.slug] = makeReadyState(d, deps);
           });
@@ -210,7 +211,7 @@ export async function reconcilePlugins(
 
     try {
       deps.log.debug(`plugin ${slug}: uninstalling (removed from desired list)`);
-      await deps.execCommand(e.uninstallCmd, UNINSTALL_TIMEOUT_MS);
+      await deps.execCommand(e.uninstallCmd, UNINSTALL_TIMEOUT_MS, slug);
       await deps.mutatePlugins((m) => {
         delete m[slug];
       });
@@ -233,7 +234,7 @@ export async function teardownAllPlugins(deps: ReconcileDeps): Promise<void> {
   for (const [slug, state] of Object.entries(plugins)) {
     try {
       deps.log.debug(`plugin ${slug}: tearing down`);
-      await deps.execCommand(state.uninstallCmd, UNINSTALL_TIMEOUT_MS);
+      await deps.execCommand(state.uninstallCmd, UNINSTALL_TIMEOUT_MS, slug);
       await deps.mutatePlugins((m) => {
         delete m[slug];
       });

@@ -727,6 +727,22 @@ sourceCmd
   });
 
 sourceCmd
+  .command('a2a-control', { hidden: true })
+  .description('Poll the HTTP source for A2A configuration')
+  .option('--agent <name>', 'Agent receiving A2A configuration')
+  .option('--report', 'Refresh the default workspace inventory')
+  .action(async (options: { agent?: string; report?: boolean }) => {
+    if (options.agent && options.agent !== 'openclaw' && options.agent !== 'hermes') {
+      sourceCmd.error('A2A control only supports OpenClaw and Hermes.');
+    }
+
+    const { runOpenClawA2aControl, runHermesA2aControl } = await import('./local-agent.js');
+    const run = options.agent === 'hermes' ? runHermesA2aControl : runOpenClawA2aControl;
+
+    if (!await run(options.report === true)) process.exitCode = 1;
+  });
+
+sourceCmd
   .command('list')
   .description('List all configured sources')
   .action(async () => {
