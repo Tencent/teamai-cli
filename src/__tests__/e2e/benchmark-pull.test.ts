@@ -48,6 +48,8 @@ describe('benchmark suites at pull', () => {
       'benchmarks/tasks/tasks/unjudged.yaml': task.replace(/check:\n[\s\S]*$/, ''),
       'benchmarks/tasks/tasks/unprotected.yaml': task.replace('protect: [test.js]', 'protect: []'),
       'benchmarks/tasks/tasks/short-commit.yaml': fixTask('1234567'),
+      // A member who writes the digits without quotes makes YAML read a number; the pull says it is short, not that it is the wrong type.
+      'benchmarks/tasks/tasks/numeric-commit.yaml': fixTask('1234567').replace('startingCommit: "1234567"', 'startingCommit: 1234567'),
     });
 
     const pulled = await fixture.teamai(['pull']);
@@ -60,6 +62,7 @@ describe('benchmark suites at pull', () => {
     expect(output).toMatch(/benchmarks\/tasks\/tasks\/unjudged\.yaml:\d+: field "check": a task has check, successCriteria, or both; add at least one/);
     expect(output).toMatch(/benchmarks\/tasks\/tasks\/unprotected\.yaml:\d+: field "check\.protect": check\.protect lists every path/);
     expect(output).toMatch(/benchmarks\/tasks\/tasks\/short-commit\.yaml:\d+: field "startingCommit": must be a full 40-character commit/);
+    expect(output).toMatch(/benchmarks\/tasks\/tasks\/numeric-commit\.yaml:\d+: field "startingCommit": must be a full 40-character commit/);
   }, 120_000);
 
   it('fails review --branch for each invalid suite and task with its file and line, and benchmark run refuses each after pull', async () => {
