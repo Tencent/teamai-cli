@@ -13,6 +13,7 @@ import { DefaultWorkflows } from '../default-workflows.js';
 import { activeEntryNamespaces, describeEntryFailure, entryLayout, type EntryFailure, type ResolvedEntry } from '../namespaced-entries.js';
 import { LayeredEntries, type LayeredEntryType, type PlaceFolderRead } from '../resources/layered-entries.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
+import { isActiveNamespace } from '../namespace-resolver.js';
 import { DeliveredFolders } from '../resources/delivered-folders.js';
 import { FolderFiles } from '../resources/folder-files.js';
 import { InheritedFolders, type FolderFileLayer } from '../resources/inherited-folders.js';
@@ -183,7 +184,7 @@ async function activeNamespaces(config: LocalConfig, type: 'workflows'): Promise
 
 /** Whether `item` sits in a namespace `active` leaves out. */
 function isInactive(item: Found, active: readonly string[] | 'legacy'): boolean {
-  return item.layer === 'namespace' && active !== 'legacy' && !active.includes(item.namespace);
+  return item.layer === 'namespace' && active !== 'legacy' && !isActiveNamespace(active, item.namespace);
 }
 
 /** The diagnostics of pull's sync about the definition `item`: its file, or any file of its folder. */

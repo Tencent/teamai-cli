@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ensureDir } from '../../utils/fs.js';
+import { longPathArgs } from '../../utils/git.js';
 import { log, spinner } from '@teamai/shared/log';
 import { isInteractive } from '../../utils/prompt.js';
 import { getTeamaiHomeDir } from '../../types.js';
@@ -458,7 +459,7 @@ export function gfRepoClone(repo: string, localPath: string): void {
   const cloneUrl = tgitGitCloneUrl(`https://git.woa.com/${repo}.git`);
 
   if (cloneUrl) {
-    const result = spawnSync('git', ['clone', cloneUrl, localPath], {
+    const result = spawnSync('git', [...longPathArgs(), 'clone', cloneUrl, localPath], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 120_000,

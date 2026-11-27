@@ -8,12 +8,13 @@
  * dashboard must not return rule bodies or environment values.
  */
 import matter from 'gray-matter';
+import path from 'node:path';
 import { z } from 'zod';
 import { buildRolePullContext, filterRulesByKnowledgeNamespaces, resolveDesiredRules } from '../resources/desired.js';
 import { getHandler } from '../resources/index.js';
 import { filterByTags, loadTagsConfig } from '../utils/tags.js';
 import { deliveredMembers } from '../workspace-children.js';
-import { readFileSafe } from '../utils/fs.js';
+import { listDirs, readFileSafe } from '../utils/fs.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 
 /** The frontmatter `description` a rule or skill may carry; any other value reads as absent. */
@@ -86,9 +87,11 @@ export async function collectRulesInventory(
   const inNamespace = new Set<string>();
   const tagIncluded = new Set<string>();
 
+  const ruleDirs = await listDirs(path.join(localConfig.repo.localPath, 'rules'));
+
   for (const channel of channels) {
     const knowledgeNs = channel.roleContext ? channel.roleContext.activeNamespaces.knowledge : null;
-    const namespaced = filterRulesByKnowledgeNamespaces(allItems, knowledgeNs);
+    const namespaced = filterRulesByKnowledgeNamespaces(allItems, knowledgeNs, ruleDirs);
 
     for (const item of namespaced) inNamespace.add(item.relativePath);
     const { included } = filterByTags(namespaced, tagsConfig, channel.member.subscribedTags, 'rules');

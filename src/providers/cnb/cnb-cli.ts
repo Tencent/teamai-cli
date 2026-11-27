@@ -3,6 +3,7 @@ import { spawnCommandSync } from '@teamai/shared/exec';
 import { log, spinner } from '@teamai/shared/log';
 import { resolveCliPath } from '@teamai/shared/cli-path';
 import { isInteractive } from '../../utils/prompt.js';
+import { longPathArgs } from '../../utils/git.js';
 import type { RepoInfo } from '../types.js';
 import { OrganizationNotFoundError, RepoCreatePermissionError } from '../types.js';
 
@@ -284,9 +285,9 @@ export function cnbRepoClone(repo: string, localPath: string): void {
 
   if (token) {
     const url = `https://cnb:${token}@${CNB_HOST}/${repo}.git`;
-    args = ['clone', url, localPath];
+    args = [...longPathArgs(), 'clone', url, localPath];
   } else {
-    args = ['-c', 'credential.helper=!cnb git-credential', 'clone', `https://${CNB_HOST}/${repo}.git`, localPath];
+    args = [...longPathArgs(), '-c', 'credential.helper=!cnb git-credential', 'clone', `https://${CNB_HOST}/${repo}.git`, localPath];
   }
 
   const r = spawnSync('git', args, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 120_000, windowsHide: true });

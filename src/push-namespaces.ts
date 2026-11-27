@@ -12,7 +12,8 @@
  * reached the whole team (issue #649). It lives here so every type answers the
  * same question the same way, and so the answer can be tested without a repo.
  */
-import { isSafeNamespaceSegment, NAMESPACE_RULE, type NamespaceEntry } from './manifest-schema.js';
+import { caseFoldKey, isSafeNamespaceSegment, NAMESPACE_RULE, type NamespaceEntry } from './manifest-schema.js';
+import { declaredDirectories, isActiveNamespace } from './namespace-resolver.js';
 import {
   findProject, unknownProjectMessage,
   type AllProjectResourceType, type ProjectsManifest,
@@ -184,17 +185,34 @@ export type NamespaceResolution =
  * declares it for the type's axis, so any other namespace would reach nobody;
  * `declared` is every namespace those manifests declare. A team with neither
  * manifest (`declared` null) delivers every namespace, so any one goes.
+ *
+ * `directories` is that type's directories on disk. The answer is the directory
+ * the declared namespace owns — the exact spelling when one carries it, else the
+ * directory that folds to it. Returning the flag's spelling would place a new
+ * resource beside the directory pull reads, where nothing delivers it.
  */
 export function resolveRoleNamespace(
   declared: readonly NamespaceEntry[] | null,
   namespace: string,
   type: PlaceableType,
+  directories: readonly string[] = [],
 ): NamespaceResolution {
   if (declared === null) return { ok: true, namespace };
   const axis = NAMESPACE_AXIS[type];
   const onAxis = [...new Set(declared.filter((entry) => entry.type === axis).map((entry) => entry.namespace))];
 
-  if (onAxis.includes(namespace)) return { ok: true, namespace };
+  if (isActiveNamespace(onAxis, namespace)) {
+    // Resolve the matching DECLARATION first, then the directory it owns. Asking
+    // for the flag's own spelling looks like an exact match: with a declared
+    // `Frontend` and both `skills/Frontend/` and `skills/frontend/` on disk,
+    // `--role frontend` resolved to `frontend/`, the sibling pull excludes.
+    const declaration = onAxis.find((entry) => entry === namespace)
+      ?? onAxis.find((entry) => caseFoldKey(entry) === caseFoldKey(namespace));
+
+    const [owned] = declaration === undefined ? [] : declaredDirectories([declaration], directories);
+
+    return { ok: true, namespace: owned ?? declaration ?? namespace };
+  }
 
   return {
     ok: false,

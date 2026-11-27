@@ -27,6 +27,7 @@ const MessageRow = z.object({
   id: z.number(), role: z.string(), content: z.string().nullable(), tool_call_id: z.string().nullable(),
   tool_calls: z.string().nullable(), tool_name: z.string().nullable(), timestamp: z.number(),
   finish_reason: z.string().nullable(), reasoning: z.string().nullable(), reasoning_content: z.string().nullable(),
+  display_kind: z.string().nullable().optional(), _compressed_summary: z.number().optional(),
 });
 
 const StoredToolCall = z.object({
@@ -97,6 +98,7 @@ function messagesOf(rows: MessageRow[]): Message[] {
     const timestamp = iso(row.timestamp);
 
     if (row.role === 'user') {
+      if (row.display_kind || row._compressed_summary === 1) continue;
       const text = textOf(row.content);
 
       if (text) messages.push({ role: 'user', content: [{ type: 'text', text }], timestamp, messageId: String(row.id) });
@@ -188,10 +190,22 @@ export class HermesAdapter extends AgentAdapter {
   }
 
   private async messages(sessionId: string): Promise<MessageRow[]> {
-    const raw = await this.query(
-      'SELECT id, role, content, tool_call_id, tool_calls, tool_name, timestamp, finish_reason, reasoning, reasoning_content ' +
-      `FROM messages WHERE session_id = '${sessionId}' AND (active = 1 OR compacted = 1) ORDER BY id;`,
-    );
+    const from = `FROM messages WHERE session_id = '${sessionId}' AND (active = 1 OR compacted = 1) ORDER BY id;`;
+    let raw: unknown[];
+
+    try {
+      raw = await this.query(
+        'SELECT id, role, content, tool_call_id, tool_calls, tool_name, timestamp, finish_reason, reasoning, reasoning_content, display_kind, _compressed_summary ' + from,
+      );
+    } catch (error) {
+      // Older Hermes stores predate both classification columns. Keep those
+      // sessions readable; their user rows were all ordinary prompts because
+      // the operational row kinds did not exist in that schema yet.
+      if (!(error instanceof Error) || !/no such column: (?:display_kind|_compressed_summary)/.test(error.message)) throw error;
+      raw = await this.query(
+        'SELECT id, role, content, tool_call_id, tool_calls, tool_name, timestamp, finish_reason, reasoning, reasoning_content, NULL AS display_kind, 0 AS _compressed_summary ' + from,
+      );
+    }
 
     return raw.flatMap((value) => {
       const row = MessageRow.safeParse(value);

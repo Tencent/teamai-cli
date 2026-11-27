@@ -520,6 +520,21 @@ describe('removeOpenClawAgentHook', () => {
     expect(fs.existsSync(dir)).toBe(false);
     expect(JSON.parse(fs.readFileSync(cfgPath, 'utf-8')).hooks.internal.entries).toEqual({ 'teamai-status-report': { enabled: true } });
   });
+
+  it('rejects traversal and dot slugs without deleting directories outside or equal to hooksDir', async () => {
+    const hooksDir = path.join(tmpDir, 'hooks');
+    const keepInHooks = path.join(hooksDir, 'existing-hook');
+    const victimDir = path.join(tmpDir, 'victim');
+    fs.mkdirSync(keepInHooks, { recursive: true });
+    fs.mkdirSync(victimDir, { recursive: true });
+
+    await expect(removeOpenClawAgentHook({ slug: '../victim' })).rejects.toThrow(/invalid resource name/i);
+    await expect(removeOpenClawAgentHook({ slug: '.' })).rejects.toThrow(/invalid resource name/i);
+    await expect(removeOpenClawAgentHook({ slug: '..' })).rejects.toThrow(/invalid resource name/i);
+
+    expect(fs.existsSync(victimDir)).toBe(true);
+    expect(fs.existsSync(keepInHooks)).toBe(true);
+  });
 });
 
 describe('removeOpenClawHooks', () => {

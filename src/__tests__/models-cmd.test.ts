@@ -78,6 +78,13 @@ describe('models commands', () => {
       .rejects.toThrow(/Invalid model profile: base_url: must be the gateway root without \/v1/);
   });
 
+  it('reports a config it cannot read instead of a team with no profiles', async () => {
+    await fse.outputFile(path.join(home, '.teamai', 'config.yaml'), 'repo: [unclosed\n');
+
+    await expect(modelsList()).rejects.toThrow(/could not be read/);
+    expect(log.info).not.toHaveBeenCalledWith('No model profiles found.');
+  });
+
   it('lists every profile in full, or just the one named', async () => {
     await addMine();
     await modelsAdd('other', {

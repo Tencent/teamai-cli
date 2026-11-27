@@ -15,6 +15,7 @@ import { assertAttachedTeamRepo, createGit, createGitWithBlockTimeout, getDefaul
 import { pathExists, refusedWrite, refusedWriteAdvice, RefusedWriteError } from './fs.js';
 import { log } from '@teamai/shared/log';
 import {
+  CheckoutRefusedError,
   ForeignCheckoutError,
   createBranchWorktree,
   failureReason,
@@ -28,11 +29,13 @@ import {
   type PublishResult,
   type RefreshResult,
 } from './branch-worktree.js';
+import { acquireLock, releaseLock } from '../update.js';
 import {
   REPORTS_BRANCH,
   REPORTS_WORKTREE_DIRNAME,
   REPORTS_LOCK_FILENAME,
   KNOWLEDGE_WORKTREE_DIRNAME,
+  KNOWLEDGE_LOCK_FILENAME,
   getBusinessRoot,
   getDataHome,
   type LocalConfig,
@@ -313,59 +316,91 @@ export async function withKnowledgeWorktree<T>(
     throw new EmptyRepoError(repoRoot);
   }
 
-  // Clean any stale worktree from a previous interrupted run.
-  if (await pathExists(wt)) {
-    try {
-      await git.raw(['worktree', 'remove', '--force', wt]);
-    } catch {
-      await fse.remove(wt);
+  // Every knowledge-producing command (push, remove, manifest edits, promotion)
+  // shares this one worktree, and each removes it with --force on entry and in
+  // `finally`. Two running together can therefore delete the checkout the other
+  // is committing in: one command's changes land in the other's PR, or vanish.
+  // Branch worktrees take a lock beside the checkout for exactly this reason
+  // (#1443); the knowledge checkout had none. Keep the lock BESIDE `wt`: a lock
+  // inside it would be deleted by `worktree remove --force` while still held.
+  // Use a dedicated name — push/promotion already hold <getDataHome>/.sync-lock
+  // while calling here, so reusing that lock would deadlock against themselves.
+  const lockPath = path.join(path.dirname(wt), KNOWLEDGE_LOCK_FILENAME);
+
+  if (!(await acquireLock(lockPath))) {
+    throw new CheckoutRefusedError(
+      `${wt} is being used by another teamai command (${lockPath} is held). ` +
+        'teamai keeps one shared knowledge checkout, so it left the other command untouched. ' +
+        'Run this again when the other command finishes.',
+      'the knowledge checkout is busy; see the warning above',
+    );
+  }
+
+  try {
+    // Clean any stale worktree from a previous interrupted run.
+    if (await pathExists(wt)) {
+      try {
+        await git.raw(['worktree', 'remove', '--force', wt]);
+      } catch {
+        await fse.remove(wt);
+      }
     }
-  }
 
-  try {
-    await git.raw(['worktree', 'prune']);
-  } catch {
-    // best effort
-  }
+    try {
+      await git.raw(['worktree', 'prune']);
+    } catch {
+      // best effort
+    }
 
-  // Fetch the latest default branch so the PR is based on current main.
-  const defaultBranch = await getDefaultBranch(repoRoot);
+    // Fetch the latest default branch so the PR is based on current main.
+    const defaultBranch = await getDefaultBranch(repoRoot);
 
-  try {
-    await git.fetch(['origin', defaultBranch]);
-  } catch (error) {
-    if (options.requireFreshBase) throw error;
-    // offline / no remote — fall back to local default branch state
-  }
+    try {
+      const fetchArgs = ['origin', defaultBranch];
 
-  // Detached worktree at origin/<default>; pushRepoBranch will create the feature
-  // branch inside the worktree, so the active repo never switches branches.
-  let base = `origin/${defaultBranch}`;
+      if (selfMode) {
+        const { major, minor } = await git.version();
 
-  try {
-    await git.raw(['worktree', 'add', '--detach', wt, base]);
-  } catch (error) {
-    if (options.requireFreshBase) throw error;
-    // origin/<default> may not exist locally (fresh repo); fall back to HEAD.
-    base = 'HEAD';
-    await git.raw(['worktree', 'add', '--detach', wt, base]);
-  }
+        if (major > 2 || (major === 2 && minor >= 29)) fetchArgs.unshift('--no-write-fetch-head');
+      }
 
-  const repo: LocalConfig['repo'] = { ...localConfig.repo, localPath: selfMode ? path.join(wt, '.teamai') : wt };
+      await git.fetch(fetchArgs);
+    } catch (error) {
+      if (options.requireFreshBase) throw error;
+      // offline / no remote — fall back to local default branch state
+    }
 
-  if (selfMode) repo.businessRepoRoot = wt;
-  const worktreeConfig: LocalConfig = { ...localConfig, repo };
+    // Detached worktree at origin/<default>; pushRepoBranch will create the feature
+    // branch inside the worktree, so the active repo never switches branches.
+    let base = `origin/${defaultBranch}`;
 
-  try {
-    return await fn(worktreeConfig);
+    try {
+      await git.raw(['worktree', 'add', '--detach', wt, base]);
+    } catch (error) {
+      if (options.requireFreshBase) throw error;
+      // origin/<default> may not exist locally (fresh repo); fall back to HEAD.
+      base = 'HEAD';
+      await git.raw(['worktree', 'add', '--detach', wt, base]);
+    }
+
+    const repo: LocalConfig['repo'] = { ...localConfig.repo, localPath: selfMode ? path.join(wt, '.teamai') : wt };
+
+    if (selfMode) repo.businessRepoRoot = wt;
+    const worktreeConfig: LocalConfig = { ...localConfig, repo };
+
+    try {
+      return await fn(worktreeConfig);
+    } finally {
+      try {
+        await git.raw(['worktree', 'remove', '--force', wt]);
+      } catch {
+        await fse.remove(wt);
+
+        try { await git.raw(['worktree', 'prune']); } catch { /* best effort */ }
+      }
+    }
   } finally {
-    try {
-      await git.raw(['worktree', 'remove', '--force', wt]);
-    } catch {
-      await fse.remove(wt);
-
-      try { await git.raw(['worktree', 'prune']); } catch { /* best effort */ }
-    }
+    await releaseLock(lockPath);
   }
 }
 

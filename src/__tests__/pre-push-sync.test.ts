@@ -816,9 +816,11 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     await fse.outputFile(dotfile, withSkillFrontmatter(v1('nod'), 'nod'));
     await fse.ensureDir(path.dirname(nod));
     await fse.symlink(dotfile, nod);
-    mockGetFileContentAtRev.mockImplementation(async (_repo, _rev, file) => (
-      file === './skills/greet.md' ? Buffer.from(v1('greet')) : file === './skills/ns/wave.md' ? Buffer.from(v1('wave')) : file === './skills/nod.md' ? Buffer.from(v1('nod')) : null
-    ));
+    mockGetFileContentAtRev.mockImplementation(async (_repo, _rev, file) => {
+      const relative = file.split(path.sep).join('/');
+
+      return relative === './skills/greet.md' ? Buffer.from(v1('greet')) : relative === './skills/ns/wave.md' ? Buffer.from(v1('wave')) : relative === './skills/nod.md' ? Buffer.from(v1('nod')) : null;
+    });
 
     await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
 
@@ -917,6 +919,7 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     expect(await fse.readdir(skillsDir)).toEqual(['my-skill']);
   });
 
+  // Windows retries the refused rename for 60 s before this rejection can be asserted.
   it.skipIf(process.getuid?.() === 0)('leaves a read-only skill as it was, with nothing beside it (#823)', async () => {
     const teamSkillDir = path.join(repoPath, 'skills', 'my-skill');
     await fse.outputFile(path.join(teamSkillDir, 'SKILL.md'), 'v2 skill');
@@ -934,7 +937,7 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     } finally {
       await fse.chmod(localSkillDir, 0o755);
     }
-  });
+  }, process.platform === 'win32' ? 75_000 : 15_000);
 
   it('should skip skills that only exist locally (not in team repo)', async () => {
     const localSkillDir = path.join(homeDir, '.claude/skills', 'local-only');

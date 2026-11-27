@@ -15,9 +15,11 @@ import { patchManagedSection } from './section-patcher.js';
 import type { GlobalOptions } from './types.js';
 import { log } from '@teamai/shared/log';
 import {
+    decidePendingReview,
     loadPendingReview,
     removePendingReview,
     type PendingReviewItem,
+    type ReviewDecision,
     type Risk,
 } from './review-store.js';
 import { readRegularFile } from '@teamai/shared/regular-file';
@@ -32,7 +34,7 @@ export interface ReviewCmdOptions extends GlobalOptions {
     reason?: string;
     allApply?: boolean;
     /** --all-apply 时按风险过滤；默认 medium */
-    maxRisk?: Risk;
+    maxRisk?: string;
     json?: boolean;
 }
 
@@ -137,7 +139,7 @@ async function applyOne(
     cwd: string,
     item: PendingReviewItem,
     dryRun: boolean,
-): Promise<{ ok: boolean; reason?: string }> {
+): Promise<ReviewDecision> {
     if (item.kind !== 'codebase-section') {
         return { ok: false, reason: `kind ${item.kind} does not support auto-apply; please handle manually` };
     }
@@ -175,6 +177,13 @@ async function applyOne(
     }
 }
 
+async function applyReview(cwd: string, item: PendingReviewItem, dryRun: boolean): Promise<ReviewDecision> {
+    if (dryRun) return applyOne(cwd, item, true);
+
+    return await decidePendingReview(cwd, item.id, (pending) => applyOne(cwd, pending, false))
+        ?? { ok: false, reason: `not found: id="${item.id}"` };
+}
+
 // ─── 主入口 ──────────────────────────────────────────────
 
 /**
@@ -186,6 +195,10 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
 
     // ── all-apply 模式 ────────────────────────────────────
     if (allApply) {
+        if (maxRisk !== 'high' && maxRisk !== 'medium' && maxRisk !== 'low') {
+            throw new Error('--max-risk must be high, medium, or low');
+        }
+
         const items = await loadPendingReview(cwd);
 
         const candidates = items.filter(
@@ -199,11 +212,7 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
         const results: Array<{ id: string; ok: boolean; reason?: string }> = [];
 
         for (const item of candidates) {
-            const result = await applyOne(cwd, item, dryRun);
-
-            if (result.ok && !dryRun) {
-                await removePendingReview(cwd, item.id);
-            }
+            const result = await applyReview(cwd, item, dryRun);
 
             results.push({ id: item.id, ok: result.ok, reason: result.reason });
         }
@@ -282,11 +291,7 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
 
     // ── apply 模式 ────────────────────────────────────────
     if (apply) {
-        const result = await applyOne(cwd, item, dryRun);
-
-        if (result.ok && !dryRun) {
-            await removePendingReview(cwd, idArg);
-        }
+        const result = await applyReview(cwd, item, dryRun);
 
         if (jsonMode) {
             console.log(JSON.stringify({ ok: result.ok, reason: result.reason, id: idArg, dryRun: dryRun ? true : undefined }));

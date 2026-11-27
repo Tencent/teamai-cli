@@ -88,6 +88,16 @@ describe('config.yaml saves are atomic', () => {
       expect(readdirSync(configDir)).toEqual(['config.yaml']);
     });
 
+    it('keeps the previous config and removes the temp file when replacement fails', async () => {
+      const config = await currentConfig();
+      const failure = Object.assign(new Error('config destination is busy'), { code: 'EBUSY' });
+      vi.spyOn(fse, 'rename').mockRejectedValueOnce(failure);
+
+      await expect(save({ ...config, username: 'renamed' })).rejects.toBe(failure);
+      expect(readFileSync(configPath, 'utf-8')).toBe(original);
+      expect(readdirSync(configDir)).toEqual(['config.yaml']);
+    });
+
     it('keeps the mode of an existing config.yaml', async () => {
       chmodSync(configPath, 0o644);
 

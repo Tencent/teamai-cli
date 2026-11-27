@@ -33,6 +33,7 @@ import path from 'node:path';
 import { lstat, rmdir } from 'node:fs/promises';
 import { z } from 'zod';
 import { errnoCode, writeIfChanged, pathExists, readFileIfExists, readFileSafe, writeJsonAtomic, remove, symlinkTarget } from './utils/fs.js';
+import { assertSafeResourceName } from './utils/path-safety.js';
 import { isPlainJson, parseJsonAs } from './utils/json.js';
 import { log } from '@teamai/shared/log';
 import { getUserHome } from '@teamai/shared/home';
@@ -946,6 +947,7 @@ export async function removeOpenClawAgentHook(opts: {
   slug: string;
   tool?: string;
 }): Promise<void> {
+  assertSafeResourceName(opts.slug);
   const tool = opts.tool ?? 'openclaw';
   const hooksDir = resolveOpenClawHooksDir(tool);
   const dir = path.join(hooksDir, opts.slug);

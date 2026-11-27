@@ -150,6 +150,24 @@ describe('execCommand', () => {
       err.mockRestore();
     }
   });
+
+  it('redacts URL and Authorization header credentials when a command times out', async () => {
+    const { proc } = makeMockProcess();
+    vi.mocked(spawn).mockReturnValue(proc as unknown as ChildProcess);
+    const encoded = Buffer.from('oauth2:secret_tok').toString('base64');
+
+    const err = await execCommand(
+      'git',
+      ['-c', `http.extraHeader=Authorization: Basic ${encoded}`, 'clone', 'https://oauth2:secret_tok@example.com/org/repo.git'],
+      { timeoutMs: 10 },
+    ).then(() => null, (e: unknown) => (e instanceof Error ? e : null));
+
+    expect(err).not.toBeNull();
+    expect(err!.message).toContain('Command timed out');
+    expect(err!.message).not.toContain(encoded);
+    expect(err!.message).not.toContain('secret_tok');
+    expect(err!.message).toContain('https://***@example.com/org/repo.git');
+  });
 });
 
 describe('captureTail', () => {

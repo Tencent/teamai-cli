@@ -12,6 +12,12 @@ import path from 'node:path';
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs-extra';
+import { readRegularFile } from '@teamai/shared/regular-file';
+
+vi.mock('@teamai/shared/regular-file', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@teamai/shared/regular-file')>();
+    return { ...actual, readRegularFile: vi.fn(actual.readRegularFile) };
+});
 
 vi.mock('../utils/prompt.js', () => ({
     askQuestion: vi.fn().mockResolvedValue('y'),
@@ -22,7 +28,7 @@ vi.mock('../utils/prompt.js', () => ({
 
 import { writeSections } from '../iwiki-dual.js';
 import { reviewCmd } from '../review-cmd.js';
-import { loadPendingReview } from '../review-store.js';
+import { getPendingReviewPath, loadPendingReview } from '../review-store.js';
 
 // ─── 常量 ────────────────────────────────────────────────
 
@@ -73,6 +79,12 @@ async function makeWorkdir(): Promise<string> {
     return tmpDir;
 }
 
+function signal(): { promise: Promise<void>; resolve: () => void } {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => { resolve = done; });
+    return { promise, resolve };
+}
+
 // ─── Tests ──────────────────────────────────────────────
 
 describe('iwiki review apply 闭环 e2e', () => {
@@ -87,6 +99,8 @@ describe('iwiki review apply 闭环 e2e', () => {
     });
 
     afterEach(async () => {
+        vi.restoreAllMocks();
+        vi.mocked(readRegularFile).mockReset();
         process.chdir(originalCwd);
         await fs.remove(cwd);
     });
@@ -134,5 +148,47 @@ describe('iwiki review apply 闭环 e2e', () => {
         // 6. 断言条目已从 pending-review 移除
         const remaining = await loadPendingReview(cwd);
         expect(remaining.find((i) => i.id === itemId)).toBeUndefined();
+    });
+
+    it('keeps both approved sections when two reviews update the same document', async () => {
+        const doc = path.join(cwd, 'docs', 'team-codebase', 'external-knowledge.md');
+        await fs.outputFile(doc, buildSkeletonMd(), 'utf8');
+        await queueSections(cwd);
+        const items = await loadPendingReview(cwd);
+        const first = items.find((item) => item.target.section === 'business-api')!;
+        const second = items.find((item) => item.target.section === 'glossary')!;
+
+        const paused = signal();
+        const resume = signal();
+        const contended = signal();
+        const lock = `${getPendingReviewPath(cwd)}.lock`;
+        const { readRegularFile: read } = await vi.importActual<typeof import('@teamai/shared/regular-file')>('@teamai/shared/regular-file');
+        let firstDocRead = true;
+
+        vi.mocked(readRegularFile).mockImplementation(async (file, encoding) => {
+            if (file === lock) contended.resolve();
+            const content = await read(file, encoding);
+            if (file === doc && firstDocRead) {
+                firstDocRead = false;
+                paused.resolve();
+                await resume.promise;
+            }
+            return content;
+        });
+
+        const applyingFirst = reviewCmd({ idArg: first.id, apply: true });
+        await Promise.race([applyingFirst, paused.promise]);
+        const applyingSecond = reviewCmd({ idArg: second.id, apply: true });
+        try {
+            await Promise.race([applyingSecond, contended.promise]);
+        } finally {
+            resume.resolve();
+        }
+        await Promise.all([applyingFirst, applyingSecond]);
+
+        const content = await fs.readFile(doc, 'utf8');
+        expect(content).toContain('已更新的业务接口内容');
+        expect(content).toContain('| alpha | 测试术语 |');
+        expect((await loadPendingReview(cwd)).map((item) => item.target.section)).toEqual(['external-knowledge']);
     });
 });

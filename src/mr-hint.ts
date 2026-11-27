@@ -9,10 +9,9 @@ import { getTGitToken, tgitFetch } from './providers/tgit/rest-auth.js';
 import { getGitHubToken } from './providers/github/gh-cli.js';
 import { log } from '@teamai/shared/log';
 import { lenientList, JsonObjectSchema } from '@teamai/shared/json';
-import { getUserHome } from '@teamai/shared/home';
 import { getRemoteUrl } from './utils/git.js';
 import { readJson, writeJsonAtomic } from './utils/fs.js';
-import { type LocalConfig } from './types.js';
+import { getSessionStateDir, type LocalConfig } from './types.js';
 import type { SessionRun } from './launch-context.js';
 import { WorkflowOffers, type Proposal } from './workflow-offers.js';
 import type { OutputSchema } from './workflow/types.js';
@@ -95,12 +94,7 @@ function repoSlug(owner: string, repo: string): string {
  * Build cache file path: ~/.teamai/sessions/mr-hint-<slug>.json
  */
 function getCachePath(owner: string, repo: string): string {
-  return path.join(
-    getUserHome(),
-    '.teamai',
-    'sessions',
-    `mr-hint-${repoSlug(owner, repo)}.json`,
-  );
+  return path.join(getSessionStateDir(), `mr-hint-${repoSlug(owner, repo)}.json`);
 }
 
 /**
@@ -599,7 +593,7 @@ export async function computeMrHintOutput(
 
 /** Where the hint a session start found waits for the session's next prompt, as hook-fast-path.ts names it too. */
 function pendingPath(sessionId: string): string {
-  return path.join(getUserHome(), '.teamai', 'sessions', `${sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')}.mr-hint.pending.json`);
+  return path.join(getSessionStateDir(), `${sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')}.mr-hint.pending.json`);
 }
 
 /**
