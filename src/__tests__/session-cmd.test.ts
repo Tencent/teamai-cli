@@ -438,6 +438,22 @@ describe('session search --all', () => {
     expect(text).not.toMatch(CJK);
   });
 
+  it.each([
+    ['2', 2],
+    ['2oops', 10],
+    ['2.5', 10],
+    ['1e3', 10],
+    ['0', 10],
+  ])('uses the expected result limit for %s', async (limit, expected) => {
+    for (let i = 0; i < 12; i++) {
+      await seed('github.com/org/alpha', 'alice', `a-${i}`, `payment ${i}`, 'payment retry');
+    }
+
+    await runSession('search', 'payment', '--all', '--repo-root', repoRoot, '--limit', limit);
+
+    expect(out.join('\n')).toContain(`${expected} result(s) found`);
+  });
+
   it('prints a nonzero score for a session that matches only in tool output', async () => {
     await seed('github.com/org/alpha', 'alice', 'a-1', 'docs', 'fix the readme');
     await new SyncManager(repoRoot).saveSession(
