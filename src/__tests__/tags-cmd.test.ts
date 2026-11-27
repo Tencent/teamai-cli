@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -61,6 +61,52 @@ describe('tag subscription commands', () => {
       lastUpdateCheck: null,
       availableUpdate: null,
     });
+  });
+
+  afterEach(() => {
+    process.exitCode = undefined;
+  });
+
+  it('refuses a tag that is empty or only whitespace instead of storing it', async () => {
+    await tagsSubscribe(['  '], {});
+    await tagsUnsubscribe([' testing ', '\t'], {});
+
+    expect(log.error).toHaveBeenCalledWith('Tags must not be empty or only whitespace.');
+    expect(saveLocalConfig).not.toHaveBeenCalled();
+    expect(saveStateForScope).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('trims the tags it stores', async () => {
+    await tagsSubscribe([' testing ', 'frontend'], {});
+
+    expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({
+      subscribedTags: ['frontend', 'testing'],
+    }));
+  });
+
+  it('removes a padded subscription an earlier version stored, and drops blank ones', async () => {
+    vi.mocked(requireInit).mockResolvedValue({
+      localConfig: { ...userConfig, subscribedTags: [' backend ', '   '] },
+      teamConfig: {} as never,
+    });
+
+    await tagsUnsubscribe([' backend '], {});
+
+    expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({ subscribedTags: undefined }));
+  });
+
+  it('writes back trimmed subscriptions without the blank entries an earlier version stored', async () => {
+    vi.mocked(requireInit).mockResolvedValue({
+      localConfig: { ...userConfig, subscribedTags: [' testing ', '   '] },
+      teamConfig: {} as never,
+    });
+
+    await tagsSubscribe(['frontend'], {});
+
+    expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({
+      subscribedTags: ['frontend', 'testing'],
+    }));
   });
 
   it('subscribes and invalidates the pull revision cache', async () => {
@@ -324,5 +370,60 @@ describe('tags list', () => {
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('frontend'));
     expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Could not count untagged skills'));
     expect(log.dim).not.toHaveBeenCalled();
+  });
+});
+
+describe('tags add and remove', () => {
+  let repoPath: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    repoPath = mkdtempSync(path.join(os.tmpdir(), 'teamai-tags-edit-'));
+    writeFileSync(path.join(repoPath, 'teamai.yaml'), 'team: demo\nrepo: owner/repo\nprovider: github\n');
+    vi.mocked(detectProjectConfig).mockResolvedValue(null);
+    vi.mocked(requireInit).mockResolvedValue({
+      localConfig: { ...userConfig, repo: { localPath: repoPath, remote: 'owner/repo' } },
+      teamConfig: {} as never,
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    process.exitCode = undefined;
+    rmSync(repoPath, { recursive: true, force: true });
+  });
+
+  it('refuses a blank tag or resource name instead of writing tags.yaml', async () => {
+    await tagsAdd('skills', 'deploy', ['  '], {});
+    await tagsAdd('skills', '   ', ['infra'], {});
+
+    expect(log.error).toHaveBeenCalledWith('Tags must not be empty or only whitespace.');
+    expect(log.error).toHaveBeenCalledWith('Specify the name of the skill or rule to tag.');
+    expect(existsSync(path.join(repoPath, 'tags.yaml'))).toBe(false);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('removes a tag an earlier version stored with padding', async () => {
+    writeFileSync(
+      path.join(repoPath, 'tags.yaml'),
+      'skills:\n  deploy:\n    - " backend "\n    - "   "\nrules: {}\n',
+    );
+
+    await tagsRemove('skills', 'deploy', [' backend '], {});
+
+    const written = readFileSync(path.join(repoPath, 'tags.yaml'), 'utf8');
+
+    expect(written).toContain('skills: {}');
+  });
+
+  it('trims the resource name and the tags it writes', async () => {
+    await tagsAdd('skills', ' deploy ', [' infra ', 'hai'], {});
+    await tagsRemove('skills', ' deploy ', [' hai '], {});
+
+    const written = readFileSync(path.join(repoPath, 'tags.yaml'), 'utf8');
+
+    expect(written).toContain('deploy:');
+    expect(written).toContain('- infra');
+    expect(written).not.toContain('- hai');
   });
 });
