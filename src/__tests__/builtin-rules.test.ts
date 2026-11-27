@@ -9,18 +9,30 @@ function makeTmpDir(): string {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-builtin-rules-'));
 }
 
+function hermesRulesDir(home: string): string {
+    const root = process.platform === 'win32'
+        ? process.env.LOCALAPPDATA ?? path.join(home, 'AppData', 'Local')
+        : home;
+    return path.join(root, process.platform === 'win32' ? 'hermes' : '.hermes', 'rules');
+}
+
 describe('builtin-rules', () => {
     let tmpDir: string;
     let originalHome: string;
+    let originalLocalAppData: string | undefined;
 
     beforeEach(() => {
         tmpDir = makeTmpDir();
         originalHome = process.env.HOME ?? '';
+        originalLocalAppData = process.env.LOCALAPPDATA;
         process.env.HOME = tmpDir;
+        process.env.LOCALAPPDATA = path.join(tmpDir, 'AppData', 'Local');
     });
 
     afterEach(() => {
         process.env.HOME = originalHome;
+        if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+        else process.env.LOCALAPPDATA = originalLocalAppData;
         fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
@@ -198,7 +210,7 @@ describe('builtin-rules', () => {
     describe('enabledAgents whitelist (#510)', () => {
         it('does not write builtin rules into an installed tool outside the whitelist', async () => {
             const workbuddyRules = path.join(tmpDir, '.workbuddy', 'rules');
-            const hermesRules = path.join(tmpDir, '.hermes', 'rules');
+            const hermesRules = hermesRulesDir(tmpDir);
             fs.mkdirSync(workbuddyRules, { recursive: true });
             fs.mkdirSync(hermesRules, { recursive: true });
 
@@ -225,8 +237,10 @@ describe('builtin-rules', () => {
         });
 
         it('still deploys to every installed tool when enabledAgents is unset', async () => {
-            fs.mkdirSync(path.join(tmpDir, '.workbuddy', 'rules'), { recursive: true });
-            fs.mkdirSync(path.join(tmpDir, '.hermes', 'rules'), { recursive: true });
+            const workbuddyRules = path.join(tmpDir, '.workbuddy', 'rules');
+            const hermesRules = hermesRulesDir(tmpDir);
+            fs.mkdirSync(workbuddyRules, { recursive: true });
+            fs.mkdirSync(hermesRules, { recursive: true });
 
             const teamConfig = {
                 toolPaths: {
@@ -245,8 +259,8 @@ describe('builtin-rules', () => {
             const deployed = await deployBuiltinRules(teamConfig, localConfig);
 
             expect(deployed).toBe(2);
-            expect(fs.existsSync(path.join(tmpDir, '.workbuddy', 'rules', 'teamai-recall.md'))).toBe(true);
-            expect(fs.existsSync(path.join(tmpDir, '.hermes', 'rules', 'teamai-recall.md'))).toBe(true);
+            expect(fs.existsSync(path.join(workbuddyRules, 'teamai-recall.md'))).toBe(true);
+            expect(fs.existsSync(path.join(hermesRules, 'teamai-recall.md'))).toBe(true);
         });
     });
 });

@@ -4,9 +4,10 @@
  * on teamai-reports. A data home records each session it archived, and each step session it can never archive from
  * here, so a later pass skips it; a push that failed records nothing, and the next pass tries it again.
  */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { renameRetrying, writeRegularFile } from '@teamai/shared/regular-file';
 import { z } from 'zod';
 import type { RunMode } from '../launch-context.js';
 import { getDataHome, type LocalConfig } from '../types.js';
@@ -83,9 +84,16 @@ const recordArchived = (config: LocalConfig, ref: ArchiveSessionRef, at: string)
 
 async function record(config: LocalConfig, entry: PublicationRecord): Promise<void> {
   const file = recordFile(config, entry);
+  const draft = `${file}.${randomUUID()}.tmp`;
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(`${file}.tmp`, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
-  await fs.rename(`${file}.tmp`, file);
+
+  try {
+    await writeRegularFile(draft, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+    await renameRetrying(draft, file, { isReplacing: true });
+  } catch (error) {
+    await fs.rm(draft, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 /** What one publish pass did with the step sessions of one run. */

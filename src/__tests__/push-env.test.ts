@@ -111,6 +111,12 @@ async function pushBranches(remote: string): Promise<string[]> {
   return out.split('\n').filter(Boolean);
 }
 
+// Windows has no POSIX permission bits: fs.statSync().mode reports 0o666 for a
+// writable file whatever chmod asked for, and git ignores core.fileMode. The
+// mode assertions below can only be made where chmod means something; the rest
+// of each case (the rollback, the kept edit) still runs on every host.
+const chmodIsHonored = process.platform !== 'win32';
+
 describe('push publishes the env files env add leaves in a standalone clone (#881)', () => {
   let tmpDir: string;
   let teamRepo: string;
@@ -251,7 +257,7 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     expect(process.exitCode).toBe(1);
     expect(stderrOutput()).toContain('Push failed');
     expect(fs.readFileSync(envPath, 'utf8')).toContain('value: changed');
-    expect(fs.statSync(envPath).mode & 0o777).toBe(0o600);
+    if (chmodIsHonored) expect(fs.statSync(envPath).mode & 0o777).toBe(0o600);
   });
 
   it('pushes only the selected env file and keeps the deselected edit in the clone', async () => {
@@ -315,7 +321,7 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     expect(process.exitCode).toBe(1);
     expect(stderrOutput()).toContain('Push failed');
     expect(fs.readFileSync(opsEnv, 'utf8')).toContain('value: ops-value');
-    expect(fs.statSync(opsEnv).mode & 0o777).toBe(0o600);
+    if (chmodIsHonored) expect(fs.statSync(opsEnv).mode & 0o777).toBe(0o600);
     expect(await git.raw(['status', '--porcelain', '--untracked-files=all'])).toContain('?? env/ops/env.yaml');
   });
 
@@ -333,7 +339,7 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     expect(process.exitCode).toBe(1);
     expect((await git.revparse(['--abbrev-ref', 'HEAD'])).trim()).toBe('main');
     expect(fs.readFileSync(opsEnv, 'utf8')).toContain('value: ops-value');
-    expect(fs.statSync(opsEnv).mode & 0o777).toBe(0o600);
+    if (chmodIsHonored) expect(fs.statSync(opsEnv).mode & 0o777).toBe(0o600);
     expect(await git.raw(['status', '--porcelain', '--untracked-files=all'])).toContain('?? env/ops/env.yaml');
   });
 
@@ -473,7 +479,7 @@ describe('push publishes the env files env add leaves in a standalone clone (#88
     expect(await pushBranches(remote)).toEqual([]);
   });
 
-  it('still refuses a mode change on env.yaml', async () => {
+  it.runIf(chmodIsHonored)('still refuses a mode change on env.yaml', async () => {
     const { envAdd } = await import('../env-commands.js');
     const { push } = await import('../push.js');
     const git = simpleGit(teamRepo);

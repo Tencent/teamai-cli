@@ -72,29 +72,36 @@ export function stepLoops(steps: LoopStep[]): StepLoops {
 /** The first cycle through `edges`, starting at the id listed first, or undefined when there is none. */
 export function firstCycle(ids: string[], edges: Map<string, string[]>): string[] | undefined {
   const state = new Map<string, 'open' | 'closed'>();
-  const path: string[] = [];
-
-  const visit = (id: string): string[] | undefined => {
-    state.set(id, 'open');
-    path.push(id);
-
-    for (const next of edges.get(id) ?? []) {
-      if (state.get(next) === 'open') return [...path.slice(path.indexOf(next)), next];
-      const found = state.has(next) || !edges.has(next) ? undefined : visit(next);
-
-      if (found) return found;
-    }
-
-    path.pop();
-    state.set(id, 'closed');
-
-    return undefined;
-  };
 
   for (const id of ids) {
-    const found = state.has(id) ? undefined : visit(id);
+    if (state.has(id)) continue;
+    const stack = [{ id, remaining: (edges.get(id) ?? []).values() }];
+    state.set(id, 'open');
 
-    if (found) return found;
+    for (let frame = stack.at(-1); frame !== undefined; frame = stack.at(-1)) {
+      const next = frame.remaining.next();
+
+      if (next.done) {
+        stack.pop();
+        state.set(frame.id, 'closed');
+        continue;
+      }
+
+      const child = next.value;
+      const seen = state.get(child);
+
+      if (seen === 'open') {
+        const start = stack.findIndex((entry) => entry.id === child);
+
+        return [...stack.slice(start).map((entry) => entry.id), child];
+      }
+
+      const children = seen === undefined ? edges.get(child) : undefined;
+
+      if (children === undefined) continue;
+      state.set(child, 'open');
+      stack.push({ id: child, remaining: children.values() });
+    }
   }
 
   return undefined;

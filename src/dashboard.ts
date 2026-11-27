@@ -5,7 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { log } from '@teamai/shared/log';
 import { ensureDir } from './utils/fs.js';
-import { dataHomeKey, readEvents, readLocalRequestRecords, readSessionOutcomes, rebuildSessions, appendEvent, memberEvents, sessionRuns } from './dashboard-collector.js';
+import { dataHomeKey, getEventsPath, readEvents, readLocalRequestRecords, readSessionOutcomes, rebuildSessions, appendEvent, memberEvents, sessionRuns } from './dashboard-collector.js';
 import { isProcessAlive } from './pid-monitor.js';
 import {
   DASHBOARD_DEFAULT_PORT,
@@ -17,7 +17,6 @@ import {
 } from './types.js';
 import type { JsonValue } from '@teamai/shared/json';
 import { getDashboardHtml } from './dashboard-html.js';
-import { getUserHome } from '@teamai/shared/home';
 import type { VizSummary } from './viz.js';
 import { aggregateDailySessions, computeDailyStatsDelta, summarizeTrendWindow, summarizeSessionCosts } from './session-trends.js';
 import { HttpError, isLocalWrite, readJsonBody } from './dashboard/http.js';
@@ -52,7 +51,7 @@ let kbSummaryCache: { ts: number; data: VizSummary } | null = null;
  */
 export async function startDashboard(port?: number): Promise<void> {
   const serverPort = port ?? DASHBOARD_DEFAULT_PORT;
-  const eventsPath = path.join(getUserHome(), '.teamai', 'dashboard', 'events.jsonl');
+  const eventsPath = getEventsPath();
 
   // Ensure events directory exists
   await ensureDir(path.dirname(eventsPath));

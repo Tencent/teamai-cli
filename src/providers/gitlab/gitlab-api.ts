@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { z } from 'zod';
 import { GITLAB_HOST } from './repo-url.js';
-import { sanitizeGitUrl } from '@teamai/shared/redact';
+import { longPathArgs } from '../../utils/git.js';
+import { redactGitCredentials } from '@teamai/shared/redact';
 import { endedRequest, mergedAs, type CiStatus, type CommitRef, type PullRequestRecord, type PullRequestRef } from '../types.js';
 
 /**
@@ -221,7 +222,7 @@ export function gitlabRepoClone(repo: string, localPath: string): void {
   const token = getGitLabToken();
   // `-c <key>=<val>` is a git-level option and must precede the `clone`
   // subcommand, matching the http.extraHeader pattern in clone.ts.
-  const args: string[] = [];
+  const args: string[] = [...longPathArgs()];
 
   if (token) {
     args.push('-c', gitlabAuthHeaderArg(token));
@@ -251,9 +252,8 @@ export function gitlabRepoClone(repo: string, localPath: string): void {
     throw new GitLabRepoNotFoundError(repo);
   }
 
-  // Redact any credentials git may have echoed back, using the shared helper so
-  // coverage stays consistent with the rest of the codebase.
-  const sanitized = sanitizeGitUrl(allOutput);
+  const secrets = token ? [Buffer.from(`oauth2:${token}`).toString('base64'), token] : [];
+  const sanitized = redactGitCredentials(allOutput, secrets);
   throw new Error(`git clone failed: ${sanitized.trim()}`);
 }
 

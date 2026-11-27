@@ -575,6 +575,24 @@ function normalizeEndpoint(endpoint: string): string {
   return endpoint.trim().replace(/\/+$/, '');
 }
 
+/**
+ * Only an http(s) URL can be a teamai endpoint. Anything else would be stored
+ * and reported as configured, then fail on every report and sync.
+ */
+export function assertHttpEndpoint(endpoint: string): void {
+  let parsed: URL;
+
+  try {
+    parsed = new URL(endpoint.trim());
+  } catch {
+    throw new Error(`Endpoint must be an http(s) URL: ${endpoint}`);
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`Endpoint must be an http(s) URL: ${endpoint}`);
+  }
+}
+
 /** Normalize a route override so it is a leading-slash path (endpoint has no trailing slash). */
 function normalizeRoute(route: string): string {
   const trimmed = route.trim();
@@ -4982,6 +5000,8 @@ async function runHookRuleCommand(
     throw new Error(`${command.type}: missing slug`);
   }
 
+  assertSafeResourceName(slug);
+
   const manifest = await loadAgentHookManifest();
 
   if (command.type === 'uninstall_hook_rule') {
@@ -6338,6 +6358,8 @@ export async function initLocalAgentHttp(options: {
   if (!endpoint) {
     throw new Error('HTTP endpoint is required.');
   }
+
+  assertHttpEndpoint(endpoint);
 
   validateLocalAgentTokenReplacement(options);
 

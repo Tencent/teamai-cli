@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BUILT_IN_TOOLS } from '@teamai/tool-definitions';
-import { callLaunch, type HeadlessStarter } from './call-launch.js';
+import { callLaunch, runHeadless, type HeadlessStarter } from './call-launch.js';
 
 const claude = { name: 'claude', family: 'claude', call: BUILT_IN_TOOLS.claude.launch.claude.call, executable: '/usr/bin/claude' } as const;
 const codex = { name: 'codex', family: 'codex', call: BUILT_IN_TOOLS.codex.launch.codex.call, executable: '/usr/bin/codex' } as const;
@@ -25,6 +25,58 @@ function fakeProcess(stdout: string, code: number | undefined, onStart: (stdin: 
     return { exited, stop: async () => { exit(143); } };
   };
 }
+
+describe('runHeadless', () => {
+  it.each(['timeout', 'idle', 'abort'] as const)('waits for process-tree cleanup after %s, even when the main process already exited', async (cause) => {
+    let exit: (code: number) => void = () => {};
+    const exited = new Promise<number>((resolve) => { exit = resolve; });
+    let began: () => void = () => {};
+    const stopping = new Promise<void>((resolve) => { began = resolve; });
+    let release: () => void = () => {};
+    const cleanup = new Promise<void>((resolve) => { release = resolve; });
+    const stop = vi.fn(async () => {
+      exit(143);
+      began();
+      await cleanup;
+    });
+    const controller = new AbortController();
+    let returned = false;
+    const result = runHeadless({
+      start: () => ({ exited, stop }), stdin: '', timeoutMs: cause === 'timeout' ? 1 : 10_000,
+      ...(cause === 'idle' && { idleTimeoutMs: 1 }), signal: controller.signal,
+    }).then((run) => { returned = true; return run; });
+
+    if (cause === 'abort') controller.abort();
+
+    try {
+      await stopping;
+      controller.abort();
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(returned).toBe(false);
+    } finally {
+      release();
+      await result;
+    }
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(await result).toMatchObject({ code: 143, ...(cause !== 'abort' && { stopped: cause }) });
+  });
+
+  it('propagates a failed cleanup without leaving an unhandled rejection in the abort handler', async () => {
+    let exit: (code: number) => void = () => {};
+    const exited = new Promise<number>((resolve) => { exit = resolve; });
+    const failure = new Error('process-tree cleanup failed');
+    const controller = new AbortController();
+    const result = runHeadless({
+      start: () => ({ exited, stop: async () => { exit(143); throw failure; } }),
+      stdin: '', timeoutMs: 10_000, signal: controller.signal,
+    });
+    const rejected = expect(result).rejects.toBe(failure);
+
+    controller.abort();
+    await rejected;
+  });
+});
 
 describe('callLaunch', () => {
   it('runs Claude\'s call profile with the prompt on stdin and reads its result record', async () => {

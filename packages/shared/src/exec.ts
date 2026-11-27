@@ -11,6 +11,7 @@ import { isBareCommandName, pickWindowsCommand } from './cli-path.js';
 import { WIN_EXEC_EXTENSIONS } from './lookpath.js';
 import { pathDirs } from './lookpath.js';
 import { signalChild } from './process-group.js';
+import { redactGitCredentials } from './redact.js';
 
 export interface ExecOptions {
   cwd?: string;
@@ -76,7 +77,7 @@ export const execCommand: CommandExecutor = (
   const timer = setTimeout(() => {
     signalChild(child);
     finish(() => reject(new Error(
-      `Command timed out after ${timeoutMs}ms: ${command} ${args.join(' ')}`,
+      `Command timed out after ${timeoutMs}ms: ${redactGitCredentials(`${command} ${args.join(' ')}`)}`,
     )));
   }, timeoutMs);
 
