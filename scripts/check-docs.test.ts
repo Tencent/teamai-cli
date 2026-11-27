@@ -263,6 +263,29 @@ it('check pulls an unnamed workflow fragment on a page that is not a workflow pa
   expect(checked.output).toContain(`docs/guide/dashboard.md:${before.split('\n').length + 2}`);
   expect(checked.output).toContain('retries_forever');
 });
+it.each(['LF', 'CRLF'])('compares shipped driver definitions with %s line endings and rejects changed guide contents', (eol) => {
+  const root = checkout();
+  for (const file of fs.readdirSync(path.join(root, 'drivers')).filter((entry) => entry.endsWith('.yaml'))) {
+    const target = path.join(root, 'drivers', file);
+    fs.writeFileSync(target, fs.readFileSync(target, 'utf8').replace(/\r?\n/g, eol === 'CRLF' ? '\r\n' : '\n'));
+  }
+  const pages = ['docs/guide/runtime-paseo.md', 'docs/guide/zh-CN/runtime-paseo.md'];
+  for (const page of pages) {
+    const target = path.join(root, page);
+    const text = fs.readFileSync(target, 'utf8').replace(/\r?\n/g, eol === 'CRLF' ? '\r\n' : '\n');
+    fs.writeFileSync(target, page.includes('/zh-CN/') ? text.replace('name: teamai-paseo', 'name: teamai-paseo # The translated guide may add comments.') : text);
+  }
+  const checked = run(root, '--only=workflow-docs-examples');
+  expect(checked.status, checked.output).toBe(0);
+
+  for (const page of pages) {
+    const target = path.join(root, page);
+    fs.writeFileSync(target, fs.readFileSync(target, 'utf8').replace('max_parallel: 4', 'max_parallel: 5'));
+  }
+  const changed = run(root, '--only=workflow-docs-examples');
+  expect(changed.status, changed.output).toBe(1);
+  for (const page of pages) expect(changed.output).toMatch(new RegExp(`${page}:\\d+.*differs from drivers/teamai-paseo\\.yaml`));
+}, 2 * RUN_MS);
 it('check rejects a driver definition example whose runtime options teamai refuses, naming its page and line', () => {
   const root = checkout();
   const page = path.join(root, 'docs/guide/workflow-advanced.md');

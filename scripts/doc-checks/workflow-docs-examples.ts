@@ -895,7 +895,7 @@ await check('every shipped driver definition parses, and a guide block naming it
 
     if (source === undefined) return [`${example.label}: teamai ships no drivers/${file}`];
     const shown = body.join('\n');
-    const isSame = page.includes('/zh-CN/') ? isDeepStrictEqual(parseDocument(shown).toJS(), parseDocument(source).toJS()) : shown.trim() === source.trim();
+    const isSame = page.includes('/zh-CN/') ? isDeepStrictEqual(parseDocument(shown).toJS(), parseDocument(source).toJS()) : shown.trim() === source.replace(/\r\n/g, '\n').trim();
 
     return isSame ? [] : [`${example.label}: differs from drivers/${file}`];
   }));
