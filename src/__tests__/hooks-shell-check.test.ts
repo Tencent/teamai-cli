@@ -132,8 +132,16 @@ describe('injectHooksToAllTools — no-shell skip (posix)', () => {
 describe('injectHooksToAllTools — workbuddy bundled PortableGit sh (win32)', () => {
   let tmp: string;
   let platformSpy: ReturnType<typeof vi.spyOn>;
+  // workbuddyVersionDirs() reads WORKBUDDY_CONFIG_DIR ahead of the home dir, and
+  // WorkBuddy sets it for every process it starts, so on a machine that runs
+  // WorkBuddy the bundled sh resolves out of the real install and the
+  // "missing sh" case below is unreachable. Cleared here, as in
+  // bundled-runtime.test.ts, so the case holds wherever the suite runs.
+  let savedConfigDir: string | undefined;
 
   beforeEach(async () => {
+    savedConfigDir = process.env.WORKBUDDY_CONFIG_DIR;
+    delete process.env.WORKBUDDY_CONFIG_DIR;
     _resetShellCache();
     tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'wb-sh-'));
     homeState.home = tmp;
@@ -144,6 +152,8 @@ describe('injectHooksToAllTools — workbuddy bundled PortableGit sh (win32)', (
   afterEach(async () => {
     _resetShellCache();
     platformSpy.mockRestore();
+    if (savedConfigDir === undefined) delete process.env.WORKBUDDY_CONFIG_DIR;
+    else process.env.WORKBUDDY_CONFIG_DIR = savedConfigDir;
     await fse.remove(tmp);
   });
 
