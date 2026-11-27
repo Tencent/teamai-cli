@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   sql: [] as string[],
   sessions: [] as unknown[],
   messages: [] as unknown[],
+  legacyMessageSchema: false,
 }));
 
 vi.mock('@teamai/tool-core/sessions/sqlite', async (importOriginal) => ({
@@ -28,6 +29,10 @@ const processes: Processes = {
     const sql = args[2]!;
     mocks.sql.push(sql);
 
+    if (mocks.legacyMessageSchema && sql.includes('display_kind, _compressed_summary')) {
+      return { code: 1, stdout: '', stderr: 'Error: in prepare, no such column: display_kind', signal: null };
+    }
+
     return {
       code: 0, stdout: JSON.stringify(sql.includes('FROM sessions') ? mocks.sessions : mocks.messages),
       stderr: '', signal: null,
@@ -43,6 +48,7 @@ beforeEach(() => {
   mocks.sql.length = 0;
   mocks.sessions = [];
   mocks.messages = [];
+  mocks.legacyMessageSchema = false;
 });
 
 afterEach(() => {
@@ -126,6 +132,36 @@ describe('HermesAdapter', () => {
       { type: 'thinking', text: 'Provider thought' },
       { type: 'text', text: 'Answer' },
     ]);
+  });
+
+  it('keeps only human-authored Hermes user messages', async () => {
+    const { adapter, cwd, id } = fixture();
+    mocks.messages = [
+      { id: 20, role: 'user', content: 'Fix the parser', display_kind: null, _compressed_summary: 0,
+        tool_call_id: null, tool_calls: null, tool_name: null, timestamp: 200, finish_reason: null, reasoning: null, reasoning_content: null },
+      { id: 21, role: 'user', content: 'Switched model', display_kind: 'model_switch', _compressed_summary: 0,
+        tool_call_id: null, tool_calls: null, tool_name: null, timestamp: 201, finish_reason: null, reasoning: null, reasoning_content: null },
+      { id: 22, role: 'user', content: 'Earlier conversation summary', display_kind: null, _compressed_summary: 1,
+        tool_call_id: null, tool_calls: null, tool_name: null, timestamp: 202, finish_reason: null, reasoning: null, reasoning_content: null },
+      { id: 23, role: 'assistant', content: 'Done', display_kind: null, _compressed_summary: 0,
+        tool_call_id: null, tool_calls: null, tool_name: null, timestamp: 203, finish_reason: 'stop', reasoning: null, reasoning_content: null },
+    ];
+
+    const session = await adapter.readSession({ sessionId: id, projectPath: cwd });
+
+    expect(session.messages.map((message) => message.messageId)).toEqual(['20', '23']);
+    expect(mocks.sql.at(-1)).toContain('display_kind, _compressed_summary');
+  });
+
+  it('keeps sessions from a Hermes store that predates message classification columns', async () => {
+    const { adapter, cwd, id } = fixture();
+    mocks.legacyMessageSchema = true;
+
+    const session = await adapter.readSession({ sessionId: id, projectPath: cwd });
+
+    expect(session.messages.map((message) => message.messageId)).toEqual(['1', '2', '3', '4']);
+    expect(mocks.sql.at(-2)).toContain('display_kind, _compressed_summary');
+    expect(mocks.sql.at(-1)).toContain('NULL AS display_kind, 0 AS _compressed_summary');
   });
 
   it('matches a symlinked cwd and rejects unsafe non-Hermes ids', async () => {
