@@ -91,6 +91,32 @@ const importDir = (sourceDir: string, slug: string, wikiRoot: string) =>
   importCodebase({ sourceDir, slug, wikiRoot, skipEnrich: true });
 
 describe('incremental baseline for a --dir checkout with no origin (#1422)', { timeout: 120_000 }, () => {
+  it('keeps the full interface inventory through edits, deletions, and removal of the last endpoint (#2090)', async () => {
+    const repo = makeRepo(false);
+    const out = temp('teamai-2090-out-');
+    fs.writeFileSync(path.join(repo, 'a.ts'), "app.get('/a', handler);\napp.post('/a', handler);\n");
+    fs.writeFileSync(path.join(repo, 'b.ts'), "app.get('/b', handler);\n");
+    const cache = path.join(out, 'teamwiki', '.indices', 'interfaces-cache.json');
+    const inventory = () => JSON.parse(fs.readFileSync(cache, 'utf8')) as {
+      entries: Array<{ type: string; count: number; patterns: string[] }>;
+    };
+    await runExtract(repo, out, false);
+    expect(inventory().entries).toMatchObject([{ type: 'HTTP', count: 3 }]);
+
+    fs.writeFileSync(path.join(repo, 'a.ts'), "app.get('/a', handler);\n");
+    expect(await runExtract(repo, out, true)).toContain('incremental: 1 files changed');
+    expect(inventory().entries).toMatchObject([{ type: 'HTTP', count: 2 }]);
+    expect(inventory().entries[0].patterns).not.toContain("app.post('/a', handler);");
+
+    fs.unlinkSync(path.join(repo, 'b.ts'));
+    expect(await runExtract(repo, out, true)).toContain('0 files changed, 1 deleted');
+    expect(inventory().entries).toMatchObject([{ type: 'HTTP', count: 1 }]);
+
+    fs.writeFileSync(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+    await runExtract(repo, out, true);
+    expect(inventory().entries).toEqual([]);
+  });
+
   it('reuses the baseline of the same checkout instead of extracting everything', async () => {
     const repo = makeRepo(false);
     const out = temp('teamai-1422-out-');
