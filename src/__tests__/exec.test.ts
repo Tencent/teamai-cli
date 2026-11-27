@@ -8,7 +8,9 @@ vi.mock('cross-spawn', () => ({
 }));
 
 import spawn from 'cross-spawn';
-import { captureTail, execCommand } from '../utils/exec.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { captureTail, execCommand, probeVersion } from '@teamai/shared/exec';
 
 interface Emitters {
   stdout: (chunk: Buffer) => void;
@@ -148,6 +150,24 @@ describe('execCommand', () => {
       err.mockRestore();
     }
   });
+
+  it('redacts URL and Authorization header credentials when a command times out', async () => {
+    const { proc } = makeMockProcess();
+    vi.mocked(spawn).mockReturnValue(proc as unknown as ChildProcess);
+    const encoded = Buffer.from('oauth2:secret_tok').toString('base64');
+
+    const err = await execCommand(
+      'git',
+      ['-c', `http.extraHeader=Authorization: Basic ${encoded}`, 'clone', 'https://oauth2:secret_tok@example.com/org/repo.git'],
+      { timeoutMs: 10 },
+    ).then(() => null, (e: unknown) => (e instanceof Error ? e : null));
+
+    expect(err).not.toBeNull();
+    expect(err!.message).toContain('Command timed out');
+    expect(err!.message).not.toContain(encoded);
+    expect(err!.message).not.toContain('secret_tok');
+    expect(err!.message).toContain('https://***@example.com/org/repo.git');
+  });
 });
 
 describe('captureTail', () => {
@@ -222,5 +242,19 @@ describe('captureTail', () => {
     const second = readTail();
     expect(first).toBe(text);
     expect(second).toBe(text);
+  });
+});
+
+describe('probeVersion', () => {
+  it('removes its directory and answers empty when the binary fails', async () => {
+    let scratch = '';
+    const version = await probeVersion('opencode', {}, async (_command, _args, options) => {
+      scratch = path.dirname(options?.env?.XDG_DATA_HOME ?? '');
+      throw new Error('spawn opencode ENOENT');
+    });
+
+    expect(version).toBe('');
+    expect(scratch).not.toBe('');
+    expect(fs.existsSync(scratch)).toBe(false);
   });
 });

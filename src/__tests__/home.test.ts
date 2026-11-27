@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { getUserHome } from '../utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { getTeamaiHome, getDataHome, getEnvBackupPath, resolveBaseDir, type LocalConfig } from '../types.js';
 
 const originalHome = process.env.HOME;
@@ -52,7 +52,7 @@ describe('getUserHome', () => {
     delete process.env.HOME;
     process.env.USERPROFILE = 'C:\\Users\\alice';
 
-    const { getTeamaiHomeDir, getUserConfigPath, getUserStatePath } = await import('../types.js');
+    const { getMachineDashboardDir, getSessionStateDir, getTeamaiHomeDir, getUserConfigPath, getUserStatePath } = await import('../types.js');
 
     expect(getTeamaiHomeDir()).toBe(path.join('C:\\Users\\alice', '.teamai'));
     expect(getUserConfigPath()).toBe(
@@ -61,6 +61,8 @@ describe('getUserHome', () => {
     expect(getUserStatePath()).toBe(
       path.join('C:\\Users\\alice', '.teamai', 'state.json'),
     );
+    expect(getMachineDashboardDir()).toBe(path.join('C:\\Users\\alice', '.teamai', 'dashboard'));
+    expect(getSessionStateDir()).toBe(path.join('C:\\Users\\alice', '.teamai', 'sessions'));
   });
 
   it('falls back to os.homedir when neither environment variable is available', () => {

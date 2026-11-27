@@ -27,7 +27,7 @@ import type { ContentBlock, Message, Session } from '@teamai/tool-core/sessions/
 import { typedText } from '@teamai/tool-core/sessions/title';
 import { type PromptForm, type SkillLoad } from '@teamai/tool-core/definition';
 import { baseDescriptorOf } from './tool-registry.js';
-import { SKILL_NAME_CHARS, type LocalConfig } from './types.js';
+import { getSessionStateDir, SKILL_NAME_CHARS, type LocalConfig } from './types.js';
 import { withFileLock } from './update.js';
 import {
   appendUsageEvent,
@@ -44,9 +44,9 @@ import { repositoryStamp } from './utils/git-discovery.js';
 import { listFilesAtRev } from './utils/git.js';
 import { pathExists, readFileSafe, readJson, writeJson } from './utils/fs.js';
 import { splitFrontmatter } from './utils/frontmatter.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome } from '@teamai/shared/home';
 import { resolveHookCwd } from './utils/hook-cwd.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { deriveSessionId } from './utils/session-id.js';
 import { namedReads } from './utils/shell-command.js';
 import { classifyToolCall } from './utils/tool-call.js';
@@ -198,6 +198,9 @@ function promptCandidates(prompt: string, tool: string): SkillCandidate[] {
         // (#1516). Anchored at the start, so a command URI quoted in the
         // conversation is not a skill use.
         pattern = new RegExp(`^@command://(${NAME})(?=\\s|$)`, 'g');
+        break;
+      case 'markdown-mention':
+        pattern = new RegExp(`\\[@(${NAME})\\]\\(skill://\\1\\)`, 'g');
         break;
       case '/name':
         // A whole token at the start, so a prompt beginning with an absolute path is not a skill use.
@@ -530,7 +533,7 @@ type SkillClaims = z.infer<typeof SkillClaimsSchema>;
 
 function claimsPath(sessionId: string): string {
   // Ends in `.json`, so cleanupStaleSessions sweeps it with the session's other files.
-  return path.join(getUserHome(), '.teamai', 'sessions', `${sanitizeSessionId(sessionId)}-skills.json`);
+  return path.join(getSessionStateDir(), `${sanitizeSessionId(sessionId)}-skills.json`);
 }
 
 /** A prompt-submit and the detached post-tool-use hooks of its turn can claim at once. */

@@ -21,7 +21,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 import { autoDetectInit } from '../config.js';
 import { getHandler } from '../resources/index.js';
 import { getSourceManifestPath, getSourcePathOwners, getSourcePushQuarantineNames, getSourceSkillOrigins, pullSources, sourceRemove } from '../source.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { LocalConfig, SourceInstallManifest, TeamaiConfig } from '../types.js';
 
 const ALIASES = ['.git', 'node_modules', '__pycache__', '.pyc', '.DS_Store', 'anything.pyc', 'ordinary'];

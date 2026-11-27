@@ -12,10 +12,11 @@ import type { TeamaiInit } from './config.js';
 import { ImportInputError } from './import-from-repo.js';
 import { ImportLearnings } from './import-local.js';
 import { extractRepoUrlFromMrUrl, fetchMR, formatMrThreads, parseLearningDraft } from './import-mr.js';
-import { RUN_DIR_ENV } from './launch-context.js';
+import { RUN_DIR_ENV } from '@teamai/runtime-protocol';
 import type { LocalConfig } from './types.js';
 import type { ShortcutEnd } from './workflow-commands.js';
-import { log, spinner } from './utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 const WORKFLOW = 'teamai-import-from-mr';
 
@@ -192,7 +193,7 @@ function acceptedOf(extracted: Extracted, reviewed: z.infer<typeof ReviewedSchem
  * the frontmatter as the AI tool wrote it.
  */
 async function contentOf(entry: AcceptedDraft): Promise<string> {
-  const content = await fs.readFile(entry.draft.file, 'utf-8');
+  const content = await readRegularFile(entry.draft.file, 'utf-8');
 
   if (!entry.isEdited) return content;
   const line = `title: ${JSON.stringify(entry.title)}`;

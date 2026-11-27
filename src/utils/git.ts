@@ -6,13 +6,15 @@ import { realpath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import fse from 'fs-extra';
+import { copyRegularTree, openRegularFileSync, readRegularFile } from '@teamai/shared/regular-file';
 import { GitError, simpleGit, type SimpleGit, type SimpleGitOptions, type outputHandler } from 'simple-git';
 import { z } from 'zod';
-import { execCommand } from './exec.js';
+import { execCommand } from '@teamai/shared/exec';
+import { descendantsOf, signalChild, signalStillRunning } from '@teamai/shared/process-group';
 import { errnoCode } from './fs.js';
 import { GitAnswers } from './git-answers.js';
 import { gitFindsNoRepository, linkedWorktreesStamp, repositoryStamp } from './git-discovery.js';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 import { mergeTeamConfig } from './yaml.js';
 
 /** What simple-git accepts as a custom binary without its unsafe opt-in. */
@@ -115,7 +117,7 @@ const NATIVE_MAGIC = new Set(['7f454c46', 'feedface', 'feedfacf', 'cefaedfe', 'c
 function isNativeExecutable(file: string): boolean {
   try {
     fs.accessSync(file, fs.constants.X_OK);
-    const fd = fs.openSync(file, 'r');
+    const fd = openRegularFileSync(file);
 
     try {
       const head = Buffer.alloc(4);
@@ -198,6 +200,21 @@ export function gitBlockTimeoutMs(): number {
 }
 
 /**
+ * Git config that lets a checkout hold a path longer than Windows' `MAX_PATH`.
+ * Git reads `core.longpaths` per process, so every command teamai starts
+ * carries it: the shared clients as config, and a clone started without
+ * simple-git as `-c` arguments ({@link longPathArgs}).
+ */
+export function longPathConfig(platform: NodeJS.Platform = process.platform): string[] {
+  return platform === 'win32' ? ['core.longpaths=true'] : [];
+}
+
+/** {@link longPathConfig} as command-line arguments, for a `git` started without simple-git. */
+export function longPathArgs(platform: NodeJS.Platform = process.platform): string[] {
+  return longPathConfig(platform).flatMap((entry) => ['-c', entry]);
+}
+
+/**
  * Create a SimpleGit instance for a given base path.
  *
  * Authentication is handled by the provider's remote URL or by normal Git
@@ -210,7 +227,7 @@ export function gitBlockTimeoutMs(): number {
 export function createGit(basePath?: string, abort?: AbortSignal): SimpleGit {
   // Role filtering happens after checkout: an inactive skill's long path can
   // otherwise block the whole pull. Keep this override in the Git process.
-  const config = process.platform === 'win32' ? ['core.longpaths=true'] : [];
+  const config = longPathConfig();
 
   const options: Partial<SimpleGitOptions> = {
     binary: gitBinary(),
@@ -298,7 +315,7 @@ export function createGitWithBlockTimeout(basePath?: string, abort?: AbortSignal
   // with it, until the server dropped it. curl's own stall limit ends the
   // helper, a second after the kill so the kill still decides how the command fails.
   const config = [
-    ...(process.platform === 'win32' ? ['core.longpaths=true'] : []),
+    ...longPathConfig(),
     'http.lowSpeedLimit=1', `http.lowSpeedTime=${Math.ceil(block / 1000) + 1}`,
   ];
 
@@ -327,15 +344,35 @@ export function createGitWithBlockTimeout(basePath?: string, abort?: AbortSignal
     lastChildProcess = undefined;
 
     if (child?.stdout !== stdout) return;
-    const kill = child.kill.bind(child);
 
-    // simple-git ends git through this kill on both the timeout and the abort.
+    // What the stop signals git through: the handle's own kill again, from the moment git is signalled.
+    const handle = {
+      pid: child.pid,
+      kill: (signal?: NodeJS.Signals | number): boolean => {
+        Reflect.deleteProperty(child, 'kill');
+
+        return signalChild(child, signal) === 'sent';
+      },
+    };
+
+    let isStopping = false;
+
+    // simple-git ends git through this kill on both the timeout and the abort, the second while the first one's stop
+    // may still list the tree: that call joins the stop, or git would end first and the processes under it escape it.
     child.kill = (signal) => {
+      if (isStopping) return true;
+      isStopping = true;
+
       if (!abort?.aborted) stalled = gitCommandLine(args);
 
-      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) endProcessTree(child.pid);
+      if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return signalChild(handle, signal) === 'sent';
 
-      return kill(signal);
+      // git is signalled once its tree is listed: the processes under a git that ended move to init, out of its tree.
+      const end = (): void => { signalChild(handle, signal); };
+
+      void endProcessTree(handle).then(end, end);
+
+      return true;
     };
   });
 }
@@ -382,39 +419,28 @@ function watchChildProcesses(): void {
 }
 
 /**
- * End `pid` and every process under it. On Windows `taskkill /T /F`. Elsewhere
+ * End `child` and every process under it. On Windows `taskkill /T /F`. Elsewhere
  * SIGTERM to each, which git handles by removing its lock files and ssh by
  * exiting; the tree is listed before any is signalled, because a killed
- * parent's children move to init and can no longer be found from `pid`.
- * When `ps` cannot list the tree, only `pid` is signalled.
+ * parent's children move to init and can no longer be found from its pid.
+ * `child` is signalled through its handle, which reaches no later process given
+ * its pid, and each process under it only while it is still the one listed.
+ * When `ps` cannot list the tree, or read it again, only `child` is signalled.
  */
-export function endProcessTree(pid: number): void {
+export async function endProcessTree(child: Pick<ChildProcess, 'pid' | 'kill'>): Promise<void> {
+  // A spawn that failed has no pid, and no tree.
+  if (child.pid === undefined) return;
+
   if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    await new Promise((resolve) => { execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, resolve); });
 
     return;
   }
 
-  const listed = spawnSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' });
-  const children = new Map<number, number[]>();
+  const found = await descendantsOf(child.pid);
 
-  for (const line of (listed.stdout ?? '').split('\n')) {
-    const [child, parent] = line.trim().split(/\s+/).map(Number);
-
-    if (child > 0 && parent > 0) children.set(parent, [...(children.get(parent) ?? []), child]);
-  }
-
-  const tree = [pid];
-
-  for (let at = 0; at < tree.length; at++) tree.push(...(children.get(tree[at]) ?? []));
-
-  for (const member of tree) {
-    try {
-      process.kill(member, 'SIGTERM');
-    } catch {
-      // Already exited.
-    }
-  }
+  signalChild(child, 'SIGTERM');
+  await signalStillRunning(found, 'SIGTERM');
 }
 
 /**
@@ -1307,6 +1333,9 @@ async function checkoutExplicitBranch(
   await git.checkoutLocalBranch(branchName);
 }
 
+/** Shared files a pending edit is merged into on the destination branch; any other file is copied over it. */
+const MERGED_SHARED_FILES = ['teamai.yaml', 'env/env.yaml'] as const;
+
 /**
  * Prepare the destination branch `teamai push --branch` named, before callers
  * copy the resources to push into the working tree. Fetches origin, checks a
@@ -1340,21 +1369,27 @@ export async function prepareExplicitBranch(localPath: string, branchName: strin
       .trim().split(/\s+/).map((count) => Number.parseInt(count, 10))
     : [0, 0];
 
-  const hasConfigEdit = (localExists || originExists)
-    && (await git.raw(['status', '--porcelain', '--', 'teamai.yaml'])).trim() !== '';
+  // Shared files whose pending edit is merged into the destination, not copied over it.
+  const prefix = localExists || originExists ? (await git.raw(['rev-parse', '--show-prefix'])).trimEnd() : '';
+  const editedFiles: Array<{ name: string; configPath: string; base: Awaited<ReturnType<typeof readFileAtRev>> }> = [];
 
-  let source = hasConfigEdit ? await git.revparse(['--abbrev-ref', 'HEAD']) : null;
+  if (localExists || originExists) {
+    for (const name of MERGED_SHARED_FILES) {
+      if ((await git.raw(['status', '--porcelain', '--', name])).trim() === '') continue;
+      const configPath = `${prefix}${name}`;
+      editedFiles.push({ name, configPath, base: await readFileAtRev(localPath, 'HEAD', configPath) });
+    }
+  }
+
+  let source = editedFiles.length ? await git.revparse(['--abbrev-ref', 'HEAD']) : null;
 
   if (source === 'HEAD') source = await git.revparse(['HEAD']);
-
-  const configPath = hasConfigEdit ? `${(await git.raw(['rev-parse', '--show-prefix'])).trimEnd()}teamai.yaml` : null;
-  const base = configPath === null ? null : await readFileAtRev(localPath, 'HEAD', configPath);
 
   // Pending config or env edits may already be in the working tree; a checkout
   // to the destination must not lose them, and its files must not block it.
   const carried = await carryWorkingTree(git);
 
-  let mergedConfig: string | undefined;
+  const mergedFiles = new Map<string, string>();
 
   try {
     if (!localExists) {
@@ -1379,7 +1414,10 @@ export async function prepareExplicitBranch(localPath: string, branchName: strin
       }
     }
 
-    if (carried && configPath && base && source && carried.entries.some((entry) => entry.relative === configPath && entry.present)) {
+    for (const { name, configPath, base } of editedFiles) {
+      const entry = carried?.entries.find((candidate) => candidate.relative === configPath);
+
+      if (!carried || !source || !entry) continue;
       const backup = path.join(carried.root, 'files', configPath);
 
       try {
@@ -1387,28 +1425,38 @@ export async function prepareExplicitBranch(localPath: string, branchName: strin
         const baseText = 'text' in base ? base.text : null;
         const destinationText = 'text' in destination ? destination.text : null;
 
+        if (!entry.present) {
+          if (destinationText !== null && baseText !== destinationText) {
+            throw new Error('The destination changed the file you deleted.');
+          }
+
+          continue;
+        }
+
         if (baseText !== destinationText) {
-          const file = await fse.lstat(destinationText === null ? backup : path.join(localPath, 'teamai.yaml'));
+          const file = await fse.lstat(destinationText === null ? backup : path.join(localPath, ...name.split('/')));
 
-          if (!file.isFile() || !(await fse.lstat(backup)).isFile()) throw new Error('teamai.yaml is not a regular file.');
+          if (!file.isFile() || !(await fse.lstat(backup)).isFile()) throw new Error(`${name} is not a regular file.`);
 
-          const pending = await fse.readFile(backup, 'utf8');
+          const pending = await readRegularFile(backup, 'utf8');
           const merged = mergeTeamConfig(baseText, pending, destinationText);
-          const mergedFile = path.join(carried.root, 'merged-teamai.yaml');
+          const mergedFile = path.join(carried.root, `merged-${name.replaceAll('/', '-')}`);
           await fse.writeFile(mergedFile, merged, { encoding: 'utf8', mode: file.mode });
-          mergedConfig = mergedFile;
+          mergedFiles.set(configPath, mergedFile);
         }
       } catch (error) {
+        // Aborting: earlier merged files must not be restored onto the source branch.
+        mergedFiles.clear();
         await git.checkout([source]);
         throw new Error(
-          `Cannot apply teamai.yaml to ${branchName}: ${error instanceof Error ? error.message : String(error)} `
+          `Cannot apply ${name} to ${branchName}: ${error instanceof Error ? error.message : String(error)} `
           + `Your edit is still in the team repo. Check out the destination and reapply it there, or push with --branch <new name>.`,
           { cause: error },
         );
       }
     }
   } finally {
-    await restoreWorkingTree(git, carried, configPath, mergedConfig);
+    await restoreWorkingTree(git, carried, mergedFiles);
   }
 }
 
@@ -1450,12 +1498,12 @@ async function carryWorkingTree(git: SimpleGit): Promise<CarriedWorkingTree | nu
     if (file.from && file.from !== relative && !changes.has(file.from)) changes.set(file.from, false);
   }
 
+  let resetStarted = false;
+
   try {
     for (const [relative, present] of changes) {
       if (present) {
-        await fse.copy(path.join(top, relative), path.join(root, 'files', relative), {
-          overwrite: true, preserveTimestamps: true, dereference: false,
-        });
+        await copyRegularTree(path.join(top, relative), path.join(root, 'files', relative), { keepTimes: true });
       }
 
       entries.push({ relative, present });
@@ -1465,15 +1513,22 @@ async function carryWorkingTree(git: SimpleGit): Promise<CarriedWorkingTree | nu
     // only copy here, and debug.log then says where it went.
     if (entries.length > 0) log.debug(`Uncommitted team-repo changes set aside at ${root} while checking out a push destination.`);
 
+    resetStarted = true;
     await git.reset(['--hard', 'HEAD']);
     await git.clean('f', ['-d']);
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+
+    // Before the reset the originals are untouched, so the copies are only waste.
+    if (!resetStarted) {
+      await fse.remove(root);
+
+      throw new Error(`Could not set aside the team repo's uncommitted changes (${message}); nothing was reset, so they are where they were.`, { cause: e });
+    }
+
     // The reset may already have discarded the originals; their copies are the
     // only remaining source of the member's edits.
-    log.warn(
-      `Could not set aside the team repo's uncommitted changes (${e instanceof Error ? e.message : String(e)}). `
-      + `Their copies stay at ${root}.`,
-    );
+    log.warn(`Could not set aside the team repo's uncommitted changes (${message}). Their copies stay at ${root}.`);
     throw e;
   }
 
@@ -1484,8 +1539,7 @@ async function carryWorkingTree(git: SimpleGit): Promise<CarriedWorkingTree | nu
 async function restoreWorkingTree(
   git: SimpleGit,
   carried: CarriedWorkingTree | null,
-  configPath: string | null,
-  mergedConfig: string | undefined,
+  mergedFiles: ReadonlyMap<string, string>,
 ): Promise<void> {
   if (carried === null) return;
 
@@ -1498,11 +1552,8 @@ async function restoreWorkingTree(
       const target = path.join(top, relative);
 
       if (present) {
-        await fse.ensureDir(path.dirname(target));
-        const source = relative === configPath && mergedConfig ? mergedConfig : path.join(carried.root, 'files', relative);
-        await fse.copy(source, target, {
-          overwrite: true, preserveTimestamps: true, dereference: false,
-        });
+        const source = mergedFiles.get(relative) ?? path.join(carried.root, 'files', relative);
+        await copyRegularTree(source, target, { keepTimes: true });
       } else {
         await fse.remove(target);
       }

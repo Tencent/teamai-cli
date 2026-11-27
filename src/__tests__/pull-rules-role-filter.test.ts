@@ -19,7 +19,7 @@ describe('filterRulesByKnowledgeNamespaces', () => {
     ];
     const knowledgeNamespaces = ['common', 'hai_dev'];
 
-    const result = filterRulesByKnowledgeNamespaces(rules, knowledgeNamespaces);
+    const result = filterRulesByKnowledgeNamespaces(rules, knowledgeNamespaces, ['common', 'hai_dev', 'cvm_dev']);
 
     expect(result.map((r) => r.name)).toEqual([
       'common/coding-style',
@@ -35,7 +35,7 @@ describe('filterRulesByKnowledgeNamespaces', () => {
     ];
     const knowledgeNamespaces = ['common', 'hai_dev'];
 
-    const result = filterRulesByKnowledgeNamespaces(rules, knowledgeNamespaces);
+    const result = filterRulesByKnowledgeNamespaces(rules, knowledgeNamespaces, ['common', 'hai_dev', 'cvm_dev']);
 
     expect(result.map((r) => r.name)).toEqual(['common/coding-style']);
   });
@@ -48,7 +48,7 @@ describe('filterRulesByKnowledgeNamespaces', () => {
     ];
     const knowledgeNamespaces = ['common', 'hai_dev'];
 
-    const result = filterRulesByKnowledgeNamespaces(rules, knowledgeNamespaces);
+    const result = filterRulesByKnowledgeNamespaces(rules, knowledgeNamespaces, ['common', 'hai_dev', 'cvm_dev']);
 
     expect(result.map((r) => r.name)).toEqual([
       'teamai-push-guidelines',
@@ -64,7 +64,7 @@ describe('filterRulesByKnowledgeNamespaces', () => {
       makeRule('hai_dev/deploy-guide'),
     ];
 
-    const result = filterRulesByKnowledgeNamespaces(rules, null);
+    const result = filterRulesByKnowledgeNamespaces(rules, null, []);
 
     expect(result).toEqual(rules);
   });

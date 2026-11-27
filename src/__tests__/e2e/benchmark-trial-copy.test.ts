@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { LeaseWireSchema } from '../../workflow/lease-wire.js';
-import { benchmarkFixture, envelope, FIX_SUITE, startFixBenchmark, type BenchmarkFixture, type Envelope } from '../helpers/benchmark-fixture.js';
+import { benchmarkFixture, commandLeaseReport, envelope, FIX_SUITE, startFixBenchmark, type BenchmarkFixture, type Envelope } from '../helpers/benchmark-fixture.js';
 
 const CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'dist', 'index.js');
 const CAN = { workspace: ['read-only', 'new', 'continue', 'clone'], isolation: 'sandbox', env: true, setup: true, tools: ['claude'], unattended: true,
@@ -64,17 +64,16 @@ function byHand(fixture: BenchmarkFixture, run: string, identity = { kind: 'exte
     driver: identity, tool: 'claude', attempt: lease.attempt, revision: lease.revision, outcome: 'success', ...changed,
   });
   const send = async (body: Record<string, unknown>): Promise<Envelope> => envelope(await fixture.teamai(['workflow', 'report', run, '--json', JSON.stringify(body)]));
-  /** Runs a command lease where it was prepared, without the names it withholds, and reports what it printed. */
+  /** Runs a command lease where it was prepared, without the names it withholds, and reports it as `commandLeaseReport` says. */
   const command = async (lease: Lease): Promise<Envelope> => {
     if (lease.command === undefined) throw new Error(`step ${lease.step} runs no command`);
     const withheld = lease.envScope?.withhold ?? [];
     const env = { ...Object.fromEntries(Object.entries(fixture.env).filter(([key]) => !withheld.includes(key))), ...lease.env, TEAMAI_WORKFLOW_ATTEMPT: `${run}/${lease.attempt}` };
     const ran = await execute('/bin/sh', ['-c', lease.command], { cwd: lease.cwd, env }).then(({ stdout }) => ({ code: 0, stdout }), (error: unknown) => {
       const exited = ExitedSchema.parse(error);
-      return { code: exited.code ?? 1, stdout: exited.stdout ?? '' };
+      return { code: exited.code ?? null, stdout: exited.stdout ?? '' };
     });
-    const settled = ran.code !== 0 ? { outcome: 'failed' } : { outcome: 'success', ...(lease.output !== undefined ? { outputs: JSON.parse(ran.stdout) } : {}) };
-    return send({ driver: identity, attempt: lease.attempt, revision: lease.revision, ...settled });
+    return send({ driver: identity, attempt: lease.attempt, revision: lease.revision, ...commandLeaseReport(ran) });
   };
   const judged: string[] = [];
   /** Answers a lease confined to `dir` with a correct label, as a confined run of claude would, after reading the diff there. */

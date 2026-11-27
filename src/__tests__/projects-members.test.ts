@@ -33,6 +33,7 @@ vi.mock('@teamai/shared/log', () => ({
 
 import { projectsMembers } from '../projects-cmd.js';
 import { autoDetectInit } from '../config.js';
+import { log } from '@teamai/shared/log';
 
 describe('projectsMembers: inherited member root (#735)', () => {
   let tmpDir: string;
@@ -91,6 +92,20 @@ describe('projectsMembers: inherited member root (#735)', () => {
       process.exitCode = undefined;
     }
     expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it('warns about a member file it cannot parse instead of silently omitting it', async () => {
+    await fse.writeFile(path.join(cloneDir, 'members', 'broken.yaml'), '{{broken yaml [[[');
+    await fse.writeFile(
+      path.join(cloneDir, 'members', 'carol.yaml'),
+      YAML.stringify({ username: 'carol', registeredAt: '2025-01-01T00:00:00.000Z', projects: ['checkout'] }),
+    );
+
+    await projectsMembers('checkout', {});
+
+    expect(log.warn).toHaveBeenCalledWith('Invalid member file: broken.yaml');
+    const allOutput = consoleSpy.mock.calls.map((c) => c[0]).join('\n');
+    expect(allOutput).toContain('carol');
   });
 
   it('finds project members registered before the reports switch', async () => {

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadLocalConfig, saveLocalConfig, saveLocalConfigForScope } from '../config.js';
 import type { LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { trySymlink } from './helpers/symlink.js';
 
 // Issue #823 item 14: config.yaml was written in place. Opening it for writing
@@ -84,6 +84,16 @@ describe('config.yaml saves are atomic', () => {
 
       await expect(save({ ...config, username: 'renamed' })).rejects.toThrow(/ENOSPC/);
 
+      expect(readFileSync(configPath, 'utf-8')).toBe(original);
+      expect(readdirSync(configDir)).toEqual(['config.yaml']);
+    });
+
+    it('keeps the previous config and removes the temp file when replacement fails', async () => {
+      const config = await currentConfig();
+      const failure = Object.assign(new Error('config destination is busy'), { code: 'EBUSY' });
+      vi.spyOn(fse, 'rename').mockRejectedValueOnce(failure);
+
+      await expect(save({ ...config, username: 'renamed' })).rejects.toBe(failure);
       expect(readFileSync(configPath, 'utf-8')).toBe(original);
       expect(readdirSync(configDir)).toEqual(['config.yaml']);
     });

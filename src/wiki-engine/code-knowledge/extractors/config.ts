@@ -1,5 +1,6 @@
 import { type CodeCollectedFile } from "../code-collector.js";
-import { type CodeFact, type CodeFactKind, mapKindToEvidenceType } from "../code-extractors.js";
+import { type CodeFactKind, mapKindToEvidenceType } from "../code-fact-kind.js";
+import { type CodeFact } from "../code-extractors.js";
 
 function makeFact(kind: CodeFactKind, name: string, file: string, line: number, detail: string): CodeFact {
   return { kind, name, file, lineStart: line, detail, confidence: "EXTRACTED", evidenceType: mapKindToEvidenceType(kind) };

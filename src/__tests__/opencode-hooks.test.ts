@@ -24,7 +24,7 @@ import {
 import { reconcileHooksToAllTools } from '../hooks.js';
 import { loadOpencodePlugin, loadPluginDefinition, loadV2Plugin } from './helpers/opencode-plugin.js';
 import { bridgedTeamHookFile } from '../bridged-team-hooks.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import * as builtinHooks from '../builtin-hooks.js';
 
 describe('resolveOpencodePluginDir', () => {
@@ -607,6 +607,24 @@ describe('OpenCode V2 plugin: team MCP servers', () => {
     expect(texts.findIndex((text) => text.includes('TEAM-RULE'))).toBeGreaterThanOrEqual(0);
     expect(texts.findIndex((text) => text.includes('MEMBER-RULE'))).toBeGreaterThan(texts.findIndex((text) => text.includes('TEAM-RULE')));
     expect(host.mcpServers()).toEqual({});
+    await host.cleanup?.();
+  });
+
+  it.skipIf(process.platform === 'win32')('reads no rule behind a link in a rules directory', async () => {
+    const project = path.join(tmp, 'proj');
+    const outside = path.join(tmp, 'outside');
+    await fse.outputFile(path.join(outside, 'elsewhere.md'), 'OUTSIDE-RULE\n');
+    await fse.outputFile(path.join(project, '.opencode', 'rules', 'team.md'), 'TEAM-RULE\n');
+    await fse.symlink(outside, path.join(project, '.opencode', 'rules', 'linked'));
+    await fse.symlink(path.join(outside, 'elsewhere.md'), path.join(project, '.opencode', 'rules', 'direct-link.md'));
+    await fse.ensureDir(path.join(project, 'src'));
+
+    const host = await loadV2Plugin(buildPluginSource(path.join(tmp, 'user')), {}, path.join(project, 'src'));
+    const event = { sessionID: 'ses', system: [] as Array<{ type: string; text: string }> };
+    await host.callbacks['session.context'](event);
+    const texts = event.system.map((part) => part.text).join('\n');
+    expect(texts).toContain('TEAM-RULE');
+    expect(texts).not.toContain('OUTSIDE-RULE');
     await host.cleanup?.();
   });
 

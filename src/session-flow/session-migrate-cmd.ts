@@ -14,7 +14,6 @@ import {
   withSessionPublicationLock,
 } from './sync.js';
 import { isInteractive } from '../utils/prompt.js';
-import { setStderrOnly } from '../utils/logger.js';
 import { knownSecrets } from '../env-resolution.js';
 import {
   REPORTS_ARCHIVE_BUSY,
@@ -73,11 +72,9 @@ async function promptSelect(question: string, options: string[]): Promise<string
 function reserveStdoutForEnvelope(): () => void {
   const log = console.log;
   console.log = console.error;
-  const wasStderrOnly = setStderrOnly(true);
 
   return () => {
     console.log = log;
-    setStderrOnly(wasStderrOnly);
   };
 }
 

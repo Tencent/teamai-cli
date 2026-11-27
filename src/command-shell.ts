@@ -1,5 +1,5 @@
 import { findGitBashWindows } from './bundled-runtime.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 let gitBash: string | null | undefined;
 

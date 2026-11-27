@@ -1,8 +1,9 @@
 import fs from 'node:fs';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureDir, fileHash, pathExists, writeFile, remove, listFiles } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { warnOnce } from './utils/warn-once.js';
 import type { TeamaiConfig, LocalConfig, Scope } from './types.js';
 import {
@@ -63,7 +64,7 @@ export async function builtinAgentsReplacedByTeam(
   localConfig: LocalConfig,
 ): Promise<ReadonlyMap<string, ReadonlySet<string>>> {
   // Lazy: resources/agents.ts imports this module.
-  const [{ buildRolePullContext, resolveTeamAgents }, { getHandler }, { selectAgentsForDirectory }, { loadStateForScope }] = await Promise.all([
+  const [{ buildRolePullContext, resolveTeamAgents }, { getHandler }, { ownedAgentDirectories, selectAgentsForDirectory }, { loadStateForScope }] = await Promise.all([
     import('./resources/desired.js'), import('./resources/index.js'), import('./resources/agents.js'), import('./config.js'),
   ]);
 
@@ -71,12 +72,14 @@ export async function builtinAgentsReplacedByTeam(
   const desired = await resolveTeamAgents(teamConfig, localConfig, roleContext);
   const handler = getHandler('agents');
   const held = desired.kind === 'conflict';
+  const agentNs = roleContext?.activeNamespaces.agents ?? null;
 
   const items = held
     ? selectAgentsForDirectory(
       await handler.scanTeamForPull(teamConfig, localConfig),
-      roleContext?.activeNamespaces.agents ?? null,
+      agentNs,
       (await loadStateForScope(localConfig)).placedAgents,
+      await ownedAgentDirectories(localConfig, agentNs),
     )
     : desired.items;
 
@@ -160,7 +163,7 @@ export function shippedAgentRender(stem: string, tool: AgentToolId, scope: Scope
   let source: string;
 
   try {
-    source = fs.readFileSync(src, 'utf8');
+    source = readRegularFileSync(src, 'utf8');
   } catch {
     return undefined; // a dev checkout without the bundled agents
   }

@@ -9,7 +9,9 @@ export type { CodeCollectedFile, CollectCodeOptions } from '../code-knowledge/co
 
 export { extractCodeFacts } from '../code-knowledge/code-extractors.js';
 
-export type { CodeFact, CodeFactKind, CodeEvidenceType } from '../code-knowledge/code-extractors.js';
+export type { CodeFact } from '../code-knowledge/code-extractors.js';
+
+export type { CodeFactKind, CodeEvidenceType } from '../code-knowledge/code-fact-kind.js';
 
 export { buildCodeGraph } from '../code-knowledge/code-graph.js';
 

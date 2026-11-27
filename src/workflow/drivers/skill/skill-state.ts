@@ -5,15 +5,17 @@ import { DriverSchema } from '../../../driver-identity.js';
 import { RunModeSchema } from '../../../launch-context.js';
 import { toolOf } from '../../../tool-registry.js';
 import type { LocalConfig } from '../../../types.js';
-import { readFileSafe, writeJsonAtomic } from '../../../utils/fs.js';
+import { writeJsonAtomic } from '../../../utils/fs.js';
 import { redactJson } from '@teamai/shared/redact';
-import type { HostPlaceRequest, RunVersion } from '../../protocol.js';
+import type { SessionHostPlaceRequest, RunVersion } from '../../protocol.js';
 import { ConfinedRunReportSchema, FailureSchema, TokenUsageSchema } from '../../step-state.js';
 import { AttemptIdSchema, RunIdSchema, skillStatePath, type RunId, type RunLock } from '../../store.js';
-import { HOST_CHOICES } from './host-profiles.js';
+import { KeptLimitSchema } from '../../usage-limits.js';
+import { SESSION_HOST_CHOICES } from './session-host-profiles.js';
 import { INVOCATIONS } from './literals.js';
 import { HITL_MODES } from './preflight.js';
 import type { JudgedBy } from './transitions.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 
 /** A report as the runner sends it, kept before it is sent so a crash between the two loses nothing. */
@@ -22,6 +24,8 @@ const ReportBodySchema = z.object({
   revision: z.number().int(),
   /** `released`: the attempt was stopped, so the protocol abandons its place instead of finishing it. */
   outcome: z.enum(['success', 'failed', 'released']),
+  /** A released attempt whose child ran, so its place keeps the child's work. */
+  launched: z.literal(true).optional(),
   driver: DriverSchema,
   exitCode: z.number().int().optional(),
   outputs: z.unknown().optional(),
@@ -33,6 +37,8 @@ const ReportBodySchema = z.object({
    */
   tool: z.string().optional(),
   session: z.string().optional(),
+  /** The session the attempt went on in, when the session that reported is the one its lease continues. */
+  resumed: z.object({ tool: z.string(), id: z.string() }).optional(),
   model: z.string().optional(),
   tokens: TokenUsageSchema.optional(),
   durationMs: z.number().int().nonnegative().optional(),
@@ -44,7 +50,7 @@ export type ReportBody = z.infer<typeof ReportBodySchema>;
 
 /**
  * The model a child must run. `definition`: neither the step nor `defaults.model` named one, so the child runs the team
- * agent's own model, or the host's default.
+ * agent's own model, or the session host's default.
  */
 const ModelPickSchema = z.union([
   z.object({ by: z.literal('definition') }),
@@ -56,7 +62,7 @@ export type ModelPick = z.infer<typeof ModelPickSchema>;
 /**
  * A prompt step's work as a child gets it: the place it works in, its brief, and the agent and model it runs as.
  * `person`: an interactive step, which the agent works itself with the person instead of a child. `isolation`: the step
- * requires a sandbox, which no skill host enforces.
+ * requires a sandbox, which no session host enforces.
  */
 const DispatchSchema = z.object({
   place: z.enum(['workspace', 'checkout']),
@@ -70,45 +76,64 @@ const DispatchSchema = z.object({
   brief: z.string(),
   agent: z.string().optional(),
   model: ModelPickSchema,
+  /** The child of an earlier step whose conversation this step goes on in: the session host sends it the brief when it can reach it. */
+  continues: z.object({ title: z.string() }).optional(),
+  /** The orchestrating session works the step itself: on a session host that starts no child, or an interactive step. */
+  bySession: z.literal(true).optional(),
+  /** The session the lease continues, which a report from that same session records as resumed. */
+  resumes: z.object({ tool: z.string(), id: z.string() }).optional(),
 });
 
 export type Dispatch = z.infer<typeof DispatchSchema>;
+
+/**
+ * The name a child runs under, valid as an agent or teammate name (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`): `<step>-<attempt>`,
+ * each other character of the step path mapped to `-`, the step cut so the whole fits 64 characters.
+ */
+export function childTitle(step: string, attempt: string): string {
+  const suffix = `-${attempt}`;
+
+  return `${step.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 64 - suffix.length)}${suffix}`;
+}
 
 /** Why an attempt is stopped: the person cancelled it, or it passed the deadline its lease carries. */
 const STOP_REASONS = ['cancelled', 'timeout'] as const;
 
 export type StopReason = typeof STOP_REASONS[number];
 
-/** The place the host is asked to make for a step: `name` for it, on `branch`, from commit `start`. */
+/** The place the session host is asked to make for a step: `name` for it, on `branch`, from commit `start`. */
 const PlaceAskSchema = z.object({ name: z.string(), branch: z.string(), start: z.string() });
 
 export type PlaceAsk = z.infer<typeof PlaceAskSchema>;
 
-/** Where a runner prepares the place of its attempt when the host makes it. Absent: where TeamAI makes it. */
-const HostRequestSchema = z.discriminatedUnion('kind', [
+/** Where a runner prepares the place of its attempt when the session host makes it. Absent: where TeamAI makes it. */
+const SessionHostRequestSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('host') }),
   z.object({ kind: z.literal('adopt'), dir: z.string() }),
-]) satisfies z.ZodType<HostPlaceRequest>;
+]) satisfies z.ZodType<SessionHostPlaceRequest>;
 
 const RunVersionSchema: z.ZodType<RunVersion> = z.object({ status: z.enum(['running', 'succeeded', 'failed', 'cancelled']), revision: z.number().int(), receipts: z.number().int(), creating: z.boolean(), branch: z.string().optional() });
-const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.number().int(), spawnedAt: z.string(), expiresAt: z.string().optional() };
+
+/** `restarts`: how many times C10 started the attempt's runner again after it was gone; absent before the first. */
+const AttemptBase = { attempt: AttemptIdSchema, step: z.string(), revision: z.number().int(), spawnedAt: z.string(), expiresAt: z.string().optional(), restarts: z.number().int().positive().optional() };
 
 /**
  * An open attempt: its runner prepares its place or runs its command; it waits for the place another attempt holds;
- * it waits for the agent to adopt a place its host made; its dispatch is offered to the agent, or acked; it is being
+ * it waits for the agent to adopt a place its session host made; its dispatch is offered to the agent, or acked; it is being
  * stopped, by its runner or by the agent that started its child; or it has a report to send.
  */
 const AttemptStateSchema = z.discriminatedUnion('phase', [
   // runs: D28 leased the step to this machine's confined tool, so its runner runs it and offers it to no child.
-  z.object({ ...AttemptBase, phase: z.literal('preparing'), request: HostRequestSchema.optional(), runs: z.literal('here').optional() }),
-  z.object({ ...AttemptBase, phase: z.literal('queued'), behind: AttemptIdSchema, request: HostRequestSchema.optional() }),
+  z.object({ ...AttemptBase, phase: z.literal('preparing'), request: SessionHostRequestSchema.optional(), runs: z.literal('here').optional() }),
+  z.object({ ...AttemptBase, phase: z.literal('queued'), behind: AttemptIdSchema, request: SessionHostRequestSchema.optional() }),
   /** `refused`: why the place the agent adopted last was not prepared. */
   z.object({ ...AttemptBase, phase: z.literal('placing'), ask: PlaceAskSchema, refused: z.string().optional() }),
   z.object({ ...AttemptBase, phase: z.literal('running'), runs: z.literal('here').optional() }),
   /** `reissued`: an earlier session was shown this dispatch, and a child it started may still run. */
   z.object({ ...AttemptBase, phase: z.literal('offered'), dispatch: DispatchSchema, reissued: z.literal(true).optional() }),
   z.object({ ...AttemptBase, phase: z.literal('dispatched'), dispatch: DispatchSchema }),
-  z.object({ ...AttemptBase, phase: z.literal('stopping'), by: z.enum(['runner', 'agent']), why: z.enum(STOP_REASONS) }),
+  /** `child`: the title of the child the agent stops, when it is an earlier step's child this attempt went on in. */
+  z.object({ ...AttemptBase, phase: z.literal('stopping'), by: z.enum(['runner', 'agent']), why: z.enum(STOP_REASONS), child: z.string().optional() }),
   /** `stopped`: the report gives up an attempt stopped for this reason. */
   /**
    * `changed`: paths the child result reported, kept so a report sent again still names them. Absent on a report stored
@@ -178,25 +203,27 @@ const SkillStateSchema = z.object({
   /** `mode`: the run mode its start resolved, which every process of its attempts gets; a state from before it was kept is attended. */
   options: z.object({ parallel: z.number().int().min(1), hitl: z.enum(HITL_MODES), mode: RunModeSchema.default('attended') }),
   /**
-   * `none`: the run has no prompt step. `pending`: the agent has not answered the host question yet; a run without a
-   * prompt step (`hasPromptStep` false) asks it only for its judge, and a state from before it was kept had one.
+   * The session host of the run, the coding session that drives it with the app it runs in: the key `host` names the
+   * session host, and a stored skill state keeps that spelling. `none`: the run has no prompt step. `pending`: the agent has not answered the
+   * session host question yet; a run without a prompt step (`hasPromptStep` false) asks it only for its judge, and a state from
+   * before it was kept had one. `places: 'host'`: the session host makes the places.
    */
   host: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('none') }),
     z.object({ kind: z.literal('pending'), hasPromptStep: z.boolean().default(true) }),
-    z.object({ kind: z.literal('chosen'), id: z.enum(HOST_CHOICES), children: z.enum(['parallel', 'serial']), places: z.enum(['teamai', 'host']) }),
+    z.object({ kind: z.literal('chosen'), id: z.enum(SESSION_HOST_CHOICES), children: z.enum(['parallel', 'serial']), places: z.enum(['teamai', 'host']) }),
   ]),
   gate: GateSchema.optional(),
   /**
-   * The session that drives the run, when its host names one, and when it last called. `tool`: the tool that session
-   * works in, which `--tools default=<tool>` names or its host does, so a runner resolves its children's models for it;
+   * The session that drives the run, when its session host names one, and when it last called. `tool`: the tool that
+   * session works in, which `--tools default=<tool>` names or its session host does, so a runner resolves its children's models for it;
    * dropped when this teamai knows no such tool.
    */
   orchestrator: z.object({ session: z.string().optional(), tool: z.string().refine((tool) => toolOf(tool) !== undefined).optional().catch(undefined), lastCallAt: z.string() }),
   attempts: z.array(AttemptStateSchema),
   /**
    * Present while this driver judges the run's scored steps with the confined judge of `tool`, which the background
-   * runner starts, at `level`: `verified`, or `best-effort` on a host that starts no child agent. A state from before
+   * runner starts, at `level`: `verified`, or `best-effort` on a session host that starts no child agent. A state from before
    * the level was kept judged at `verified`.
    */
   judging: z.object({ tool: z.string(), level: ConfinedRunReportSchema.shape.isolation.default('verified') }).optional(),
@@ -219,6 +246,8 @@ const SkillStateSchema = z.object({
   seen: z.record(z.string(), z.number().int()),
   /** The attempts the engine settled or stopped: a report that comes for one again is P1. */
   settled: z.array(AttemptIdSchema),
+  /** The usage limits the run's tools hit, which hold their steps until each resets, as the local driver's book holds them. */
+  usage: z.array(KeptLimitSchema).default([]),
   /**
    * `prs`: the pull requests the run's deliveries opened, as the engine's `done` listed them, and `outputs` the run's
    * declared outputs, as its `done` gave them. `branch`: the branch the run left its changes on, from the run file read
@@ -230,17 +259,17 @@ const SkillStateSchema = z.object({
 
 export type SkillState = z.infer<typeof SkillStateSchema>;
 
-/** The host of a run before the agent answers the host question, as R10 or R19 starts it. */
-export type UnansweredHost = Exclude<SkillState['host'], { kind: 'chosen' }>;
+/** The session host of a run before the agent answers the session host question, as R10 or R19 starts it. */
+export type UnansweredSessionHost = Exclude<SkillState['host'], { kind: 'chosen' }>;
 
 /**
  * The state of a run this driver starts to drive for `session`, working in `tool`, from `at` on: nothing open and nothing
  * shown yet, and `judge`, who judges its scored steps on this machine, when anyone does.
  */
 export function newSkillState(input: {
-  run: RunId; driver: SkillState['driver']; invocation: SkillState['invocation']; options: SkillState['options']; host: UnansweredHost; session: string | undefined; tool: string | undefined; at: string; judge?: JudgedBy;
+  run: RunId; driver: SkillState['driver']; invocation: SkillState['invocation']; options: SkillState['options']; sessionHost: UnansweredSessionHost; session: string | undefined; tool: string | undefined; at: string; judge?: JudgedBy;
 }): SkillState {
-  const { run, driver, invocation, options, host, session, tool, at, judge } = input;
+  const { run, driver, invocation, options, sessionHost, session, tool, at, judge } = input;
 
   const orchestrator: SkillState['orchestrator'] = { lastCallAt: at };
 
@@ -249,20 +278,20 @@ export function newSkillState(input: {
   if (tool !== undefined) orchestrator.tool = tool;
 
   return {
-    version: 1, run, driver, invocation, options, host, orchestrator,
-    attempts: [], ...judgingState(judge), scoring: [], seq: 0, events: [], seen: {}, settled: [],
+    version: 1, run, driver, invocation, options, host: sessionHost, orchestrator,
+    attempts: [], ...judgingState(judge), scoring: [], seq: 0, events: [], seen: {}, settled: [], usage: [],
   };
 }
 
 /**
  * The skill state of `run`, which scores a pass of `scored`'s run, as the first tick that drives it makes it: that run's
- * identity, invocation, options, host, session and judging, with nothing open yet.
+ * identity, invocation, options, session host, session and judging, with nothing open yet.
  */
 export function scoringSkillState(scored: SkillState, run: RunId, at: string): SkillState {
   const { driver, invocation, options, host, orchestrator, judging, sessionJudge } = scored;
 
   const state: SkillState = {
-    version: 1, run, driver, invocation, options, host, orchestrator: { ...orchestrator, lastCallAt: at }, attempts: [], scoring: [], scores: scored.run, seq: 0, events: [], seen: {}, settled: [],
+    version: 1, run, driver, invocation, options, host, orchestrator: { ...orchestrator, lastCallAt: at }, attempts: [], scoring: [], scores: scored.run, seq: 0, events: [], seen: {}, settled: [], usage: [],
   };
 
   if (judging) state.judging = { tool: judging.tool, level: judging.level };
@@ -295,7 +324,7 @@ export function drivesRun(state: SkillState | undefined, session: string | undef
 }
 
 export async function readSkillState(config: LocalConfig, run: RunId): Promise<{ kind: 'found'; state: SkillState } | { kind: 'missing' } | { kind: 'unreadable'; reason: string }> {
-  const raw = await readFileSafe(skillStatePath(config, run));
+  const raw = await readRegularFile(skillStatePath(config, run), 'utf8').catch(() => null);
 
   if (raw === null) return { kind: 'missing' };
 

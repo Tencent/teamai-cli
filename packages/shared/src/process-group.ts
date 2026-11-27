@@ -745,7 +745,13 @@ export async function signalStillRunning(found: readonly FoundProcess[], name: N
   return now === undefined ? undefined : found.filter((listed) => isStillRunning(now, listed)).reduce((reached, { pid }) => signalPid(pid, name) === 'sent' || reached, false);
 }
 
-/** Stops a detached process group or an attached process tree, with a five-second grace period before SIGKILL. */
+/** How long a stop waits after SIGTERM before it sends SIGKILL (`stopProcess`). */
+export const STOP_GRACE_MS = 5_000;
+
+/** The flags `taskkill /pid <pid>` ends a process and every process under it with on Windows, which has no groups. */
+export const TREE_KILL_FLAGS = ['/T', '/F'] as const;
+
+/** Stops a detached process group or an attached process tree, with a `STOP_GRACE_MS` grace period before SIGKILL. */
 export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: boolean): (signal?: NodeJS.Signals) => Promise<T> {
   let stopping: Promise<T> | undefined;
   let descendants: FoundProcess[] = [];
@@ -779,7 +785,7 @@ export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: 
 
     if (process.platform === 'win32') {
       // Windows opens a console for a child of a process without one, such as a hook's teamai.
-      execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, () => {});
+      execFile('taskkill', ['/pid', String(pid), ...TREE_KILL_FLAGS], { windowsHide: true }, () => {});
 
       return exit;
     }
@@ -791,7 +797,7 @@ export function stopProcess<T>(child: ChildProcess, exit: Promise<T>, detached: 
     let escalated = false;
 
     const killed = new Promise<void>((resolve) => {
-      timer = setTimeout(() => { escalated = true; void signal(pid, 'SIGKILL').then(() => { resolve(); }); }, 5000);
+      timer = setTimeout(() => { escalated = true; void signal(pid, 'SIGKILL').then(() => { resolve(); }); }, STOP_GRACE_MS);
     });
 
     const result = await exit;

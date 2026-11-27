@@ -91,7 +91,7 @@ describe('workflow protocol in process', () => {
     const { config } = await fixture({ wide: WIDE });
     expect(await (await protocol(config)).describe('fan', { ceiling: 3, can: {} })).toEqual({ description: {
       name: 'wide', description: 'Fan out, review, ship.', alias: 'fan', invoke: 'ask', source: 'team', inputs: { targets: { type: 'array', items: { type: 'string' } } },
-      facts: { prompts: ['review'], interactive: [], modeled: [], width: 3, gates: [{ step: 'review', kind: 'approve', required: false, guards: { kind: 'prompt' } }], inWorkspace: ['ship'], scored: [], confined: [],
+      facts: { prompts: ['review'], interactive: [], modeled: [], width: 3, gates: [{ step: 'review', kind: 'approve', required: false, guards: { kind: 'prompt' } }], inWorkspace: ['ship'], scored: [], confined: [], produced: [],
         deliver: [], requiresEnv: { keys: [], missingHere: [], declaredHere: [] }, budgets: [], held: [],
         runs: [
           { step: 'a', executor: 'command', env: [] }, { step: 'b', executor: 'command', env: [] }, { step: 'c', executor: 'command', env: [] },

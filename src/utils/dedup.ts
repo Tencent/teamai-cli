@@ -4,7 +4,8 @@ import path from 'node:path';
 import matter from 'gray-matter';
 
 import { listLearningFiles, type LearningFile } from './learnings-roots.js';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /** 英文停用词集合 */
 const EN_STOPWORDS = new Set([
@@ -133,7 +134,7 @@ export async function findOverlappingLearnings(
         continue;
       }
 
-      const raw = await fs.readFile(filePath, 'utf8');
+      const raw = await readRegularFile(filePath, 'utf8');
       const { content: body } = matter(raw);
       const fileKeywords = extractKeywords(body);
       const ratio = overlapRatio(draftKeywords, fileKeywords);

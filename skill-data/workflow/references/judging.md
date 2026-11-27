@@ -5,7 +5,7 @@ A run whose steps list scorers is judged on this machine when describe found the
 | Event | What happened | Tell the person |
 |---|---|---|
 | `judging` | A `teamai-score` run, or a judge, started on the pass of `step` that `scorers` judge. | `step` is being scored. |
-| `judged` | `scorer` labelled the pass of `step` with `label`. | the step, the scorer and the label |
+| `judged` | `scorer` labelled the pass of `step` with `label`, or, with `label` empty, gave none for `code`: `not_planned` when `teamai-score` judged nothing of it, as when the scorer did not sample the pass, had judged it already, or was past `daily_limit`. | the step, the scorer and the label, or that the scorer did not judge the step and why |
 | `judging-off` | Judging of this run stopped for `failure`, and nothing more of it is judged here. | `failure.message` |
 
 A `done` action that carries `judging` has a `teamai-score` run still open. Keep running `then` until a turn has none: each `judged` event comes in one of those turns.
@@ -14,7 +14,7 @@ The person opts out of judging before the run starts, by picking a `without judg
 
 ## Judging by this session
 
-When this machine has no verified judge of your tool, you judge the run's scored steps yourself at `best-effort` isolation: the judge step of each pass's `teamai-score` run comes to you as a confined `dispatch` (below). A run started or resumed with `--no-judge` drives no `teamai-score` run, which stays for `teamai workflow resume <run>`. On a host you answered `h4` you start no subagent: TeamAI judges in the background on your tool at `best-effort` when that tool is on PATH here, else a `judging-off` event says another driver judges the run.
+When this machine has no verified judge of your tool, you judge the run's scored steps yourself at `best-effort` isolation: the judge step of each pass's `teamai-score` run comes to you as a confined `dispatch` (below). A run started or resumed with `--no-judge` drives no `teamai-score` run, which stays for `teamai workflow resume <run>`. On a session host you answered `h4` you start no subagent: TeamAI judges in the background on your tool at `best-effort` when that tool is on PATH here, else a `judging-off` event says another driver judges the run.
 
 Judge only what comes to you as a dispatch. A judge step a scorer requires `verified` for never does: teamai's confined judge or another driver judges it, and judging it here would downgrade verified judging to best-effort.
 

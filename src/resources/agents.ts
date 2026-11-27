@@ -7,16 +7,17 @@ import { FOLDER_MARKERS, holdsMarker } from '../folder-markers.js';
 import { AgentFolders } from './agent-folders.js';
 import { folderFilesNote } from './resolver.js';
 import { ResourceHandler, type PlacementRecords, type ScanForPushOptions } from './base.js';
-import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '../types.js';
+import { JsonValueSchema, type JsonValue, JsonObjectSchema } from '@teamai/shared/json';
 import type { CopyOrigin, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig, AgentModelRecords, RecordedAgentModel, Scope } from '../types.js';
 import { listFiles, listDirs, pathExists, copyFile, ensureDir, remove, fileContentEqual, fileContentEqualToBuffer, getFileMtime, writeFile, readFileSafe, fileHash } from '../utils/fs.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { installScopeName, isAgentExcluded, isSelfMode } from '../types.js';
 import { BUILTIN_AGENT_NAMES, builtinAgentsReplacedByTeam, shippedAgentRender } from '../builtin-agents.js';
 import { agentFormatOf, descriptorOf } from '../tool-registry.js';
 import { cleanupOf, deliveryPlaceOf, installOf, locate, ownOf, writable, type DeliveryPlace, type SidecarFile } from '../locate.js';
 import { resolveResourceNamespaces } from '../resource-namespaces.js';
-import { isSafeNamespaceSegment } from '../manifest-schema.js';
+import { declaredDirectories, isActiveNamespace } from '../namespace-resolver.js';
+import { caseFoldKey, isSafeNamespaceSegment } from '../manifest-schema.js';
 import { assertWithinRoot } from '../utils/path-safety.js';
 import { loadStateForScope } from '../config.js';
 import { placedResourcePath } from '../push-namespaces.js';
@@ -46,7 +47,7 @@ import {
   ParsedFieldsSchema,
 } from './agent-format.js';
 import type { ParsedValue, ParsedFields, AgentSpec, ToolName, ParseResult, MergeConflict, MergeResult, RenderResult } from './agent-format.js';
-import { parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 
 /**
  * Extended ResourceItem for agents — carries merged spec or skip reason
@@ -101,6 +102,25 @@ export interface AgentResourceItem extends ResourceItem {
  * Tools without an `agents` path in toolPaths are silently skipped.
  */
 /**
+ * The agent directories each active declaration owns, resolved from the whole
+ * `agents/` listing — the exact spelling first, one directory per declaration.
+ *
+ * Pull and push both need this, and both need it from the listing rather than
+ * per stem: a declaration owns its exact directory even when that directory
+ * holds a different agent, and the folded sibling is then nobody's.
+ */
+export async function ownedAgentDirectories(
+  localConfig: LocalConfig,
+  active: readonly string[] | null,
+): Promise<Set<string> | undefined> {
+  if (active === null) return undefined;
+
+  const dirs = await listTeamAgentDirs(path.join(localConfig.repo.localPath, 'agents'));
+
+  return declaredDirectories(active, dirs.flatMap(({ namespace }) => (namespace ? [namespace] : [])));
+}
+
+/**
  * The agents this directory should hold: the ones in an active namespace, plus
  * any this machine published into a namespace it does not activate — push lets
  * the author keep editing those through the placement record, so pull has to
@@ -110,6 +130,10 @@ export interface AgentResourceItem extends ResourceItem {
  * flattened, so two would collide on one filename, and the active one is the
  * agent deployed here. A root agent of the stem does not claim it: the
  * recorded agent replaces it, as an active namespace agent would (#707).
+ *
+ * `owned` is the set `ownedAgentDirectories` returns. Without it the namespace
+ * test falls back to folding alone, which lets a folded sibling claim a name the
+ * exact directory owns — so every caller that has a listing passes it.
  *
  * This is the candidate set, root agents included; `resolveAgentsForDirectory`
  * applies the namespace rule to it. Delivery and revocation both resolve
@@ -121,11 +145,16 @@ export function selectAgentsForDirectory(
   agents: ResourceItem[],
   activeNamespaces: string[] | null,
   placedAgents?: Record<string, string>,
+  owned?: ReadonlySet<string>,
 ): ResourceItem[] {
   if (activeNamespaces === null) return agents;
 
+  const inActive = (namespace: string): boolean => (
+    owned === undefined ? isActiveNamespace(activeNamespaces, namespace) : owned.has(namespace)
+  );
+
   const active = agents.filter(
-    (agent) => !agent.namespace || activeNamespaces.includes(agent.namespace),
+    (agent) => !agent.namespace || inActive(agent.namespace),
   );
 
   if (!placedAgents) return active;
@@ -154,11 +183,16 @@ export function resolveAgentsForDirectory(
   agents: ResourceItem[],
   activeNamespaces: string[],
   placedAgents?: Record<string, string>,
+  owned?: ReadonlySet<string>,
 ): NamespaceResolution<ResourceItem> {
-  const selected = selectAgentsForDirectory(agents, activeNamespaces, placedAgents);
+  const selected = selectAgentsForDirectory(agents, activeNamespaces, placedAgents, owned);
+
+  const inActive = (namespace: string): boolean => (
+    owned === undefined ? isActiveNamespace(activeNamespaces, namespace) : owned.has(namespace)
+  );
 
   const recorded = selected.flatMap((agent) => (
-    agent.namespace && !activeNamespaces.includes(agent.namespace) ? [agent.namespace] : []
+    agent.namespace && !inActive(agent.namespace) ? [agent.namespace] : []
   ));
 
   return resolveNamespacedItems(selected.map(itemCandidate), [...new Set([...activeNamespaces, ...recorded])]);
@@ -197,10 +231,13 @@ export class AgentsHandler extends ResourceHandler {
       placedResourcePath(placedAgents, 'agents', stem) ?? placedResourcePath(retiredPlacedAgents, 'agents', stem)
     )?.split('/')[1];
 
+    const owned = await ownedAgentDirectories(localConfig, activeNamespaces);
+
     const desired = new Set(selectAgentsForDirectory(
       await this.scanTeamForPull(teamConfig, localConfig),
       activeNamespaces,
       placedAgents,
+      owned,
     ).map((agent) => agent.name));
 
     for (const tombstone of tombstones) {
@@ -210,7 +247,24 @@ export class AgentsHandler extends ResourceHandler {
       // SAFETY: segments.length === 2 was checked just above, so both entries exist.
       const [namespace, stem] = segments as [string, string];
 
-      const deliveredHere = activeNamespaces === null || activeNamespaces.includes(namespace)
+      // A tombstone names a namespace whose directory may be gone: deleting its
+      // last file makes git drop the empty directory, so neither the declared
+      // spelling nor the owned set can answer. Four cases, in order:
+      //   - nothing is filtered here, or
+      //   - the namespace is the declaration's own spelling (its directory may be
+      //     gone), or
+      //   - a directory that exists and is owned, or
+      //   - it folds to a declaration no directory answers any more: a member
+      //     delivered `agents/frontend/` under a `Frontend` declaration lost the
+      //     whole directory, and its tombstone must still count.
+      // A folded sibling that DOES sit beside an owned directory is the excluded
+      // one: its tombstone must not hide a new agent in the owning directory.
+      const ownedFoldKeys = new Set([...(owned ?? [])].map((directory) => caseFoldKey(directory)));
+
+      const deliveredHere = activeNamespaces === null
+        || activeNamespaces.includes(namespace)
+        || (owned !== undefined && owned.has(namespace))
+        || (isActiveNamespace(activeNamespaces, namespace) && !ownedFoldKeys.has(caseFoldKey(namespace)))
         || placedIn(stem) === namespace;
 
       if (deliveredHere && !desired.has(stem)) removed.add(stem);
@@ -233,6 +287,7 @@ export class AgentsHandler extends ResourceHandler {
   ): Promise<AgentResourceItem[]> {
     const requestedNamespace = options?.namespace;
     const teamAgentsDir = path.join(localConfig.repo.localPath, 'agents');
+    const rawTombstones = await this.readTombstones(localConfig);
     const tombstones = await this.removedStems(teamConfig, localConfig);
     // Self mode: users drop canonical agent files straight into the repo's
     // own .teamai/agents/ (<name>.yaml, or legacy <name>.md) rather than authoring
@@ -291,7 +346,7 @@ export class AgentsHandler extends ResourceHandler {
             if (!isYaml && !isMd) continue;
             const stem = file.replace(/\.(yaml|md)$/, '');
 
-            if (tombstones.has(stem)) continue;
+            if (namespace ? rawTombstones.has(stem) || rawTombstones.has(`${namespace}/${stem}`) : tombstones.has(stem)) continue;
 
             if (!namespace && retiredCopy(stem)) {
               directStems.add(stem);
@@ -383,9 +438,19 @@ export class AgentsHandler extends ResourceHandler {
     const resolved = await resolveResourceNamespaces(localConfig);
     const activeNamespaces = resolved?.activeNamespaces.agents ?? null;
 
+    // One directory per declaration, resolved from the whole agents listing —
+    // not from the sources of the stem being pushed. A declaration owns its
+    // exact directory even when that directory holds a different agent, and the
+    // folded sibling is then nobody's: it must neither stand for this name nor
+    // claim it.
+    const ownedAgentDirs = activeNamespaces === null
+      ? null
+      : declaredDirectories(activeNamespaces, (await listTeamAgentDirs(teamAgentsDir))
+        .flatMap(({ namespace }) => (namespace ? [namespace] : [])));
+
     // Only a folder pull delivers here stands for this name: one in an inactive namespace leaves a root file's copy editable.
     const folderStems = new Set((await listTeamAgentFolders(teamAgentsDir))
-      .filter(({ namespace }) => activeNamespaces === null || namespace === undefined || activeNamespaces.includes(namespace))
+      .filter(({ namespace }) => ownedAgentDirs === null || namespace === undefined || ownedAgentDirs.has(namespace))
       .map(({ name }) => name));
 
     for (const tool of Object.keys(install.toolPaths)) {
@@ -466,9 +531,13 @@ export class AgentsHandler extends ResourceHandler {
       // that must not block it (#649 review). Letting the flag win outright
       // compared an active agent's rendering with the requested namespace's
       // file and overwrote it without an edit.
+      // Pull delivers one directory per declaration, so push reads the same
+      // directory — the one resolved from the whole listing above, not one
+      // derived from this stem's own sources. A declaration whose exact
+      // directory exists but holds another agent still owns it, and the local
+      // file must not resolve to the folded sibling pull never delivered.
       const active = sources.filter(
-        (file) => activeNamespaces === null || !file.namespace
-          || activeNamespaces.includes(file.namespace),
+        (file) => ownedAgentDirs === null || !file.namespace || ownedAgentDirs.has(file.namespace),
       );
 
       const activeInNamespace = active.filter((file) => file.namespace);
@@ -1101,17 +1170,28 @@ export class AgentsHandler extends ResourceHandler {
     // because agents deploy flattened (#649 review).
     if (isSelfMode(localConfig) && localConfig.projectRoot) {
       const activeAgentsDir = path.join(localConfig.projectRoot, '.teamai', 'agents');
+      const activeFiles = await findTeamAgentFiles(activeAgentsDir, name);
+
+      const activeFolders = (await listTeamAgentFolders(activeAgentsDir))
+        .filter((folder) => (stem === name ? folder.name === name : `${folder.namespace}/${folder.name}` === name));
+
+      const activeTargets = new Set([
+        ...activeFiles.map((file) => file.path),
+        ...activeFolders.map((folder) => folder.dir),
+      ]);
 
       for (const localName of localNames) {
         for (const ext of ['.yaml', '.md'] as const) {
           const filePath = path.join(activeAgentsDir, `${localName}${ext}`);
 
-          if (await pathExists(filePath)) {
-            // oxlint-disable-next-line teamai/remove-delivered -- the author's source in .teamai/agents, which pull never records
-            await remove(filePath);
-            removed.push(filePath);
-          }
+          if (await pathExists(filePath)) activeTargets.add(filePath);
         }
+      }
+
+      for (const target of activeTargets) {
+        // oxlint-disable-next-line teamai/remove-delivered -- the author's source in .teamai/agents, which pull never records
+        await remove(target);
+        removed.push(target);
       }
     }
 
@@ -1289,7 +1369,13 @@ export class AgentsHandler extends ResourceHandler {
     // revoking an agent this machine published would delete the copy pull had
     // just written, and a root agent a namespace replaces is not delivered.
     const { placedAgents } = await loadStateForScope(localConfig);
-    const resolution = resolveAgentsForDirectory(items, activeNamespaces, placedAgents);
+    // The OWNED set too, not only the declarations: delivery reads a stem's
+    // claiming folder from the directory each declaration owns, so the undo pass
+    // must ask the same question. Without it a folded sibling counts as claiming
+    // the stem here only, and the copy pull just wrote is revoked again in the
+    // same run — a write-then-delete churn on every pull.
+    const owned = await ownedAgentDirectories(localConfig, activeNamespaces);
+    const resolution = resolveAgentsForDirectory(items, activeNamespaces, placedAgents, owned);
 
     // `pull` stops the scope on a collision before it gets here; with nothing
     // settled about what is delivered, nothing is revoked either.

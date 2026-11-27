@@ -1,10 +1,11 @@
 import YAML from 'yaml';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import path from 'node:path';
 import { z } from 'zod';
 import { toolHome } from './tool-home.js';
 import { readFileSafe, writeFile, ensureDir, remove, pathExists, readJson, writeJson } from './utils/fs.js';
-import { TEAMAI_RULES_START, TEAMAI_RULES_END, isJsonObject, type JsonValue } from './types.js';
+import { TEAMAI_RULES_START, TEAMAI_RULES_END } from './types.js';
+import { isJsonObject, type JsonValue } from '@teamai/shared/json';
 
 /** Markers that delimit the teamai-managed block inside SOUL.md. */
 const RULES_BLOCK_START = TEAMAI_RULES_START;

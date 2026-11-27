@@ -568,17 +568,13 @@ describe('local-agent: MCP install/uninstall commands', () => {
     const manifestFile = path.join(tmpDir, '.teamai', 'managed-mcp.json');
     const before = await fse.readJson(manifestFile);
     const original = await fse.readFile(configFile, 'utf-8');
-    const read = fse.readFile;
-    const spy = vi.spyOn(fse, 'readFile').mockImplementation((file, ...args) => {
-      if (String(file).endsWith('/.codex/config.toml')) return Promise.reject(new Error('simulated config read failure'));
-      return read(file, ...args);
-    });
+    await fse.chmod(configFile, 0o000);
 
     const failed = await runResponse({ cmds: [{ ...command, id: 9071, type }] }, 'codex');
-    spy.mockRestore();
+    await fse.chmod(configFile, 0o644);
 
     expect(failed[0].status).toBe('failed');
-    expect(failed[0].error).toContain('simulated config read failure');
+    expect(failed[0].error).toContain('EACCES');
     expect(await fse.readJson(manifestFile)).toEqual(before);
     expect(await fse.readFile(configFile, 'utf-8')).toBe(original);
     expect((await runResponse({ cmds: [{ ...command, id: 9072, type }] }, 'codex'))[0].status).toBe('success');
@@ -740,7 +736,7 @@ describe('local-agent: MCP install/uninstall commands', () => {
   });
 
   it('names the Codex config it stops updating after a mapping change', async () => {
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     const { entryHash, renderCodexBlock } = await import('../resources/mcp-format.js');
     const old = path.join(tmpDir, 'old-codex', 'config.toml');
     const block = renderCodexBlock({ name: 'clawpro', transport: 'http', url: 'https://clawpro.example.com/mcp' });
@@ -1162,7 +1158,7 @@ describe('local-agent: MCP install/uninstall commands', () => {
       await fse.writeFile(excludeFile, '');
       await fse.remove(await workspaceFile('managed-mcp-files.json'));
       await fse.chmod(excludeFile, 0o444);
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       vi.mocked(log.warn).mockClear();
       try {
         await runResponse({ cmds: [] }, 'codebuddy', wsPath);
@@ -1728,13 +1724,14 @@ describe('MCP servers in each tool\'s own settings', () => {
     expect(serverNameProblem('hermes', 'local.tools')).toBeNull();
   });
 
-  it('keeps Hermes comments and unrelated values, and rewrites only its own server map', async () => {
+  it('keeps Hermes comments and unrelated values, even ones JSON cannot hold, and rewrites only its own server map', async () => {
     const file = path.join(nativeHome, HERMES_FILE);
     const original = [
       '# member settings',
       'providers:',
       '  mine:',
       '    api: https://llm.example',
+      '    budget: .inf',
       'mcp_servers:',
       '  mine:',
       '    command: mine-server   # member comment',
@@ -1753,7 +1750,7 @@ describe('MCP servers in each tool\'s own settings', () => {
     expect(written).toContain('# member settings');
     expect(written).toContain('# member comment');
     expect(YAML.parse(written)).toEqual({
-      providers: { mine: { api: 'https://llm.example' } },
+      providers: { mine: { api: 'https://llm.example', budget: Infinity } },
       mcp_servers: { mine: { command: 'mine-server' }, alpha: { command: 'node' } },
     });
 

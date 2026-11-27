@@ -9,10 +9,11 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import { z } from 'zod';
 
-import { type JsonValue, JsonObjectSchema } from './types.js';
-import { log } from './utils/logger.js';
+import { type JsonValue, JsonObjectSchema } from '@teamai/shared/json';
+import { log } from '@teamai/shared/log';
 import { writeFileAtomic } from './utils/fs.js';
 import { withFileLock } from './update.js';
 
@@ -38,6 +39,11 @@ export interface PendingReviewItem {
     payload: PendingReviewPayload;
     source: string;
     risk: Risk;
+}
+
+export interface ReviewDecision {
+    ok: boolean;
+    reason?: string;
 }
 
 // ─── 常量 ────────────────────────────────────────────────
@@ -177,7 +183,7 @@ export async function loadPendingReview(cwd: string): Promise<PendingReviewItem[
         throw new Error(`${filePath} exceeds max allowed size 10MB`);
     }
 
-    const text = await fs.readFile(filePath, 'utf8');
+    const text = await readRegularFile(filePath, 'utf8');
     const items: PendingReviewItem[] = [];
 
     for (const line of text.split('\n')) {
@@ -215,7 +221,7 @@ async function writePendingReview(cwd: string, items: PendingReviewItem[]): Prom
     await writeFileAtomic(filePath, content);
 }
 
-/** Every writer shares the lock; a removal holds it from the read through the atomic replacement. */
+/** Queue writers and document approvals share this lock. */
 async function withReviewLock<T>(cwd: string, change: () => Promise<T>): Promise<T> {
     const filePath = getPendingReviewPath(cwd);
     const result = await withFileLock(`${filePath}.lock`, { attempts: 100, delayMs: 50 }, change);
@@ -265,18 +271,25 @@ export async function appendPendingReview(
     return item;
 }
 
-/**
- * 按 id 移除条目。返回是否真的移除。
- */
-export async function removePendingReview(cwd: string, id: string): Promise<boolean> {
+export async function decidePendingReview(
+    cwd: string,
+    id: string,
+    decide: (item: PendingReviewItem) => Promise<ReviewDecision>,
+): Promise<ReviewDecision | undefined> {
     return withReviewLock(cwd, async () => {
         const items = await loadPendingReview(cwd);
-        const filtered = items.filter((item) => item.id !== id);
+        const item = items.find((entry) => entry.id === id);
 
-        if (filtered.length === items.length) return false;
+        if (!item) return undefined;
 
-        await writePendingReview(cwd, filtered);
+        const result = await decide(item);
 
-        return true;
+        if (result.ok) await writePendingReview(cwd, items.filter((entry) => entry.id !== id));
+
+        return result;
     });
+}
+
+export async function removePendingReview(cwd: string, id: string): Promise<boolean> {
+    return (await decidePendingReview(cwd, id, async () => ({ ok: true })))?.ok ?? false;
 }

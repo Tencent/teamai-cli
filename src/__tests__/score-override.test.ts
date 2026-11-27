@@ -9,7 +9,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import type { LocalConfig } from '../types.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { listCachedWorkflows } from '../workflow/cache.js';
 import { formatDiagnostic } from '../workflow/parse.js';
 
@@ -27,7 +27,12 @@ function teamWith(files: Record<string, string>, scorers: Record<string, string>
   const knowledge = path.join(root, 'knowledge');
   fs.mkdirSync(path.join(knowledge, 'workflows'), { recursive: true });
   fs.mkdirSync(path.join(knowledge, 'scorers'), { recursive: true });
-  for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(knowledge, 'workflows', `${name}.yaml`), body);
+  // A name with a slash is a file in a workflow folder.
+  for (const [name, body] of Object.entries(files)) {
+    const file = path.join(knowledge, 'workflows', name.includes('/') ? name : `${name}.yaml`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body);
+  }
   for (const [name, body] of Object.entries(scorers)) fs.writeFileSync(path.join(knowledge, 'scorers', `${name}.md`), body);
   return { repo: { localPath: knowledge, remote: 'local', kind: 'self' }, username: 'tester', scope: 'project', additionalRoles: [], projectRoot: root, dataHome: path.join(root, 'data') };
 }
@@ -68,7 +73,7 @@ describe('a team teamai-score.yaml', () => {
     ['runs a verb with other arguments', shippedWith('--wait 2h', '--wait 0s'), 'score_override_command'],
     ['gives a verb other env', shippedWith('env: { DIR: "{{ steps.evidence.outputs.dir }}" }\n          output: { decided: boolean }\n        - id: ci', 'env: { DIR: "{{ steps.evidence.outputs.dir }}", EXTRA: "1" }\n          output: { decided: boolean }\n        - id: ci'), 'score_override_command'],
     ['drops settle', SHIPPED.slice(0, SHIPPED.indexOf('        - id: settle')) + 'outputs: { labels: steps.score.results }\n', 'score_override_step_missing'],
-    ['drops publish', shippedWith('        - id: publish\n          needs: [write]\n          if: inputs.store\n          workspace: { team: { branch: teamai-reports } }\n          command: teamai score publish\n          deliver: publish\n', ''), 'score_override_step_missing'],
+    ['drops publish', shippedWith('        - id: publish\n          needs: [write]\n          if: inputs.store\n          workspace: { team: { branch: teamai-reports } }\n          requires: { host: true }\n          command: teamai score publish\n          deliver: publish\n', ''), 'score_override_step_missing'],
     ['publishes to another data branch', shippedWith('workspace: { team: { branch: teamai-reports } }', 'workspace: { team: { branch: teamai-learnings } }'), 'score_override_publish'],
     ['publishes the labels without deliver: publish', shippedWith('          command: teamai score publish\n          deliver: publish\n', '          command: teamai score publish\n'), 'score_override_publish'],
     ['lets the judge read the checkout', shippedWith('          workspace: { confined: "{{ steps.evidence.outputs.dir }}" }\n', ''), 'score_override_prompt'],
@@ -156,9 +161,11 @@ steps:
 `;
 
     expect((await pulled({ 'score-this': wrapper })).warned).toContain('[workflows] workflows/score-this.yaml: step "score" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.');
+    const finished = fs.readFileSync(path.join(import.meta.dirname, '..', '..', 'workflows', 'teamai-finished-sessions', 'WORKFLOW.yaml'), 'utf8');
+    expect((await pulled({ 'teamai-finished-sessions/WORKFLOW.yaml': finished, 'teamai-finished-sessions/params.yaml': 'idle: 2h\n' })).warned).toContain('[workflows] workflows/teamai-finished-sessions/WORKFLOW.yaml: step "rescore" runs teamai-score with no timeout, so a judge no driver here can take holds it open until the run ends. Give it a timeout, such as timeout: 30m, and continue_on_failure: true.');
   });
 
-  it('does not warn on a step that runs teamai-score with a timeout, or on one that runs another workflow', async () => {
+  it('does not warn on a step that runs teamai-score with a timeout, on one that runs another workflow, or on a step of teamai\'s that a team folder holding only params.yaml inherits', async () => {
     const wrapper = (step: string) => `schemaVersion: v1alpha1
 name: score-this
 description: Score a session.
@@ -169,6 +176,7 @@ ${step}`;
     const other = '  - id: share\n    workflow: teamai-share-session\n    with: { session: "{{ inputs.subject }}", source: claude-code, publish: false, scorers: [], demand: named }\n';
 
     for (const step of [timed, other]) expect((await pulled({ 'score-this': wrapper(step) })).warned.filter((line) => line.includes('no timeout'))).toEqual([]);
+    expect((await pulled({ 'teamai-finished-sessions/params.yaml': 'idle: 2h\n' })).warned.filter((line) => line.includes('no timeout'))).toEqual([]);
   });
 });
 

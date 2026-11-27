@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { getCurrentVersion, packageRoot } from './package-info.js';
@@ -87,6 +88,17 @@ function readDefault({ relativePath, content, folder }: ShippedFile): CachedWork
 const layer: TeamaiLayer<CachedWorkflow> = { root: packageRoot(), read: readDefault };
 
 /**
+ * Whether teamai ships a default named `name`, as a file or a folder, by its name alone: a team copy under that name
+ * keeps the pin to this machine that teamai derives from it (`isPinnedToHost`).
+ */
+function isShipped(name: string): boolean {
+  if (!name.startsWith(PREFIX)) return false;
+  const dir = path.join(layer.root, RESOURCE_LAYOUTS.workflows.dir);
+
+  return fs.existsSync(path.join(dir, `${name}.yaml`)) || fs.existsSync(path.join(dir, name, RESOURCE_LAYOUTS.workflows.marker));
+}
+
+/**
  * Where the definition a run executes came from: the team's files, or the default the teamai that started it ships, by
  * version, since another version may ship other bytes and no team commit holds them. A team folder that took files from
  * the default of its name records both: the team commit holds its own files, the teamai version the others.
@@ -156,4 +168,4 @@ function callerWarnings(file: string, definition: WorkflowDefinition): string[] 
   return [...CONTRACTS.values()].flatMap((contract) => contract.callerWarnings(file, definition));
 }
 
-export const DefaultWorkflows = { PREFIX, SHARE_LEARNINGS, layer, originOf, sourceOfRun, overrideProblems, callerWarnings, isGuarded } as const;
+export const DefaultWorkflows = { PREFIX, SHARE_LEARNINGS, layer, isShipped, originOf, sourceOfRun, overrideProblems, callerWarnings, isGuarded } as const;

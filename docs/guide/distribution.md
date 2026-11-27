@@ -152,7 +152,7 @@ scripts:
 - `preInit` runs during `teamai init`, after local config is saved and before hooks are installed. It can read the terminal. Init waits with no timeout. A non-interactive init (no terminal, `CI`, or `TEAMAI_NONINTERACTIVE`) skips it. Run it later with `teamai script run preInit`.
 - `postInit` runs after hooks are installed. Init waits, then syncs MCP, so a value the script collected takes effect. The same skip rule applies. `teamai script run postInit` runs it again and syncs MCP.
 - `prePull` runs at the start of a full pull, before that scope is synced. It cannot read the terminal. Pull waits up to 90 seconds, then leaves it running. An inline pull does not run it.
-- `postPull` runs after a full pull. A session start waits up to 90 seconds, then leaves it running. An interactive `teamai pull` does not wait. An inline pull does not run it. A failure is a line in `~/.teamai/debug.log`.
+- `postPull` runs after a full pull. A session start waits up to 90 seconds, then leaves it running. An interactive `teamai pull` streams the script's output to the terminal and waits up to the same 90 seconds. An inline pull does not run it. A failure is a line in `~/.teamai/debug.log`.
 - `postDeploy` runs once for each new linked worktree or submodule checkout, when its first delivery finishes. Git's hook runs it before that git command returns, or, when that hook could not reach the team repo, the background pull after it does. For a worktree an agent tool created without Git hooks, or one made before TeamAI was set up, the tool's first session or tool use there runs it in the background. That path does not run `teamai init`. Pull waits up to 15 seconds. Run the script again with `teamai script run postDeploy`. It should be safe to repeat, and it should leave an existing personal file alone.
 
 ## Roles and projects
@@ -278,6 +278,29 @@ sharing:
 ```
 
 Tags add matching skills but cannot bypass `roleRequiredNamespaces`. Use tags for opt-in extras within the allowed skill selection.
+
+### Scoping a directory to one project: `namespaceMerge`
+
+By default a member's role namespaces and the active project namespaces are **unioned**: both dimensions contribute additively, so a member who holds roles for services A and B receives both, in every directory. This is deliberate — there is no runtime priority between the two dimensions.
+
+A team that wants each service directory to load **only that service's** resources can opt into intersection:
+
+```yaml
+# teamai.yaml
+sharing:
+  namespaceMerge: intersect   # default: union
+```
+
+With `intersect`, the role namespaces are the reviewed **ceiling** of what a member may see, and the active projects **scope** what the current directory delivers. A member assigned services A and B who runs `teamai projects set svc-a` in the service-A directory receives only the namespaces both declare (service A plus any shared namespace such as `common`); the service-B directory receives service B. The member's overall access is unchanged — the mode only narrows what a given directory loads.
+
+An axis where either side is empty falls back to the other, so the mode only narrows members who have **both** a role and an active project:
+
+- A member with **no role** keeps whatever their projects select (unchanged from `union`).
+- A directory with **no active project** keeps whatever the roles select (unchanged from `union`).
+- A project namespace the role does **not** list is dropped (the role stays the ceiling).
+- `learnings` stays the role+project union, as it is under `union` (so pull activation and contribution routing agree).
+
+Omit the setting (or use `union`) to keep the existing additive behavior. All members must upgrade to a CLI that supports this setting before the team relies on it.
 
 ### One skill name in the root and in namespaces
 

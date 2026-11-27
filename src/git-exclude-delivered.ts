@@ -1,4 +1,5 @@
 import fse from 'fs-extra';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { loadStateForScope, saveStateForScope } from './config.js';
@@ -19,7 +20,7 @@ import {
 import { TOOL_IDS } from './tools.js';
 import { selfLocalSettingsOf } from './tool-registry.js';
 import { getDataHome, isUnmigratedDataHome, type LocalConfig } from './types.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 // ─── What pull delivered into a checkout, kept out of git (#915) ──
 //
@@ -301,7 +302,7 @@ function fileFacts() {
 
   return {
     exists: once((file) => fse.lstat(file).then(() => true, () => false)),
-    bytes: once((file) => fse.readFile(file).catch(() => null)),
+    bytes: once((file) => readRegularFile(file).catch(() => null)),
     ignoredByMembersRule: once(ignoredByMembersRule),
   };
 }

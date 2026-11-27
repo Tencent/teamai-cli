@@ -32,9 +32,10 @@
 import path from 'node:path';
 import { z } from 'zod';
 import { writeIfChanged, pathExists, readFileSafe, writeJsonAtomic, remove, symlinkTarget } from './utils/fs.js';
+import { assertSafeResourceName } from './utils/path-safety.js';
 import { isPlainJson, parseJsonAs } from './utils/json.js';
-import { log } from './utils/logger.js';
-import { getUserHome } from './utils/home.js';
+import { log } from '@teamai/shared/log';
+import { getUserHome } from '@teamai/shared/home';
 import { OPENCLAW_TEAM_HOOK_PLUGIN, openclawTeamHookPluginIn, resolveOpenclawConfigPath, resolveOpenclawStateDir } from './openclaw-home.js';
 import { resolveCliEntry } from './builtin-hooks.js';
 import { openclawWorkspaceDir } from './locate.js';
@@ -271,7 +272,7 @@ const teamHooks = (event, ctx, payload) => new Promise((resolve) => {
       }
     };
     const timer = setTimeout(() => {
-      try { child.kill(); } catch {}
+      try { if (child.pid !== undefined) child.kill(); } catch {}
       out = "";
       finish();
     }, TEAM_HOOKS_TIMEOUT_MS);
@@ -732,6 +733,7 @@ export async function removeOpenClawAgentHook(opts: {
   slug: string;
   tool?: string;
 }): Promise<void> {
+  assertSafeResourceName(opts.slug);
   const tool = opts.tool ?? 'openclaw';
   const hooksDir = resolveOpenClawHooksDir(tool);
   const dir = path.join(hooksDir, opts.slug);

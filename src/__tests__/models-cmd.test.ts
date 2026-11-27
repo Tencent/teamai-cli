@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { modelsAdd, modelsConfigure, modelsList, modelsRemove, modelsRestore, modelsSwitch } from '../models-cmd.js';
 import { getLocalValuesPath, loadLocalProfiles, loadModelInputs } from '../models/profile.js';
 import { askQuestion, askSecret, isInteractive } from '../utils/prompt.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 vi.mock('@teamai/shared/log', () => ({
   log: { info: vi.fn(), success: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -76,6 +76,13 @@ describe('models commands', () => {
       .rejects.toThrow(/Unknown protocol grpc/);
     await expect(modelsAdd('bad', { name: 'Bad', protocol: 'anthropic', baseUrl: 'https://x.example.test/v1', model: 'm', fromEnv: 'K' }))
       .rejects.toThrow(/Invalid model profile: base_url: must be the gateway root without \/v1/);
+  });
+
+  it('reports a config it cannot read instead of a team with no profiles', async () => {
+    await fse.outputFile(path.join(home, '.teamai', 'config.yaml'), 'repo: [unclosed\n');
+
+    await expect(modelsList()).rejects.toThrow(/could not be read/);
+    expect(log.info).not.toHaveBeenCalledWith('No model profiles found.');
   });
 
   it('lists every profile in full, or just the one named', async () => {

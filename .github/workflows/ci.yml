@@ -14,9 +14,10 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# OpenCode 2 for the session migrate and OpenCode hooks E2Es. `opencode-ai` on
-# npm is OpenCode 1; OpenCode 2 ships as `@opencode/cli`, one npm package per
-# platform. Bump both values together.
+# OpenCode 2 for the session migrate and OpenCode hooks E2Es, which take it from
+# TEAMAI_OPENCODE_V2_BIN: every E2E file meets a stand-in `opencode` on PATH.
+# `opencode-ai` on npm is OpenCode 1; OpenCode 2 ships as `@opencode/cli`, one
+# npm package per platform. Bump both values together.
 env:
   OPENCODE2_VERSION: 2.0.29
   OPENCODE2_LINUX_X64_SHA256: 14b5a6638a1a093ac9d484599c844b10c29b445d04844b682ccc668ce26530a2
@@ -48,8 +49,20 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      # The sandbox containment suite skips without bubblewrap; REQUIRE_NATIVE_SANDBOX makes it fail instead.
+      - name: Install bubblewrap and let it make user namespaces
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          # A WSL-style drive under /mnt, which a step must never see.
+          sudo mkdir -p /mnt/c/Windows/System32
+          bwrap --version
+
       - name: Unit tests
         run: npx vitest run
+        env:
+          REQUIRE_NATIVE_SANDBOX: '1'
 
   # The full suite. A git repo under os.tmpdir() resolves /var through
   # /private/var here and not on Linux (branch-worktree-retire, run
@@ -193,7 +206,6 @@ jobs:
           echo "$OPENCODE2_LINUX_X64_SHA256  $dir/cli.tgz" | sha256sum -c -
           tar -xzf "$dir/cli.tgz" -C "$dir"
           "$dir/package/bin/opencode" --version
-          echo "$dir/package/bin" >> "$GITHUB_PATH"
           echo "TEAMAI_OPENCODE_V2_BIN=$dir/package/bin/opencode" >> "$GITHUB_ENV"
 
       # Fork code is untrusted. Never expose repository secrets to this job.

@@ -17,10 +17,11 @@ vi.mock('@teamai/shared/log', () => ({
 }));
 
 import { SkillsHandler } from '../resources/skills.js';
-import { skillsGuardBase } from '../builtin-skills.js';
-import { allowsSkillDirectory, mayDeleteSkillCopy, scanTeamRepoNamespaces, ensureSkillFrontmatter, createSkillPushItem } from '../resources/skills.js';
+import { skillsGuardBase } from '../skill-owned-files.js';
+import { mayDeleteSkillCopy, scanTeamRepoNamespaces, ensureSkillFrontmatter, createSkillPushItem } from '../resources/skills.js';
+import { allowsSkillDirectory } from '../skill-directory.js';
 import { contentHash } from '../resources/delivered-copies.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
 import { useToolInstances } from '../tool-registry.js';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
@@ -887,6 +888,46 @@ scope: 'user',
     expect(pushed).toContain('Say hello to the member by name.');
     expect(await fse.pathExists(path.join(localConfig.repo.localPath, 'skills', 'ops', 'greet'))).toBe(false);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('Pushed only SKILL.md of greet: skills/ops/greet.md is a skill kept as one file, so notes.md stayed out.'));
+  });
+
+  it('proposes no copy that holds a link of the member\'s, and names it as pull does (#1880)', async () => {
+    const repoPath = localConfig.repo.localPath;
+    await fse.outputFile(path.join(repoPath, 'skills', 'my-skill', 'SKILL.md'), '---\nname: my-skill\ndescription: d\n---\n\nv2\n');
+    commitTeamRepo(repoPath, 'v2');
+
+    // The member keeps SKILL.md in their dotfiles and links it here, holding what pull last delivered.
+    const dotfile = path.join(tmpDir, 'dotfiles', 'my-skill.md');
+    await fse.outputFile(dotfile, '---\nname: my-skill\ndescription: d\n---\n\nv1\n');
+    const localSkillDir = path.join(homeDir, '.claude', 'skills', 'my-skill');
+    await fse.ensureDir(localSkillDir);
+    await fse.symlink(dotfile, path.join(localSkillDir, 'SKILL.md'));
+    vi.spyOn(await import('../pull.js'), 'deliveredHashes').mockResolvedValue({});
+    vi.mocked(log.warn).mockClear();
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+
+    expect(items).toEqual([]);
+    // Naming the link, as pull does, so the member knows what holds it back.
+    expect(vi.mocked(log.warn).mock.calls.flat().join('\n')).toContain(`Kept ${path.join(localSkillDir, 'SKILL.md')}: it is a link of yours`);
+  });
+
+  it('still proposes a new skill of the member\'s that holds a link, which push leaves out (#993)', async () => {
+    const repoPath = localConfig.repo.localPath;
+    await fse.outputFile(path.join(repoPath, 'skills', 'team-skill', 'SKILL.md'), '---\nname: team-skill\ndescription: d\n---\n\nv1\n');
+    commitTeamRepo(repoPath, 'v1');
+
+    // No team skill of this name: the member's own, with a link inside.
+    const localSkillDir = path.join(homeDir, '.claude', 'skills', 'mine');
+    await fse.ensureDir(localSkillDir);
+    await fse.writeFile(path.join(localSkillDir, 'SKILL.md'), '---\nname: mine\ndescription: m\n---\n\n# mine\n');
+    const outside = path.join(tmpDir, 'notes.md');
+    await fse.writeFile(outside, 'private');
+    await fse.symlink(outside, path.join(localSkillDir, 'notes.md'));
+    vi.spyOn(await import('../pull.js'), 'deliveredHashes').mockResolvedValue({});
+
+    const items = await handler.scanLocalForPush(teamConfig, localConfig);
+
+    expect(items.map((item) => item.name)).toContain('mine');
   });
 
   it('does not push a link inside the skill into the team repo, and names it (#993)', async () => {

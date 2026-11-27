@@ -1,5 +1,5 @@
 import type { Scope } from '../../types.js';
-import { execCommand, type CommandExecutor } from '../../utils/exec.js';
+import { execCommand, type CommandExecutor } from '@teamai/shared/exec';
 import type { PackageLock, PackageStatus } from '../types.js';
 
 export interface PackageInstallContext {

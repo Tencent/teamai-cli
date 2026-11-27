@@ -37,7 +37,7 @@ import { AgentSession, noAdapter } from '../session-flow/agent-session.js';
 import { getAdapter } from '../session-flow/adapters/index.js';
 import type { AgentAdapter } from '@teamai/tool-core/sessions/base';
 import type { Session } from '@teamai/tool-core/sessions/ir';
-import { installFakeOpencode, setFakeOpencodeExportError, setFakeOpencodeVersion } from '@teamai/tool-opencode/testing';
+import { installFakeOpencode, setFakeOpencodeExportError } from '@teamai/tool-opencode/testing';
 import { WRITABLE } from './helpers/writable-platforms.js';
 
 /** OpenCode keeps its sessions behind its CLI: a stand-in `opencode`, the only command on PATH. */
@@ -503,7 +503,7 @@ describe('AgentSession.copy into OpenCode', () => {
     const from = { platform: SOURCE_PLATFORM, sessionId: sourceId, cwd: workspace('source') };
     const to = { platform: 'opencode', cwd: workspace('target') };
     if (cli === 'no opencode CLI on PATH') vi.stubEnv('PATH', '');
-    else setFakeOpencodeVersion(path.join(mocks.home, '.local', 'share'), '1.18.23');
+    else vi.stubEnv('PATH', installFakeOpencode({ version: '1.18.23' }));
     const before = snapshot();
 
     const result = await AgentSession.copy({ from, to });

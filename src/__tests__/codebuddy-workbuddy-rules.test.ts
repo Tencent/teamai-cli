@@ -16,7 +16,7 @@ vi.mock('@teamai/shared/log', () => ({
 import crypto from 'node:crypto';
 import { RulesHandler } from '../resources/rules.js';
 import { openLedger } from '../resources/delivered-copies.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { TeamaiConfigSchema } from '../types.js';
 import type { LocalConfig, TeamaiConfig } from '../types.js';
 

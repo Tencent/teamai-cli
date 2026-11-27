@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, chmodSync, symlinkSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
 import os from 'node:os';
@@ -502,6 +502,78 @@ describe('mergeNamespaces', () => {
     const roleWithAgents: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: ['common', 'frontend'] };
     expect(mergeNamespaces(roleWithAgents, { knowledge: [], skills: [], learnings: [], agents: ['frontend', 'billing'] }).agents)
       .toEqual(['common', 'frontend', 'billing']);
+  });
+
+  describe('intersect mode', () => {
+    it('scopes a member with both a role and a project to the overlap', () => {
+      expect(mergeNamespaces(role, project, 'intersect')).toEqual({
+        knowledge: ['common'],
+        skills: [],
+        // learnings is the role+project union in both modes; the role declares
+        // none here, so the union is just the project's.
+        learnings: ['hai'],
+        agents: [],
+      });
+    });
+
+    it('keeps the role as the ceiling: project namespaces the role does not list are dropped', () => {
+      const narrowRole: ResourceNamespaces = { knowledge: ['common'], skills: ['common'], learnings: [], agents: [] };
+      const wideProject: ResourceNamespaces = { knowledge: ['common', 'hai'], skills: ['common', 'hai'], learnings: ['hai'], agents: [] };
+
+      expect(mergeNamespaces(narrowRole, wideProject, 'intersect')).toEqual({
+        knowledge: ['common'],
+        skills: ['common'],
+        learnings: ['hai'],
+        agents: [],
+      });
+    });
+
+    it('falls back to the project axis for a member with no role', () => {
+      const noRole: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
+
+      expect(mergeNamespaces(noRole, project, 'intersect')).toEqual({
+        knowledge: ['common', 'hai'],
+        skills: ['hai'],
+        learnings: ['hai'],
+        agents: [],
+      });
+    });
+
+    it('falls back to the role axis for a directory with no active project', () => {
+      expect(mergeNamespaces(role, { knowledge: [], skills: [], learnings: [], agents: [] }, 'intersect')).toEqual({
+        knowledge: ['common', 'dev'],
+        skills: ['common', 'dev'],
+        learnings: [],
+        agents: [],
+      });
+    });
+
+    it('intersects hand-declared axes the same way', () => {
+      const roleEnv: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [], env: ['svc-a', 'svc-b'] };
+      const projectEnv: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [], env: ['svc-b', 'svc-c'] };
+
+      // Overlap keeps only the shared namespace.
+      expect(mergeNamespaces(roleEnv, projectEnv, 'intersect').env).toEqual(['svc-b']);
+      // Disjoint namespaces intersect to empty, so the axis is omitted.
+      expect(mergeNamespaces(roleEnv, { knowledge: [], skills: [], learnings: [], agents: [], env: ['svc-c'] }, 'intersect').env).toBeUndefined();
+      // A role with no env falls back to the project's env.
+      const noRoleEnv: ResourceNamespaces = { knowledge: [], skills: [], learnings: [], agents: [] };
+      expect(mergeNamespaces(noRoleEnv, { knowledge: [], skills: [], learnings: [], agents: [], env: ['svc-c'] }, 'intersect').env).toEqual(['svc-c']);
+    });
+
+    it('keeps learnings a union even when role and project learnings are disjoint', () => {
+      // learnings must stay on the union path so pull activation and
+      // resolveActiveLearningsNamespaces (contribution routing) agree.
+      const roleLearnings: ResourceNamespaces = { knowledge: ['common'], skills: ['common'], learnings: ['review-notes'], agents: [] };
+      const projectLearnings: ResourceNamespaces = { knowledge: ['common', 'svc-a'], skills: ['common', 'svc-a'], learnings: ['svc-a-notes'], agents: [] };
+
+      const merged = mergeNamespaces(roleLearnings, projectLearnings, 'intersect');
+
+      expect(merged.learnings).toEqual(['review-notes', 'svc-a-notes']);
+      // The other axes still intersect.
+      expect(merged.knowledge).toEqual(['common']);
+      expect(merged.skills).toEqual(['common']);
+    });
   });
 });
 

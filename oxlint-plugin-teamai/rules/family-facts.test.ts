@@ -107,6 +107,29 @@ describe('teamai/family-facts', () => {
       }
     });
 
+    it('follows the command table the CLI bundle\'s source loads with import(), and leaves out the guardian\'s mode', () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'family-facts-entry-'));
+      const files = {
+        ...workspace,
+        'tsup.config.ts': `export default defineConfig({\n  entry: {\n    index: 'src/bin.ts',\n    cli: 'src/cli.ts',\n    'runtime-acme': 'packages/runtime-acme/src/main.ts',\n  },\n});\n`,
+        'src/cli.ts': `if (process.env.MODE === undefined) await import('./index.js');\nelse await import('./workflow/fleet/guardian-stop.js');\n`,
+        'src/workflow/fleet/guardian-stop.ts': `import { LAUNCH } from '../../launch-registry.js';\nexport const stop = LAUNCH;\n`,
+      };
+
+      try {
+        for (const [file, text] of Object.entries(files)) {
+          fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+          fs.writeFileSync(path.join(root, file), text);
+        }
+
+        const entries = startupEntries(root);
+        expect([...entries]).toEqual(expect.arrayContaining(['src/bin.ts', 'src/cli.ts', 'src/index.ts', 'src/hook-dispatch-cli.ts', 'src/pull.ts']));
+        expect(entries.has('src/workflow/fleet/guardian-stop.ts')).toBe(false);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     it.each([
       ['declares no pull', `program\n  .command('hook-dispatch <event>')\n  .action(async () => { await import('./hook-dispatch-cli.js'); });\n`, 'declares no pull command'],
       ['loads the pull\'s module in no import()', `import { pull } from './pull.js';\nprogram\n  .command('hook-dispatch <event>')\n  .action(async () => { await import('./hook-dispatch-cli.js'); });\nprogram\n  .command('pull')\n  .action(pull);\n`, 'its pull command loads no module with import()'],

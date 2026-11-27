@@ -152,7 +152,7 @@ scripts:
 - `preInit` 在 `teamai init` 里跑，本地配置已保存、hook 还没装。它可以读终端。init 会一直等，没有超时。非交互 init（没有终端、设置了 `CI` 或 `TEAMAI_NONINTERACTIVE`）会跳过。之后在终端里执行 `teamai script run preInit`。
 - `postInit` 在 hook 装好之后跑。init 等它结束，再同步一次 MCP，这样脚本里填的值会生效。跳过规则和 `preInit` 一样。`teamai script run postInit` 会再跑一次并同步 MCP。
 - `prePull` 在一次完整 pull 的开头、该 scope 同步之前跑。它不能读终端。pull 最多等 90 秒，超时后让它继续在后台跑。inline pull 不跑它。
-- `postPull` 在完整 pull 结束之后跑。会话启动最多等 90 秒，超时后留在后台。交互式 `teamai pull` 不等。inline pull 不跑。失败记在 `~/.teamai/debug.log`。
+- `postPull` 在完整 pull 结束之后跑。会话启动最多等 90 秒，超时后留在后台。交互式 `teamai pull` 把输出直接打到终端，等待上限同样是 90 秒。inline pull 不跑。失败记在 `~/.teamai/debug.log`。
 - `postDeploy` 对每个新建的 linked worktree 或 submodule checkout 只跑一次，在它第一次交付做完后跑。Git hook 在那条 git 命令返回前跑它；hook 连不上团队仓库时，由它之后的后台 pull 跑。agent 工具不经 Git hooks 创建的 worktree，或在设置 TeamAI 之前就有的 worktree，由工具在那里的第一次会话或工具调用在后台跑。这条路径不会跑 `teamai init`。pull 最多等 15 秒。用 `teamai script run postDeploy` 再跑。脚本应当可以重复执行，并且保留已经存在的个人文件。
 
 ## 角色和项目
@@ -278,6 +278,29 @@ sharing:
 ```
 
 标签会额外拉取匹配技能，但不能绕过 `roleRequiredNamespaces`。标签用于允许范围内的自愿加法。
+
+### 让目录只加载单个项目：`namespaceMerge`
+
+默认情况下，成员的角色命名空间与激活的项目命名空间取**并集**：两个维度都做加法，所以同时持有服务 A、B 角色的成员在任何目录都会收到两者。这是刻意为之——两个维度之间没有运行时优先级。
+
+如果团队希望每个服务目录**只加载该服务**的资源，可以改用交集：
+
+```yaml
+# teamai.yaml
+sharing:
+  namespaceMerge: intersect   # 默认 union
+```
+
+`intersect` 下，角色命名空间是成员可见范围的**评审上限**，激活的项目则**限定当前目录**实际投递的内容。被指派了服务 A、B 的成员，在服务 A 目录里执行 `teamai projects set svc-a` 后，只收到两者都声明的命名空间（服务 A，以及 `common` 这类共享命名空间）；服务 B 目录则收到服务 B。成员的整体访问权限不变——此模式只收窄某个目录加载的内容。
+
+某一侧为空的轴会退化到另一侧，因此此模式只收窄**同时**有角色和激活项目的成员：
+
+- **没有角色**的成员保留其项目所选的内容（与 `union` 一致）。
+- **没有激活项目**的目录保留角色所选的内容（与 `union` 一致）。
+- 角色**未列出**的项目命名空间会被丢弃（角色仍是上限）。
+- `learnings` 保持角色+项目的并集，与 `union` 下一致（使 pull 激活与贡献路由一致）。
+
+省略配置（或用 `union`）保持原有加法行为。团队依赖此配置前，所有成员都必须升级到支持它的 CLI。
 
 ### 根目录和命名空间里有同名技能
 

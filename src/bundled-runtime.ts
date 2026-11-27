@@ -4,12 +4,13 @@
 // provides the Git Bash needed by its CLI and by the explicit Windows launcher
 // used for its IDE hooks. All layout knowledge for these runtimes lives here so
 // hook injection can stay tool-agnostic.
+// Not a workflow step runtime (src/workflow/runtimes/), which is where a step runs.
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { getUserHome } from './utils/home.js';
-import { isOnPath, pathDirs } from './utils/lookpath.js';
-import { log } from './utils/logger.js';
+import { getUserHome } from '@teamai/shared/home';
+import { isOnPath, pathDirs } from '@teamai/shared/lookpath';
+import { log } from '@teamai/shared/log';
 import { type ToolId } from './tools.js';
 import { descriptorOf, toolOf, type DescriptorOf } from './tool-registry.js';
 
@@ -157,7 +158,9 @@ export function queryGitInstallPath(): string | null {
     const out = execFileSync(
       'reg.exe',
       ['query', 'HKLM\\SOFTWARE\\GitForWindows', '/v', 'InstallPath'],
-      { timeout: 5000, windowsHide: true, encoding: 'utf8' },
+      // A missing key is legitimate — the git may ship with an agent — and
+      // execFileSync would otherwise inherit reg.exe's complaint.
+      { timeout: 5000, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
 
     const match = out.match(/InstallPath\s+REG_SZ\s+(.+)/);

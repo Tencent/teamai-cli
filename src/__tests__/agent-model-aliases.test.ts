@@ -32,7 +32,7 @@ vi.mock('@teamai/shared/log', () => ({
 import { AgentsHandler, reportHeldAgents, type AgentResourceItem } from '../resources/agents.js';
 import type { AgentSpec, ToolName } from '../resources/agent-format.js';
 import { serializeAgentYaml } from '../resources/agent-format.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resetWarnOnce } from '../utils/warn-once.js';
 import { openLedger } from '../resources/delivered-copies.js';
 import { loadStateForScope, saveStateForScope } from '../config.js';

@@ -13,7 +13,7 @@ const failCheckIgnore = vi.hoisted(() => ({ on: false }));
 const failLsFiles = vi.hoisted(() => ({ on: false }));
 const failVerboseCheckIgnore = vi.hoisted(() => ({ on: false }));
 vi.mock('@teamai/shared/exec', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../utils/exec.js')>();
+  const actual = await importOriginal<typeof import('@teamai/shared/exec')>();
   return {
     ...actual,
     execCommand: (cmd: string, args: string[], opts?: Parameters<typeof actual.execCommand>[2]) =>
@@ -46,7 +46,7 @@ vi.mock('../utils/fs.js', async (importOriginal) => {
 
 import { MCP_EXCLUDE_END, MCP_EXCLUDE_START, carriesLocalAgentCredential, ensureExcludedFromGit, excludeFromGit, removeMcpGitExclude, updateFileLocked } from '../mcp-git-exclude.js';
 import { acquireLock, releaseLock } from '../update.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 describe('teamai block in .git/info/exclude (#882)', () => {
   let repo: string;

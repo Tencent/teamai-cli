@@ -697,6 +697,33 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     await fse.remove(tmpDir);
   });
 
+  it('leaves a linked SKILL.md alone, as pull does, and syncs no part of that skill (#1880)', async () => {
+    const teamSkillDir = path.join(repoPath, 'skills', 'my-skill');
+    await fse.ensureDir(teamSkillDir);
+    await fse.writeFile(path.join(teamSkillDir, 'SKILL.md'), 'v2 skill');
+    await fse.writeFile(path.join(teamSkillDir, 'notes.md'), 'team notes v2');
+
+    // The member keeps SKILL.md in their dotfiles and links it here, holding what pull last delivered.
+    const dotfiles = path.join(homeDir, 'dotfiles', 'my-skill.md');
+    await fse.outputFile(dotfiles, 'v1 skill');
+    const localSkillDir = path.join(homeDir, '.claude/skills', 'my-skill');
+    await fse.ensureDir(localSkillDir);
+    await fse.symlink(dotfiles, path.join(localSkillDir, 'SKILL.md'));
+    await fse.writeFile(path.join(localSkillDir, 'notes.md'), 'team notes v1');
+
+    // Every file of the copy is at the last pull's revision, so nothing here is the member's edit.
+    mockGetFileContentAtRev.mockImplementation(async (_repo, _rev, file) =>
+      Buffer.from(file.endsWith('notes.md') ? 'team notes v1' : 'v1 skill'));
+
+    await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
+
+    // The link is still a link, and what it names is untouched: nothing wrote through it or replaced it.
+    expect(await fse.lstat(path.join(localSkillDir, 'SKILL.md')).then((stat) => stat.isSymbolicLink())).toBe(true);
+    expect(await fse.readFile(dotfiles, 'utf-8')).toBe('v1 skill');
+    // The copy is left whole, as pull keeps a skill holding a link of the member's.
+    expect(await fse.readFile(path.join(localSkillDir, 'notes.md'), 'utf-8')).toBe('team notes v1');
+  });
+
   it('should sync skill dir when team repo updated but user did not edit', async () => {
     // Team repo: flat skill with SKILL.md v2
     const teamSkillDir = path.join(repoPath, 'skills', 'my-skill');
@@ -775,7 +802,7 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     expect(content).toBe(withSkillFrontmatter('v2 namespaced', 'my-skill'));
   });
 
-  it('syncs an unedited copy of a skill kept as one file, as pull delivered it, and keeps an edited one', async () => {
+  it('syncs an unedited copy of a skill kept as one file, as pull delivered it, and keeps a linked one as pull does', async () => {
     const v1 = (skill: string): string => `---\ndescription: ${skill}\n---\n# ${skill}\n\nv1\n`;
     await fse.outputFile(path.join(repoPath, 'skills', 'greet.md'), '---\ndescription: greet\n---\n# greet\n\nv2\n');
     await fse.outputFile(path.join(repoPath, 'skills', 'ns', 'wave.md'), '---\ndescription: wave\n---\n# wave\n\nv2\n');
@@ -783,13 +810,24 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     const wave = path.join(homeDir, '.claude/skills', 'wave', 'SKILL.md');
     await fse.outputFile(greet, withSkillFrontmatter(v1('greet'), 'greet'));
     await fse.outputFile(wave, `${withSkillFrontmatter(v1('wave'), 'wave')}mine\n`);
-    mockGetFileContentAtRev.mockImplementation(async (_repo, _rev, file) => (
-      file === './skills/greet.md' ? Buffer.from(v1('greet')) : file === './skills/ns/wave.md' ? Buffer.from(v1('wave')) : null
-    ));
+    await fse.outputFile(path.join(repoPath, 'skills', 'nod.md'), '---\ndescription: nod\n---\n# nod\n\nv2\n');
+    const nod = path.join(homeDir, '.claude/skills', 'nod', 'SKILL.md');
+    const dotfile = path.join(tmpDir, 'dotfiles', 'nod.md');
+    await fse.outputFile(dotfile, withSkillFrontmatter(v1('nod'), 'nod'));
+    await fse.ensureDir(path.dirname(nod));
+    await fse.symlink(dotfile, nod);
+    mockGetFileContentAtRev.mockImplementation(async (_repo, _rev, file) => {
+      const relative = file.split(path.sep).join('/');
+
+      return relative === './skills/greet.md' ? Buffer.from(v1('greet')) : relative === './skills/ns/wave.md' ? Buffer.from(v1('wave')) : relative === './skills/nod.md' ? Buffer.from(v1('nod')) : null;
+    });
 
     await syncTeamUpdatesToLocal(teamConfig, localConfig, 'abc1234');
 
     expect(await fse.readFile(greet, 'utf-8')).toBe(withSkillFrontmatter('---\ndescription: greet\n---\n# greet\n\nv2\n', 'greet'));
+    // The link stays a link: pull keeps it, and replacing it here would make the scan offer the member's old file.
+    expect(await fse.readFile(nod, 'utf-8')).toBe(withSkillFrontmatter(v1('nod'), 'nod'));
+    expect(await fse.readFile(dotfile, 'utf-8')).toBe(withSkillFrontmatter(v1('nod'), 'nod'));
     expect(await fse.readFile(wave, 'utf-8')).toBe(`${withSkillFrontmatter(v1('wave'), 'wave')}mine\n`);
   });
 
@@ -881,6 +919,7 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     expect(await fse.readdir(skillsDir)).toEqual(['my-skill']);
   });
 
+  // Windows retries the refused rename for 60 s before this rejection can be asserted.
   it.skipIf(process.getuid?.() === 0)('leaves a read-only skill as it was, with nothing beside it (#823)', async () => {
     const teamSkillDir = path.join(repoPath, 'skills', 'my-skill');
     await fse.outputFile(path.join(teamSkillDir, 'SKILL.md'), 'v2 skill');
@@ -898,7 +937,7 @@ describe('syncTeamUpdatesToLocal — skills', () => {
     } finally {
       await fse.chmod(localSkillDir, 0o755);
     }
-  });
+  }, process.platform === 'win32' ? 75_000 : 15_000);
 
   it('should skip skills that only exist locally (not in team repo)', async () => {
     const localSkillDir = path.join(homeDir, '.claude/skills', 'local-only');

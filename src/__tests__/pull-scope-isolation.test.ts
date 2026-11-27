@@ -114,7 +114,7 @@ import {
 } from '../config.js';
 import { getHeadRev, gitCommonDir } from '../utils/git.js';
 import { pullSources } from '../source.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { reconcileTeamHooksForConfig } from '../hooks.js';
 import { reconcileMcpForConfig } from '../mcp-reconcile.js';
 import { reportUsage, type UsageReportOutcome } from '../team-push.js';

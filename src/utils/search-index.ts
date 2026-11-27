@@ -1,12 +1,13 @@
 import path from 'node:path';
-import { readFile, readdir, rm, stat } from 'node:fs/promises';
+import { readdir, rm, stat } from 'node:fs/promises';
+import { readRegularFile } from '@teamai/shared/regular-file';
 import { createHash } from 'node:crypto';
 import type { Dirent } from 'node:fs';
 import matter from 'gray-matter';
 import { z } from 'zod';
-import { errnoCode, expandHome, readFileSafe, readJson, writeJsonAtomic, listFiles, pathExists, isDraft, isIgnored } from './fs.js';
+import { errnoCode, readFileSafe, readJson, writeJsonAtomic, listFiles, pathExists, isDraft, isIgnored } from './fs.js';
 import { tokenize, wordSegments, MAX_TOKENIZE_CHARS } from './tokenizer.js';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 import { teamRuleBody, teamRuleData } from '../resources/team-rule.js';
 import {
   SEARCH_INDEX_VERSION,
@@ -22,16 +23,19 @@ import {
   UserVotesSchema,
   UserVotesV2Schema,
 } from '../types.js';
-import { getUserHome } from './home.js';
-import { walkLearningsTree } from './learnings-roots.js';
+import { getUserHome, expandHome } from '@teamai/shared/home';
+import { createGit, headStateOf, HEAD_STATUS } from './git.js';
+import { learningsRoots, walkLearningsTree } from './learnings-roots.js';
+import { isWithin } from './agent-path.js';
 import { parseRelatedBlock, relationsFromLinks } from '../resource-relations.js';
 import type { StoredRelation } from '../resource-relations.js';
 import { localLinkTargets } from './markdown-links.js';
 import type { FrontmatterValue } from './frontmatter.js';
 import type { ConfidenceFactors } from '../maintenance/confidence.js';
-import { parseYaml } from './yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { TeamSkillSource } from '../resources/team-skill-source.js';
 import { RESOURCE_LAYOUTS } from '../resources/resolver.js';
+import { RECALL_TRACE_ENV } from '../recall-provenance.js';
 
 /**
  * After this checkout's index is rebuilt by a pull. Self mode keeps one index
@@ -586,7 +590,7 @@ async function entryFromMdFile(
   let content: string;
 
   try {
-    content = await readFile(expandHome(absPath), 'utf-8');
+    content = await readRegularFile(expandHome(absPath), 'utf-8');
   } catch (e) {
     reads.unreadable.push({ path: absPath, reason: failureReason(e) });
 
@@ -1143,6 +1147,22 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
   const entries: SearchIndexEntry[] = [];
 
   const learningsDirs = opts.learningsDirs ?? (opts.learningsDir ? [opts.learningsDir] : []);
+  const config = opts.voteScope;
+  const branchRoot = config && config.repo.kind !== 'http' ? learningsRoots(config).write : undefined;
+  const branch = branchRoot && path.dirname(branchRoot);
+
+  // Sample around collection; a changed or dirty checkout cannot name the inputs faithfully.
+  const revision = async (dir: string) => createGit(dir).raw([...HEAD_STATUS, '--untracked-files=normal'])
+    .then(headStateOf, () => null);
+
+  const traceProvenance = process.env[RECALL_TRACE_ENV] === '1';
+
+  const revisions = async () => Promise.all([
+    traceProvenance && config && config.repo.kind !== 'http' ? revision(config.repo.localPath) : null,
+    traceProvenance && branch && branchRoot && learningsDirs.includes(branchRoot) && await pathExists(path.join(branch, '.git')) ? revision(branch) : null,
+  ]);
+
+  const [teamBefore, learningsBefore] = await revisions();
 
   if (learningsDirs.length > 0) {
     entries.push(...await collectLearningsEntries(learningsDirs, opts.learningsNamespaces, reads));
@@ -1229,6 +1249,23 @@ export async function indexInMemory(opts: BuildIndexOptions): Promise<SearchInde
   };
 
   if (opts.children) index.children = opts.children;
+
+  if (traceProvenance && config && reads.unreadable.length === 0 && opts.skills?.kind !== 'keep-indexed') {
+    const [teamAfter, learningsAfter] = await revisions();
+
+    const stable = (before: typeof teamBefore, after: typeof teamAfter): string | undefined =>
+      before && after && !before.dirty && !after.dirty && before.head === after.head ? before.head : undefined;
+
+    const teamRevision = stable(teamBefore, teamAfter);
+    // Local and inherited learnings may have no single Git revision.
+    const learnings = entries.filter((entry) => entry.type === 'learnings');
+
+    const learningsRevision = learnings.length === 0 ? null
+      : branchRoot && learnings.every(({ path: file }) => file && isWithin(file, branchRoot))
+        ? stable(learningsBefore, learningsAfter) : undefined;
+
+    if (teamRevision !== undefined || learningsRevision !== undefined) index.provenance = { teamRevision, learningsRevision };
+  }
 
   return index;
 }

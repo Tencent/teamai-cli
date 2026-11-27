@@ -1,6 +1,8 @@
-import { chmod, readFile, stat } from 'node:fs/promises';
+import { chmod } from 'node:fs/promises';
+import { openRegularFile } from '@teamai/shared/regular-file';
 import path from 'node:path';
-import { mergeTeamConfig, parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
+import { mergeTeamConfig } from './utils/yaml.js';
 import { z } from 'zod';
 import { autoDetectInit, loadStateForScope, saveStateForScope } from './config.js';
 import { assertNotReadOnly } from './read-only.js';
@@ -14,9 +16,14 @@ import { reconcilePlacementRecords, dropClosedPendingPushes,
 } from './utils/pending-push.js';
 import { syncTeamUpdatesToLocal } from './utils/pre-push-sync.js';
 import { getProvider } from './providers/index.js';
-import { log, spinner } from './utils/logger.js';
-import { getUserHome } from './utils/home.js';
+import { log, spinner } from '@teamai/shared/log';
+import { getUserHome } from '@teamai/shared/home';
 import { getHandler } from './resources/index.js';
+// Imported from the module that defines the class, not from the barrel: tests
+// that mock `resources/index.js` provide `getHandler` only, and reading
+// `RepoResourceHandler` off that mock threw "no export is defined" instead of
+// falling back to the layout default.
+import { RepoResourceHandler } from './resources/repo-resource.js';
 import { createSkillPushItem, scanTeamRepoNamespaces } from './resources/skills.js';
 import { AgentsHandler } from './resources/agents.js';
 import { deliversEveryNamespace, resolveResourceNamespaces } from './resource-namespaces.js';
@@ -37,7 +44,8 @@ import {
   resolveProjectNamespace, resolveRoleNamespace, rootSegmentsFor, skillNamespacePath, withNamespace, type PlaceableType,
 } from './push-namespaces.js';
 import { askQuestion, askSelection, isInteractive } from './utils/prompt.js';
-import { pathExists, pruneEmptyDirs, readFileSafe, writeFile } from './utils/fs.js';
+import { listDirs, pathExists, pruneEmptyDirs, readFileSafe, writeFile } from './utils/fs.js';
+import { gitAnswer, git as gitAt, unansweredGit } from './workflow/worktree.js';
 import { brokenTeamProfileFiles } from './models/profile.js';
 
 /**
@@ -251,6 +259,32 @@ type NewResourceDestination =
   | { kind: 'invalid-selection'; message: string };
 
 /**
+ * The repo directories a type's namespace directories live under. Most types sit
+ * at `<repo>/<type>`, but a handler may put them elsewhere: wiki keeps its
+ * namespaces under `teamwiki/evidence/code`, so listing `<repo>/wiki` found
+ * nothing and `--role Frontend` then created `…/Frontend/` beside the existing
+ * `…/FRONTEND/` that pull reads.
+ */
+async function namespaceRootsOf(localConfig: LocalConfig, type: PlaceableType): Promise<string[]> {
+  const handler = getHandler(type);
+
+  // A repo-backed type carries its own layout: `wiki` keeps namespaces under
+  // `teamwiki/evidence/code`, and a repo chooses between `claudemd/` and
+  // `agentsmd/`. Every other type sits at `<repo>/<type>`.
+  if (handler instanceof RepoResourceHandler) return handler.dirsIn(localConfig.repo.localPath);
+
+  return [type];
+}
+
+/** Every namespace directory of `type` the team repo holds. */
+async function namespaceDirsOf(localConfig: LocalConfig, type: PlaceableType): Promise<string[]> {
+  const roots = await namespaceRootsOf(localConfig, type);
+  const listed = await Promise.all(roots.map((root) => listDirs(path.join(localConfig.repo.localPath, root))));
+
+  return [...new Set(listed.flat())];
+}
+
+/**
  * Decide the namespace for the new root-level resources of one type.
  *
  * Every axis answers this the same way — that consistency is the fix for #649 —
@@ -268,7 +302,9 @@ async function resolveNamespaceForNew(
 
   const flagged = options.project && projectsManifest
     ? resolveProjectNamespace(projectsManifest, options.project, type)
-    : options.role ? resolveRoleNamespace(roleNamespaces, options.role, type) : null;
+    : options.role
+      ? resolveRoleNamespace(roleNamespaces, options.role, type, await namespaceDirsOf(localConfig, type))
+      : null;
 
   if (flagged) {
     return flagged.ok
@@ -576,9 +612,15 @@ async function hasGitModeChange(
 /** A file's bytes and permission bits, or null when it cannot be read. */
 async function readFileSnapshot(filePath: string): Promise<{ content: Buffer; mode: number } | null> {
   try {
-    const [content, stats] = await Promise.all([readFile(filePath), stat(filePath)]);
+    const handle = await openRegularFile(filePath);
 
-    return { content, mode: stats.mode & 0o777 };
+    try {
+      const [content, stats] = await Promise.all([handle.readFile(), handle.stat()]);
+
+      return { content, mode: stats.mode & 0o777 };
+    } finally {
+      await handle.close();
+    }
   } catch {
     return null;
   }
@@ -1199,9 +1241,15 @@ export async function explicitBranchRefusal(
   if (!selfMode) return null;
   const git = createGit(localPath);
   const localRef = `refs/heads/${branch}`;
-  const exists = await git.raw(['show-ref', '--verify', localRef]).then(() => true, () => false);
+  const shown = gitAnswer(await gitAt(localPath, ['show-ref', '--verify', '--quiet', localRef]));
 
-  if (!exists) return null;
+  if (shown.said === 'no' && shown.result.code === 1) return null;
+
+  if (shown.said === 'nothing') return `Refusing to push to "${branch}": ${unansweredGit(`whether it exists here`, shown.result).message}`;
+
+  if (shown.said === 'no') {
+    return `Refusing to push to "${branch}": could not tell whether it exists here, so whether it holds the member's commits is unknown. git said: ${shown.result.stderr.trim() || `exit ${shown.result.code}`}. Choose another --branch.`;
+  }
 
   const ahead = await git.raw(['rev-list', '--count', localRef, '--not', '--remotes=origin'])
     .then((out) => Number.parseInt(out.trim(), 10), () => Number.NaN);
@@ -2106,7 +2154,9 @@ async function pushCore(
 
   const flaggedAgents = options.project && projectsManifest
     ? resolveProjectNamespace(projectsManifest, options.project, 'agents')
-    : options.role ? resolveRoleNamespace(roleNamespaces, options.role, 'agents') : null;
+    : options.role
+      ? resolveRoleNamespace(roleNamespaces, options.role, 'agents', await namespaceDirsOf(localConfig, 'agents'))
+      : null;
 
   if (flaggedAgents?.ok) {
     requestedAgentsNamespace = flaggedAgents.namespace;
@@ -2326,7 +2376,7 @@ async function pushCore(
       return;
     }
 
-    const { isCliOwnedSkillName } = await import('./builtin-skills.js');
+    const { isCliOwnedSkillName } = await import('./cli-skill-names.js');
     const { generatedSkillAt } = await import('./workflow/discovery/generated-marker.js');
     const generated = await generatedSkillAt(skillPath);
 
@@ -2528,7 +2578,7 @@ async function pushCore(
       return;
     }
 
-    const resolved = resolveRoleNamespace(roleNamespaces, options.role, 'skills');
+    const resolved = resolveRoleNamespace(roleNamespaces, options.role, 'skills', await namespaceDirsOf(localConfig, 'skills'));
 
     if (resolved.ok) {
       skillsDestination = resolved.namespace;

@@ -14,6 +14,7 @@ import {
 import { resolveDesiredDocs } from '../resources/docs.js';
 import type { LocalConfig, ResourceItem } from '../types.js';
 import { usesMemberFilters } from '../resource-namespaces.js';
+import { isActiveNamespace } from '../namespace-resolver.js';
 import { withTeamRevision } from '../workflow/cache.js';
 import type { TeamSelection } from '../workflow/clone.js';
 import { git } from '../workflow/worktree.js';
@@ -321,7 +322,7 @@ export function leavesOut(paths: readonly string[], file: string): boolean {
 
 /** What pull delivers from the team repo `at` names, whose files are `present`, by pull's resolvers. */
 async function deliveryAt(at: LocalConfig, present: readonly string[]) {
-  const team = await loadTeamConfig(at.repo.localPath);
+  const team = await loadTeamConfig(at.repo.localPath, at);
 
   if (team === null) throw new Error('its teamai.yaml cannot be read');
   const context = await buildRolePullContext(at);
@@ -364,7 +365,7 @@ function skillsReason({ listed, short, excluded, advice, withIt }: Unchanged): s
 function skillReason(item: ResourceItem, { delivered, excluded, active, advice }: { delivered: readonly ResourceItem[]; excluded: readonly string[]; active: readonly string[] | undefined; advice: string }): string | undefined {
   if (excluded.includes(item.name)) return `, skill ${item.name}, which the member excludes, so pull leaves it out already and leaving it out changes nothing. ${advice}`;
 
-  if (item.namespace !== undefined && active && !active.includes(item.namespace)) return inactive(item.namespace, advice);
+  if (item.namespace !== undefined && active && !isActiveNamespace(active, item.namespace)) return inactive(item.namespace, advice);
   const standIn = delivered.find((one) => one.name === item.name);
 
   if (standIn) return inPlace(standIn.relativePath, standIn.namespace, advice);
@@ -411,7 +412,7 @@ function notReceived(listed: string, files: readonly string[], active: readonly 
   const [root, namespace] = listed.split('/');
   const isDirectory = files.some((file) => file.startsWith(`${root}/${namespace}/`));
 
-  return active && namespace !== undefined && isDirectory && !active.includes(namespace) ? namespace : undefined;
+  return active && namespace !== undefined && isDirectory && !isActiveNamespace(active, namespace) ? namespace : undefined;
 }
 
 /** That the item of `overrides` that stands in for `listed` is delivered in its place. */

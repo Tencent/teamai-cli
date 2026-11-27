@@ -4,14 +4,15 @@ import path from 'node:path';
 
 import YAML from 'yaml';
 import { z } from 'zod';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 
 import { UserVotesSchema, UserVotesV2Schema } from './types.js';
-import { isJsonObject, type JsonValue } from './types.js';
+import { isJsonObject, type JsonValue } from '@teamai/shared/json';
 import type { LocalConfig, PendingVoteSync, UpvoteLedger, UserVotes, UserVotesV2, VoteDelta, VoteEntryV2 } from './types.js';
 import type { CreditLine } from './recall-log.js';
-import { readFileSafe, writeFileAtomic, ensureDir, expandHome } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { readFileSafe, writeFileAtomic, ensureDir } from './utils/fs.js';
+import { expandHome } from '@teamai/shared/home';
+import { log } from '@teamai/shared/log';
 
 /**
  * Run `fn` while holding an exclusive per-file lock, so the read-modify-write in
@@ -838,6 +839,13 @@ export async function confirmVotesSynced(
  * Record manual feedback for a recalled document.
  */
 export async function recallFeedback(opts: { positive?: string; negative?: string; dryRun?: boolean }): Promise<void> {
+  if (Boolean(opts.positive) === Boolean(opts.negative)) {
+    log.error('Specify exactly one of --positive <docId> or --negative <docId>.');
+    process.exitCode = 1;
+
+    return;
+  }
+
   const { resolveConfigForDir, findUnreadableProjectConfig, throwMissingOrInvalid, BROKEN_CONFIG_ADVICE } = await import('./config.js');
   // The votes of the cwd's scope (#787). An unreadable project config falls
   // back to no other scope: the feedback would reach that scope's team.
@@ -949,5 +957,4 @@ export async function recallFeedback(opts: { positive?: string; negative?: strin
     return;
   }
 
-  log.error('Usage: teamai recall feedback --positive <docId> | --negative <docId>');
 }

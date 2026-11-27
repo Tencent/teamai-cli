@@ -21,10 +21,10 @@ import { leaseNext, reportAttempt, startRun } from '../workflow/engine.js';
 import { cancelRun, retryStep } from '../workflow/run-controls.js';
 import type { DriverIdentity, StartedBy, WorkflowEnvelope } from '../workflow/types.js';
 import { ScoreAnswer } from '../scorers/score-answer.js';
-import { ScoreVerbs, type EvidenceOptions, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext, type SubjectsOptions } from '../score-verbs.js';
+import { ScoreVerbs, scoreVerbCommand, type EvidenceOptions, type PlanOptions, type ScoreVerbAnswer, type ScoreVerbContext, type SubjectsOptions } from '../score-verbs.js';
 import { labelVersion } from '../scorers/label.js';
 import { LabelStore } from '../scorers/label-store.js';
-import { log } from '../utils/logger.js';
+import { log, setStderrOnly } from '@teamai/shared/log';
 import { Marks, type MarkKey } from '../scorers/marks.js';
 import { markFacts } from '../scorers/score-plan.js';
 import { PassScoring } from '../scorers/pass-scoring.js';
@@ -1620,6 +1620,19 @@ describe('score subjects', () => {
     expect(await ScoreVerbs.subjects({ run: runId, step: 'outer' }, { env: attemptEnv(config, runId, other.attempt, 'unattended'), current: config, now: NOW })).toEqual({ ok: true, output: { list: [`run:${runId}:outer.fix:1`] } });
   });
 
+  it('reads --step as a path of its own when the attempt marker names more than one run and attempt', async () => {
+    const config = await team({ fixes: FIXES }, { quality: scorer() });
+    const runId = String(data(await startRun(config, 'fixes', {}, { secrets: await knownSecrets(config), checkout: config.projectRoot })).run);
+    const fix = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
+    plantSession(config.projectRoot ?? '', 'session-fix', 'Fix the change.');
+    data(await reportAttempt(config, runId, { attempt: fix.attempt, revision: fix.revision, outcome: 'success', driver: external, tool: 'claude', session: 'session-fix' }));
+    const lister = LeaseSchema.parse(data(await leaseNext(config, runId, external)).lease);
+    const marked = (marker: string) => ScoreVerbs.subjects({ run: runId, step: 'fix' }, { env: { TEAMAI_WORKFLOW_ATTEMPT: marker }, current: config, now: NOW });
+
+    expect(await marked(`${runId}/${lister.attempt}`)).toEqual({ ok: true, output: { list: [`run:${runId}:outer.fix:1`] } });
+    expect(await marked(`${runId}/${lister.attempt}/x`)).toEqual({ ok: true, output: { list: [] } });
+  });
+
   it.each<[string, SubjectsOptions]>([
     ['--lapsed with --run', { lapsed: true, run: 'r0000000000000001' }],
     ['--lapsed with --step', { lapsed: true, step: 'fix' }],
@@ -2181,5 +2194,30 @@ describe('scorer files tried in a teamai-score run', () => {
     expect(await planOf({ files: [file], store: false })).toMatchObject({ ok: false, code: 'scorer_invalid' });
     fs.writeFileSync(file, scorer().replace('Judge the work.', 'Judge the work by ${TEAMAI_SCORER_DIR}/rubric.md.'));
     expect(await planOf({ files: [file], store: false })).toMatchObject({ ok: false, code: 'scorer_invalid', message: expect.stringContaining('only a scorer folder has') });
+  });
+});
+
+describe('a score verb where the team config does not load', () => {
+  it('refuses with why the team config is broken, before the verb runs, rather than going on without the team\'s policy', async () => {
+    const knowledge = path.join(root, 'knowledge');
+    fs.mkdirSync(knowledge, { recursive: true });
+    fs.writeFileSync(path.join(knowledge, 'teamai.yaml'), 'team: Review\nrepo: local\nusageReport: false\nbroken: [\n');
+    fs.mkdirSync(path.join(mocks.home, '.teamai'), { recursive: true });
+    fs.writeFileSync(path.join(mocks.home, '.teamai', 'config.yaml'), JSON.stringify({ repo: { localPath: knowledge, remote: 'local', kind: 'git' }, scope: 'user', username: 'tester', additionalRoles: [] }));
+    const elsewhere = path.join(root, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    vi.spyOn(process, 'cwd').mockReturnValue(elsewhere);
+    const written: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { written.push(String(chunk)); return true; });
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    try {
+      await scoreVerbCommand(async () => ({ ok: true, output: { staged: 1 } }));
+    } finally {
+      setStderrOnly(false);
+      process.exitCode = undefined;
+    }
+
+    expect(JSON.parse(written.join(''))).toEqual({ error: { code: 'not_initialized', message: expect.stringContaining('teamai.yaml') } });
   });
 });

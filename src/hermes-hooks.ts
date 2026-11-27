@@ -11,7 +11,7 @@
 import path from 'node:path';
 import { chmod } from 'node:fs/promises';
 import { generatedFileState, writeIfChanged, pathExists, readFileSafe, remove } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { resolveCliEntry } from './builtin-hooks.js';
 import { hookAdapterDirIn } from './locate.js';
 import { toolHome } from './tool-home.js';

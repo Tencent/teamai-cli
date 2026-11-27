@@ -4,7 +4,7 @@ import { UNKNOWN_READS, type ToolDescriptor } from '@teamai/tool-core/definition
 export const tools = {
   qoder: {
     home: { dir: '.qoder', moves: { by: [{ kind: 'qoder-home', evidence: 'source' }] } },
-    skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }] },
+    skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }], promptForm: ['/name', 'markdown-mention'] },
     skills: UNKNOWN_READS,
     installedBy: 'home-edition',
     rules: {
@@ -49,7 +49,7 @@ export const tools = {
   },
   'qoder-cn': {
     home: { dir: '.qoder-cn', moves: { by: [{ kind: 'qoder-cn-home', evidence: 'source' }] } },
-    skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }] },
+    skillLoad: { calls: [{ name: 'Skill', evidence: 'source' }], promptForm: ['/name', 'markdown-mention'] },
     skills: UNKNOWN_READS,
     installedBy: 'home-edition',
     rules: {

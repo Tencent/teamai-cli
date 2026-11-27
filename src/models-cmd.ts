@@ -1,9 +1,9 @@
 import path from 'node:path';
-import { autoDetectInit } from './config.js';
+import { autoDetectInit, NotInitializedError } from './config.js';
 import { describeEntryFailure, describeOrigin, reportEntryResolution, resolveEntriesFor } from './namespaced-entries.js';
 import { toolOf } from './tool-registry.js';
 import { pathExists } from './utils/fs.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { askConfirmation, askQuestion, askSecret, isInteractive, parseSelection, readStdin } from './utils/prompt.js';
 import type { LocalConfig } from './types.js';
 import {
@@ -74,7 +74,11 @@ async function teamContext(options: { dryRun?: boolean } = {}): Promise<TeamMode
 
   try {
     initialized = await autoDetectInit(undefined, options);
-  } catch {
+  } catch (e) {
+    // Only "nothing installed" means a team with no profiles. A config that
+    // exists but cannot be read must not read as an empty team.
+    if (!(e instanceof NotInitializedError)) throw e;
+
     return { team: { version: 1, profiles: [] } };
   }
 

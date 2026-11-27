@@ -3,13 +3,15 @@ import { StringDecoder } from 'node:string_decoder';
 
 import fs from 'fs-extra';
 
+import { longPathArgs } from './utils/git.js';
 import { getGitHubToken } from './providers/github/gh-cli.js';
 import { getGitLabToken } from './providers/gitlab/gitlab-api.js';
 import { getGitCodeToken } from './providers/gitcode/gitcode-api.js';
 import { tgitGitCloneUrl } from './providers/tgit/rest-auth.js';
-import { log } from './utils/logger.js';
-import { sanitizeGitUrl } from '@teamai/shared/redact';
+import { log } from '@teamai/shared/log';
+import { redactGitCredentials, sanitizeGitUrl } from '@teamai/shared/redact';
 import { assertSafeRepoCachePath } from './utils/repo-cache.js';
+import { signalChild } from '@teamai/shared/process-group';
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -69,7 +71,7 @@ export { sanitizeGitUrl };
  * 对日志/错误信息中的 token 进行脱敏。
  */
 function redactToken(msg: string): string {
-    return sanitizeGitUrl(msg);
+    return redactGitCredentials(msg);
 }
 
 /**
@@ -102,7 +104,7 @@ function runCommand(
 
         let stdout = '';
         let stderr = '';
-        // Same split-chunk UTF-8 handling as execCommand in utils/exec.ts.
+        // Same split-chunk UTF-8 handling as execCommand in @teamai/shared/exec.
         const stdoutDecoder = new StringDecoder('utf8');
         const stderrDecoder = new StringDecoder('utf8');
 
@@ -110,8 +112,8 @@ function runCommand(
         child.stderr.on('data', (chunk: Buffer) => { stderr += stderrDecoder.write(chunk); });
 
         const timer = setTimeout(() => {
-            child.kill();
-            reject(new Error(`Command timed out after ${opts.timeoutMs}ms: ${cmd} ${args.join(' ')}`));
+            signalChild(child);
+            reject(new Error(`Command timed out after ${opts.timeoutMs}ms: ${redactToken(`${cmd} ${args.join(' ')}`)}`));
         }, opts.timeoutMs);
 
         child.on('close', (code) => {
@@ -284,7 +286,8 @@ export async function shallowClone(
     const { cloneUrl, cloneMethod, extraAuthHeader } = resolveCloneAuth(url, provider, { forceSsh, forceAnonymous });
 
     // 构建 clone 参数：若有 token 则通过 http.extraHeader 注入，避免 token 出现在 URL 中
-    const cloneArgs: string[] = [];
+    // `-c <key>=<val>` is a git-level option, so it must precede `clone`.
+    const cloneArgs: string[] = [...longPathArgs()];
 
     if (extraAuthHeader) {
         cloneArgs.push('-c', `http.extraHeader=${extraAuthHeader}`);

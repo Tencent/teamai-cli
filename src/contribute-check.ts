@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { z } from 'zod';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { RELAY_TO_USER_PREFIX, relayWhenHidden } from './utils/hook-output.js';
 import { readJson, writeJson, writeJsonAtomic, ensureDir } from './utils/fs.js';
 import { readEvents, aggregateSessionMetrics, scanTranscriptStop, hookScopeDir } from './dashboard-collector.js';
@@ -11,9 +11,8 @@ import { deriveSessionId } from './utils/session-id.js';
 import { resolveHookCwd } from './utils/hook-cwd.js';
 import { redactWithEnv } from '@teamai/shared/redact';
 import type { ContributeState, DashboardEvent, LocalConfig, SessionShareOffered, SessionFriction } from './types.js';
-import { CONTRIBUTE_FASTPATH_TTL_MS, CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT, SessionShareOfferedSchema } from './types.js';
+import { CONTRIBUTE_FASTPATH_TTL_MS, CONTRIBUTE_GIT_COMMIT_DOWNWEIGHT, getSessionStateDir, SessionShareOfferedSchema } from './types.js';
 import { DefaultFolders, type DefaultFolder, type DefaultFolderParams, type TextLanguage } from './default-folders.js';
-import { getUserHome } from './utils/home.js';
 import { HookStdinSchema, stdinString, type HookStdin } from './hook-dispatch.js';
 
 // ─── Contribute check data flow (Stop hook) ────────────────
@@ -113,12 +112,7 @@ function normalizePromptSummary(raw?: string): string | undefined {
 
 /** Get session state file path: ~/.teamai/sessions/{sanitized-sessionId}.json */
 function getSessionPath(sessionId: string): string {
-  return path.join(
-    getUserHome(),
-    '.teamai',
-    'sessions',
-    `${sanitizeSessionId(sessionId)}.json`,
-  );
+  return path.join(getSessionStateDir(), `${sanitizeSessionId(sessionId)}.json`);
 }
 
 /** A persisted state file, read field by field: a field of the wrong type reads as absent. */
@@ -313,7 +307,7 @@ export async function cleanupStaleSessions(dir: string, currentSessionId: string
  * fired, since a session resumed after its sweep starts a new state file. A session with neither has no entry.
  */
 export async function readReminderDecisions(): Promise<Map<string, boolean>> {
-  const dir = path.join(getUserHome(), '.teamai', 'sessions');
+  const dir = getSessionStateDir();
 
   const read = async (folder: string, schema: typeof StateSchema | typeof SweptSchema) => (await Promise.all((await fs.promises.readdir(folder).catch(() => []))
     .filter((entry) => entry.endsWith('.json'))
@@ -856,7 +850,7 @@ export async function takePendingHint(sessionId: string): Promise<string | null>
 export async function contributeCheck(toolArg?: string): Promise<void> {
   // Same stdout-exclusive contract as hook-dispatch-cli — log lines mixed
   // into stdout break Claude Code's JSON parse and silently drop the hint.
-  const { setStderrOnly } = await import('./utils/logger.js');
+  const { setStderrOnly } = await import('@teamai/shared/log');
   setStderrOnly(true);
 
   const stdinData = await readStdinAndDeriveSession();

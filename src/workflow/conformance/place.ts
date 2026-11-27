@@ -89,34 +89,34 @@ function prepareLeasedAttempt(profile: DriverProfile): WorkflowScenario {
 
 const ONE_WRITER = `schemaVersion: v1alpha1
 name: build
-description: One change in a place the host makes.
+description: One change in a place the session host makes.
 steps:
   - id: work
     workspace: new
     prompt: Change the code.
 `;
 
-/** A host makes the place of a leased attempt, and TeamAI adopts it, or refuses it and keeps the attempt leased. */
-function adoptHostPlace(profile: DriverProfile): WorkflowScenario {
+/** A session host makes the place of a leased attempt, and TeamAI adopts it, or refuses it and keeps the attempt leased. */
+function adoptSessionHostPlace(profile: DriverProfile): WorkflowScenario {
   const refused = (adopt: string): ConformanceOperation => ({
     kind: 'next', saveAs: 'work', as: profile, prepare: true, attempt: 'work', adopt,
     expect: { error: { code: 'adopt_mismatch' } }, state: { steps: [{ id: 'work', status: 'leased' }] },
   });
 
   return {
-    name: `adopt-host-place (${profile}): a host worktree on the lease's branch is adopted, reported with its changes and left after cleanup; a wrong branch, a dirty tree and another repository answer adopt_mismatch, and the attempt stays leased`,
+    name: `adopt-session-host-place (${profile}): a session host worktree on the lease's branch is adopted, reported with its changes and left after cleanup; a wrong branch, a dirty tree and another repository answer adopt_mismatch, and the attempt stays leased`,
     workflowName: 'build',
     yaml: ONE_WRITER,
     operations: [
       { kind: 'next', saveAs: 'work', as: profile, absent: ['cwd'], expect: { data: { lease: { step: 'work' } } } },
-      { kind: 'host', name: 'other', lease: 'work', on: 'other' },
+      { kind: 'session-host', name: 'other', lease: 'work', on: 'other' },
       refused('other'),
-      { kind: 'host', name: 'dirty', lease: 'work', on: 'start', files: { 'stray.txt': 'stray\n' } },
+      { kind: 'session-host', name: 'dirty', lease: 'work', on: 'start', files: { 'stray.txt': 'stray\n' } },
       refused('dirty'),
-      { kind: 'host', name: 'foreign', lease: 'work', on: 'foreign' },
+      { kind: 'session-host', name: 'foreign', lease: 'work', on: 'foreign' },
       refused('foreign'),
-      { kind: 'host', name: 'host', lease: 'work', on: 'branch' },
-      { kind: 'next', saveAs: 'work', as: profile, prepare: true, attempt: 'work', adopt: 'host', expect: { data: { lease: { step: 'work' } } } },
+      { kind: 'session-host', name: 'made', lease: 'work', on: 'branch' },
+      { kind: 'next', saveAs: 'work', as: profile, prepare: true, attempt: 'work', adopt: 'made', expect: { data: { lease: { step: 'work' } } } },
       { kind: 'files', lease: 'work', expect: { 'AGENTS.md': 'Trusted base instructions.\n' } },
       { kind: 'edit', lease: 'work', files: { 'code.txt': 'adopted\n' } },
       { kind: 'report', lease: 'work', as: profile, body: { outcome: 'success' }, expect: { data: { accepted: true, cleanup: true } } },
@@ -127,7 +127,7 @@ function adoptHostPlace(profile: DriverProfile): WorkflowScenario {
 }
 
 export const workflowPlaceConformanceScenarios: WorkflowScenario[] = [
-  ...(['local', 'session', 'external'] as const).flatMap((profile) => [prepareLeasedAttempt(profile), adoptHostPlace(profile)]),
+  ...(['local', 'session', 'external'] as const).flatMap((profile) => [prepareLeasedAttempt(profile), adoptSessionHostPlace(profile)]),
   {
     name: 'a prepared lease is reported from another process, which commits and pushes its changes and puts the branch agent files back',
     workflowName: 'build',

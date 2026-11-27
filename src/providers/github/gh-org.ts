@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { log } from '../../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { OrgRepoInfo } from '../types.js';
 import { ghExec, isGhInstalled, getGitHubToken } from './gh-cli.js';
 

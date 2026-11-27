@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createGit, gitBinary, readBlobs } from './git.js';
-import { log } from './logger.js';
+import { log } from '@teamai/shared/log';
 
 // ─── History proof (#993) ────────────────────────────────────
 //

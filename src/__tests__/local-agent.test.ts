@@ -8,7 +8,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { agentHookDescription } from '../hooks.js';
 import { keepCodexHookTrust, trustCodexHooks } from '../codex-trust.js';
 import { TEAMAI_CLAUDEMD_START } from '../types.js';
-import { installFakeCodex } from './helpers/fake-codex.js';
+import { installFakeCodex } from '@teamai/tool-codex/testing';
 
 vi.mock('@teamai/shared/log', () => ({
   log: {
@@ -439,7 +439,7 @@ describe('local-agent: bindCurrentProject --skip', () => {
     expect(binding.projectId).toBe(0);
     expect(binding.projectName).toBe('__skipped__');
     expect(binding.boundAt).toBeTruthy();
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     expect(vi.mocked(log.info).mock.calls.map((call) => call.join(' ')).join('\n'))
       .toContain('Skipped binding; this workspace will not be prompted again.');
   });
@@ -558,7 +558,7 @@ describe('local-agent: per-workspace enrollment', () => {
     Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
 
     const { bindCurrentProject } = await import('../local-agent.js');
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     vi.mocked(log.info).mockClear();
     await bindCurrentProject({ cwd: projectDir });
 
@@ -1476,7 +1476,7 @@ describe('local-agent: one access token per agent', () => {
     const stored = await fse.readJson(configFile());
     await fse.writeJson(configFile(), { ...stored, token: 'sk-dead', agentTokens: { codebuddy: 'sk-cb' } });
     const calls = backend(['sk-cb', 'sk-new']);
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     vi.mocked(log.warn).mockClear();
     const { initLocalAgentHttp } = await import('../local-agent.js');
 
@@ -1541,6 +1541,57 @@ describe('local-agent: one access token per agent', () => {
       if (envKey === undefined) delete process.env.TEAMAI_API_KEY;
       else process.env.TEAMAI_API_KEY = envKey;
     }
+  });
+});
+
+describe('HTTP endpoint validation', () => {
+  const BAD = ['not-a-url', 'ftp://example.com/api', 'file:///tmp/team'];
+  const ENDPOINT = 'https://test.example.com/api';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    process.exitCode = undefined;
+  });
+
+  it.each(BAD)('initLocalAgentHttp rejects %s', async (endpoint) => {
+    const { initLocalAgentHttp } = await import('../local-agent.js');
+
+    await expect(initLocalAgentHttp({ endpoint, token: 'sk-x', force: true }))
+      .rejects.toThrow('Endpoint must be an http(s) URL');
+  });
+
+  it('initLocalAgentHttp still accepts an http(s) endpoint', async () => {
+    const { initLocalAgentHttp } = await import('../local-agent.js');
+
+    await initLocalAgentHttp({ endpoint: ENDPOINT, token: 'sk-x', force: true });
+
+    expect((await fse.readJson(path.join(tmpDir, '.teamai', 'local-agent', 'config.json'))).endpoint).toBe(ENDPOINT);
+  });
+
+  it.each(BAD)('init --http refuses %s before writing anything', async (endpoint) => {
+    const { init } = await import('../init.js');
+    const { log } = await import('@teamai/shared/log');
+
+    await init({ http: endpoint, token: 'sk-x', scope: 'user', force: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Endpoint must be an http(s) URL'));
+    expect(fse.existsSync(path.join(tmpDir, '.teamai', 'config.yaml'))).toBe(false);
+  });
+
+  it.each(BAD)('source add-http refuses %s', async (endpoint) => {
+    const { sourceAddHttp } = await import('../source.js');
+    const { log } = await import('@teamai/shared/log');
+
+    await sourceAddHttp(endpoint, { token: 'sk-x' });
+
+    expect(process.exitCode).toBe(1);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Endpoint must be an http(s) URL'));
+    expect(fse.existsSync(path.join(tmpDir, '.teamai', 'local-agent', 'config.json'))).toBe(false);
   });
 });
 
@@ -2756,7 +2807,7 @@ describe('local-agent: cmds[] migration', () => {
       await removeLocalAgentHttp();
       expect(process.exitCode).toBe(1);
       expect(await fse.readFile(configPath, 'utf8')).toBe(before);
-      const { log } = await import('../utils/logger.js');
+      const { log } = await import('@teamai/shared/log');
       expect(log.error).toHaveBeenCalledWith(expect.stringContaining('nothing was removed'));
     } finally {
       process.exitCode = exitCode;
@@ -3332,6 +3383,21 @@ describe('local-agent: cmds[] migration', () => {
     const a3 = await runResponse({ cmds: [cmd29] }, undefined, 'cursor');
     expect(a3.find((a) => a.id === 29)?.status).toBe('failed');
     expect(String(a3.find((a) => a.id === 29)?.error)).toMatch(/unsupported tool/i);
+
+    const victimDir = path.join(tmpDir, 'victim-dir');
+    await fse.ensureDir(victimDir);
+    const a4 = await runResponse({
+      cmds: [
+        { id: 32, type: 'install_hook_rule', handle_type: 'hook', slug: '../../victim-dir', event: 'SessionStart', cmd: 'echo x', scope: 'user' },
+        { id: 33, type: 'uninstall_hook_rule', handle_type: 'hook', slug: '../../victim-dir', scope: 'user' },
+        { id: 34, type: 'install_hook_rule', handle_type: 'hook', slug: '.', event: 'SessionStart', cmd: 'echo x', scope: 'user' },
+      ],
+    }, undefined, 'openclaw');
+    for (const id of [32, 33, 34]) {
+      expect(a4.find((a) => a.id === id)?.status).toBe('failed');
+      expect(String(a4.find((a) => a.id === id)?.error)).toMatch(/invalid resource name/i);
+    }
+    expect(await fse.pathExists(victimDir)).toBe(true);
   });
 
   it('rejects install_hook_rule when TEAMAI_DISABLE_REMOTE_CMD=1', async () => {
@@ -3989,7 +4055,7 @@ describe('local-agent: project installs stay out of git, and a member\'s file st
     fs.chmodSync(rules, 0o555);
     process.exitCode = undefined;
     const { removeLocalAgentHttp } = await import('../local-agent.js');
-    const { log } = await import('../utils/logger.js');
+    const { log } = await import('@teamai/shared/log');
     (log.warn as ReturnType<typeof vi.fn>).mockClear();
     try {
       await removeLocalAgentHttp();

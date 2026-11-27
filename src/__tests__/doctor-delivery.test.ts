@@ -26,7 +26,7 @@ vi.mock('../resources/desired.js', async (importOriginal) => {
 
 import { loadLocalConfig, loadTeamConfig } from '../config.js';
 import { resolveDesiredSkills } from '../resources/desired.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { loadStateForScope, saveStateForScope } from '../config.js';
 import { buildChecks, doctor, resolveDoctorContext, type Check, type DoctorReport } from '../doctor.js';
 import { checkoutKey } from '../pull.js';
@@ -774,6 +774,16 @@ describe('doctor — where a tool takes skills', () => {
     vi.unstubAllEnvs();
     vi.clearAllMocks();
     await fse.remove(tempDir);
+  });
+
+  it('reports a roles manifest that does not parse as failed checks in --json, instead of printing nothing', async () => {
+    await fse.outputFile(path.join(localConfig.repo.localPath, 'manifest', 'roles.yaml'), 'roles: 5\n');
+
+    const result = await report();
+
+    expect(result.ok).toBe(false);
+    const unresolved = result.checks.filter((c) => !c.ok && c.fix?.includes('Invalid roles manifest: roles must be a non-empty array'));
+    expect(unresolved.map((c) => c.name)).toEqual(expect.arrayContaining(['Skills to deliver can be resolved', 'Rules to deliver can be resolved', 'Instructions to deliver can be resolved']));
   });
 
   it('fails when the last pull wrote a tool\'s skills elsewhere than it takes them now', async () => {

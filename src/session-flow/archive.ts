@@ -9,7 +9,7 @@ import path from 'node:path';
 import { knownSecrets } from '../env-resolution.js';
 import { isSelfMode, type LocalConfig } from '../types.js';
 import { createGit, getDefaultBranch } from '../utils/git.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { updateReports } from '../utils/reports-branch.js';
 import { getAdapter } from './adapters/index.js';
 import { AgentSession, noAdapter, recordedToolRoots, writeCopyOnce } from './agent-session.js';
@@ -17,10 +17,16 @@ import { SessionCaptures } from './captures.js';
 import type { Session } from '@teamai/tool-core/sessions/ir';
 import { degradeThinkingBlocks } from './migrate.js';
 import { archiveBusyMessage, authorForCwd, deriveArchiveIdentity, sessionArchiveRoot } from './session-cmd-shared.js';
-import { SyncManager, defaultSyncMeta, getRepoIdentity, type SessionSyncMeta } from './sync.js';
+import { ATTEMPT_RESULT_FILE } from '../workflow/store.js';
+import { SessionEvidence, type ArchivedEvidence } from './session-evidence.js';
+import { textScrubber } from './scrub.js';
+import { SyncManager, defaultSyncMeta, getRepoIdentity, publishedPathRoots, type SessionSyncMeta } from './sync.js';
 
-/** A session in one tool, by the id that tool gave it. */
-export type ArchiveSessionRef = { platform: string; sessionId: string };
+/**
+ * A session to archive; `storeDir` is the store it is read from when it is not the member's, such as an attempt's tool
+ * home, and `evidenceDir` the `out/` directory of the step attempt that ran it, whose files are archived beside it.
+ */
+export type ArchiveSessionRef = { platform: string; sessionId: string; storeDir?: string; evidenceDir?: string };
 
 export type ArchiveRestore = { status: 'restored'; sessionId: string } | { status: 'fresh'; reason: string };
 
@@ -161,13 +167,13 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
   const repoIdentity = getRepoIdentity(checkout);
   const author = authorForCwd(checkout, config.username);
   const scrub = { secrets: await knownSecrets(config), rewriteLocalPaths: true };
-  const read: Array<{ session: Session; meta: SessionSyncMeta }> = [];
+  const read: ArchivedRead[] = [];
   const archived: T[] = [];
   const skipped: T[] = [];
 
   for (const chain of chains) {
     const unreadable: string[] = [];
-    let newest: { ref: T; session: Session; meta: SessionSyncMeta } | undefined;
+    let newest: { ref: T } & ArchivedRead | undefined;
 
     for (const ref of chain) {
       const found = await AgentSession.find(ref, { scrub, toolRootsFor: () => toolRoots });
@@ -185,7 +191,7 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
         ...await SessionCaptures.archivedFacts(ref.platform, session, config),
       }, session.createdAt);
 
-      newest = { ref, session, meta };
+      newest = { ref, session, meta, ...await evidenceOf(ref, { cwd: session.cwd || checkout, secrets: scrub.secrets }) };
       break;
     }
 
@@ -200,13 +206,39 @@ export async function archiveSessions<T extends ArchiveSessionRef>(
     }
 
     archived.push(newest.ref);
-    read.push({ session: newest.session, meta: newest.meta });
+    read.push({ session: newest.session, meta: newest.meta, ...(newest.evidence && { evidence: newest.evidence }) });
   }
 
   if (read.length === 0) return { status: 'archived', archived, skipped };
   const delivered = await archiveOnReports(config, read, `sync: archive ${read.length} session(s) of workflow run ${run}`);
 
   return delivered.status === 'archived' ? { status: 'archived', archived, skipped } : { status: 'failed', message: delivered.message };
+}
+
+/**
+ * A session read to be archived, scrubbed, with the evidence its step left: `none` when its step left none, or none
+ * that could be masked, so the archive drops what an earlier step of it left.
+ */
+type ArchivedRead = { session: Session; meta: SessionSyncMeta; evidence?: ArchivedEvidence | 'none' };
+
+/**
+ * The evidence `ref`'s step left in its `out/` directory, scrubbed as the session is (the team's `secrets`, this
+ * machine's paths as seen from `cwd`). Evidence that cannot be read or masked is left out, and the session is
+ * archived without any, saying why: no text of it leaves unmasked.
+ */
+async function evidenceOf(ref: ArchiveSessionRef, { cwd, secrets }: { cwd: string; secrets: Record<string, string> }): Promise<Pick<ArchivedRead, 'evidence'>> {
+  if (ref.evidenceDir === undefined) return {};
+
+  try {
+    // The result file is teamai's own: the run records the outputs it holds.
+    const evidence = await SessionEvidence.collect(ref.evidenceDir, textScrubber(cwd, { secrets, localPaths: await publishedPathRoots(cwd) }), { leaveOut: [ATTEMPT_RESULT_FILE] });
+
+    return { evidence: evidence ?? 'none' };
+  } catch (error) {
+    log.warn(`The evidence in ${ref.evidenceDir} of the ${ref.platform} session ${ref.sessionId} was left out of the team session archive, which keeps the session without any evidence: ${error instanceof Error ? error.message : String(error)}`);
+
+    return { evidence: 'none' };
+  }
 }
 
 /**
@@ -258,7 +290,7 @@ async function alreadyArchived<T extends ArchiveSessionRef>(
 
 async function archiveOnReports(
   config: LocalConfig,
-  sessions: ReadonlyArray<{ session: Session; meta: SessionSyncMeta }>,
+  sessions: readonly ArchivedRead[],
   message: string,
 ): Promise<SessionPush> {
   let unsaved: string | undefined;
@@ -292,11 +324,11 @@ async function archiveOnReports(
 async function saveAll(
   archive: SyncManager,
   root: string,
-  sessions: ReadonlyArray<{ session: Session; meta: SessionSyncMeta }>,
+  sessions: readonly ArchivedRead[],
 ): Promise<string | undefined> {
-  for (const { session, meta } of sessions) {
+  for (const { session, meta, evidence } of sessions) {
     try {
-      const saved = await archive.saveSession(session, meta, { pathsRewritten: true });
+      const saved = await archive.saveSession(session, meta, { pathsRewritten: true, ...(evidence && { evidence }) });
 
       if (saved.status === 'busy') return archiveBusyMessage(root, saved.lockPath);
     } catch (error) {

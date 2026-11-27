@@ -30,7 +30,7 @@ const { runPostPull, runDeclaredPostPull, POST_PULL_BUDGET_SEC, COLD_PULL_WORST_
   await import('../post-pull.js');
 const { trySymlink } = await import('./helpers/symlink.js');
 const { PULL_TIMEOUT_MS } = await import('../hook-handlers.js');
-const { log } = await import('../utils/logger.js');
+const { log } = await import('@teamai/shared/log');
 
 let dir: string;
 let debugSpy: ReturnType<typeof vi.spyOn>;
@@ -84,11 +84,10 @@ describe('budget sizing', () => {
 });
 
 describe('runDeclaredPostPull (interactive)', () => {
-  it('launches fire-and-forget into the user terminal instead of waiting', async () => {
+  it('streams to the terminal but still waits for the script', async () => {
     writeScript('post.mjs', 'export {};\n');
     mockLoadTeamConfig.mockResolvedValue(teamConfig({ path: 'post.mjs' }));
-    const fakeChild = { on: vi.fn(), unref: vi.fn(), stdout: null, stderr: null };
-    mockSpawn.mockReturnValueOnce(fakeChild as never);
+    mockSpawn.mockImplementationOnce(() => fakeScript(0) as never);
 
     await runDeclaredPostPull(dir, { interactive: true });
 
@@ -98,13 +97,19 @@ describe('runDeclaredPostPull (interactive)', () => {
     expect(options.stdio).toEqual(['ignore', 'inherit', 'inherit']);
     expect(options.windowsHide).toBe(true);
     expect(options.env.TEAMAI_POSTPULL_TIMEOUT_SEC).toBe(String(POST_PULL_BUDGET_SEC));
-    // spawnScript attaches the canonical 'error' listener; this pull is the
-    // child's only guard against an async spawn failure.
-    expect(fakeChild.on).toHaveBeenCalledWith('error', expect.any(Function));
-    expect(fakeChild.unref).toHaveBeenCalled();
-    // No waited outcome line for this shape: the user's terminal is the report.
-    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('unawaited, terminal attached'));
-    expect(debugSpy).not.toHaveBeenCalledWith(expect.stringMatching(/postPull: exited/));
+    // The waited outcome line is the point: an unwaited child dies with the
+    // launcher's job object on Windows.
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringMatching(/postPull: exited 0 in \d+ms/));
+  });
+
+  it('records a non-zero exit', async () => {
+    writeScript('fail.mjs', 'export {};\n');
+    mockLoadTeamConfig.mockResolvedValue(teamConfig({ path: 'fail.mjs' }));
+    mockSpawn.mockImplementationOnce(() => fakeScript(3) as never);
+
+    await runDeclaredPostPull(dir, { interactive: true });
+
+    expect(debugSpy).toHaveBeenCalledWith(expect.stringContaining('postPull: exited 3 in'));
   });
 });
 

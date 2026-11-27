@@ -28,7 +28,7 @@ import { isDelivered } from './scoring-evidence.js';
 import { scopeScoring } from './settings.js';
 import { GeneratedQuestions, type QuestionSwitches } from './generated-questions.js';
 import { Subject } from './subject.js';
-import { TryScorer } from './try-scorer.js';
+import { TriedFile } from './tried-file.js';
 import { ScoreItem } from './judging-workflows.js';
 import { isCorrectnessScorer } from '../benchmark/plan.js';
 import { plannedJudgesOf } from '../benchmark/run-plan.js';
@@ -268,7 +268,7 @@ async function sessionPins(config: LocalConfig, subject: Exclude<Subject, { kind
 
 /** The scorer files the instance tries, each a candidate in place of a named scorer. */
 async function fileCandidates(files: readonly string[]): Promise<Candidate[] | Refusal> {
-  const read = await TryScorer.files(files);
+  const read = await TriedFile.readAll(files);
 
   return read.ok ? read.files.map(({ scorer, pin, definition }) => ({ name: scorer, pin, definition })) : read;
 }

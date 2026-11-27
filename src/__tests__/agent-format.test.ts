@@ -711,7 +711,7 @@ describe('AgentsHandler.pushItem — skipReason path', () => {
   });
 
   it('skips writing to team repo when skipReason is set', async () => {
-    const { log: mockLog } = await import('../utils/logger.js');
+    const { log: mockLog } = await import('@teamai/shared/log');
 
     await handler.pushItem(
       {

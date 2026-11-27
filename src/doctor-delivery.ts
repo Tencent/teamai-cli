@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { hookSyntaxOf, isToolId, toolOf } from './tool-registry.js';
 import { defaultPathsOf } from './tool-instances.js';
 import { existingSharedInstructionDirs, shadowedSharedInstructionFiles } from './shared-instruction-source.js';
-import { expandHome, listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
+import { listFilesRecursive, pathExists, readFileSafe, readJsonObject } from './utils/fs.js';
 import {
   DEFAULT_TOOL_PATHS, getDataHome, getMcpSharing, getTeamaiHome, isAgentExcluded, isGitExcludeEnabled, managedMcpManifestKey, MUSE_TOOL_ID,
   resolveBaseDir, scopedToolPaths,
@@ -27,7 +27,7 @@ import {
   sameFile,
   SHELL_PROFILE_CANDIDATE_NAMES,
 } from './utils/shell-profile.js';
-import { getUserHome } from './utils/home.js';
+import { getUserHome, expandHome } from '@teamai/shared/home';
 import { hookSettingsFile, installOf, isInstalledFor, locate, locatingOnce, ownOf, unreadWrites, workspaceHooksOf, writable, writesOf, type DirPlace, type FilesChannel, type Install, type Location, type ReadGate, type Session, type Unread } from './locate.js';
 import { readGateCheckName, readGateVerdict, type Held } from './read-gates.js';
 import { amongPlaces, placesRecordOf, samePlaces } from './resources/places.js';
@@ -35,8 +35,8 @@ import { realHost, toolHome } from './tool-home.js';
 import { getsRulesFromExtension, ruleFormatForTool, ruleStemsForTool } from './resources/rule-format.js';
 import { declaredSecretKeys } from './resources/secrets.js';
 import { isReservedTeamEnvKey } from './env-reserved.js';
-import { skillsGuardBase } from './builtin-skills.js';
-import { findSkillDirectoryBlock, describeSkippedSkillDirectory } from './resources/skills.js';
+import { skillsGuardBase } from './skill-owned-files.js';
+import { findSkillDirectoryBlock, describeSkippedSkillDirectory } from './skill-directory.js';
 
 /**
  * The checks that verify the payload rather than the plumbing: what each tool
@@ -284,7 +284,7 @@ export async function readGateChecks(gates: readonly ReadGate[], held: Held): Pr
  * reason, and the command whose job is explaining bad state must report it,
  * not stack-trace on it.
  */
-function unresolvableCheck(type: 'skills' | 'agents' | 'docs', reason: string): Check[] {
+function unresolvableCheck(type: 'skills' | 'rules' | 'agents' | 'instructions' | 'docs', reason: string): Check[] {
   const noun = type[0].toUpperCase() + type.slice(1);
 
   return [{
@@ -537,7 +537,7 @@ async function moveFix({ tool, own, writes, wrote, members, workspaceHeld }: {
       + (members.length > 0 ? members.join(' ') : 'Run `teamai pull` to sync them there.');
   }
 
-  const { BUILTIN_SKILL_NAMES } = await import('./builtin-skills.js');
+  const { BUILTIN_SKILL_NAMES } = await import('./cli-skill-names.js');
   const reasons = [...members];
 
   if (workspaceHeld.length > 0) reasons.push(`This workspace holds back ${workspaceHeld.join(', ')}: its members deliver different copies. Make the copies equal in the team repo, or rename one.`);
@@ -562,7 +562,7 @@ async function moveHolds(
   located: readonly { readonly tool: string; readonly where: Location<'skills'> }[],
 ): Promise<{ readonly members: Map<string, string[]>; readonly workspaceHeld: readonly string[] }> {
   const members = new Map<string, string[]>();
-  const { keptStubLine, BUILTIN_SKILL_NAMES } = await import('./builtin-skills.js');
+  const [{ keptStubLine }, { BUILTIN_SKILL_NAMES }] = await Promise.all([import('./builtin-skills.js'), import('./cli-skill-names.js')]);
 
   for (const { tool, where } of located) {
     for (const dir of writesOf(where).map((place) => place.path)) {
@@ -757,8 +757,14 @@ export async function buildRulesDeliveryChecks(ctx: DoctorContext): Promise<Chec
   const { buildRolePullContext, resolveDesiredRules } = await import('./resources/desired.js');
   const { getHandler } = await import('./resources/index.js');
 
-  const roleContext = await buildRolePullContext(localConfig);
-  const { items } = await resolveDesiredRules(teamConfig, localConfig, roleContext);
+  let items: ResourceItem[];
+
+  try {
+    ({ items } = await resolveDesiredRules(teamConfig, localConfig, await buildRolePullContext(localConfig)));
+  } catch (e) {
+    return unresolvableCheck('rules', e instanceof Error ? e.message : String(e));
+  }
+
   const activation = await buildRulesActivationChecks(ctx, items);
 
   if (items.length === 0) {
@@ -893,7 +899,8 @@ function olderRuleCopyMeaning(tool: string): string {
  * build writes it; its context hook is what adds `what`. Null on V1.
  */
 async function opencodeV2PluginCheck(ctx: DoctorContext, name: string, what: string): Promise<Check | null> {
-  const { opencodeContextPlugin, opencodeMajorVersion } = await import('./opencode-hooks.js');
+  const { opencodeContextPlugin } = await import('./opencode-hooks.js');
+  const { opencodeMajorVersion } = await import('./opencode-version.js');
 
   if (await opencodeMajorVersion() < 2) return null;
   const { file, ready } = await opencodeContextPlugin();
@@ -2979,7 +2986,14 @@ export async function buildInstructionDeliveryChecks(ctx: DoctorContext): Promis
   const { resolveInstructionBlocks } = await import('./pull.js');
   const { buildRolePullContext } = await import('./resources/desired.js');
   const { opencodeContextReference, readOpencodeInstructionList } = await import('./resources/opencode-config.js');
-  const { blocks } = await resolveInstructionBlocks(teamConfig, localConfig, await buildRolePullContext(localConfig));
+  let blocks: Awaited<ReturnType<typeof resolveInstructionBlocks>>['blocks'];
+
+  try {
+    ({ blocks } = await resolveInstructionBlocks(teamConfig, localConfig, await buildRolePullContext(localConfig)));
+  } catch (e) {
+    return unresolvableCheck('instructions', e instanceof Error ? e.message : String(e));
+  }
+
   const { targets, hooks, stale, opencodeFallback } = await resolveInstructionTargets(teamConfig, localConfig);
   const pullNow = 'Run `teamai pull`.';
   const checks: Check[] = [];

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  isAtSharedRoot, isPlaceableType, placedResourcePath, resolveProjectNamespace, withNamespace,
+  isAtSharedRoot, isPlaceableType, placedResourcePath, resolveProjectNamespace, resolveRoleNamespace, withNamespace,
 } from '../push-namespaces.js';
+import type { NamespaceEntry } from '../manifest-schema.js';
 import type { ProjectsManifest } from '../projects.js';
 import type { ResourceItem } from '../types.js';
 
@@ -210,5 +211,44 @@ describe('placedResourcePath', () => {
     expect(placedResourcePath({ vr: 'agents/fe-agents/vr.yaml' }, 'agents', 'vr'))
       .toBe('agents/fe-agents/vr.yaml');
     expect(placedResourcePath({ vr: 'agents/fe-agents/vr.yaml' }, 'rules', 'vr')).toBeNull();
+  });
+});
+
+
+describe('resolveRoleNamespace', () => {
+  const declared = (namespace: string): NamespaceEntry => ({ type: 'skills', namespace, owner: 'review' });
+
+  /**
+   * Regression: handing the resolver every declared namespace let the first one
+   * win, so `--role Backend` came back as `Frontend` and the new resource landed
+   * in a namespace that reaches other members.
+   */
+  it('resolves the requested declaration, not the first declared one', () => {
+    expect(resolveRoleNamespace([declared('Frontend'), declared('Backend')], 'Backend', 'skills', ['Frontend', 'Backend']))
+      .toEqual({ ok: true, namespace: 'Backend' });
+  });
+
+  it('resolves a folded spelling to the directory that owns the declaration', () => {
+    expect(resolveRoleNamespace([declared('Frontend')], 'frontend', 'skills', ['Frontend']))
+      .toEqual({ ok: true, namespace: 'Frontend' });
+  });
+
+  it('keeps the declared spelling when no directory answers the declaration', () => {
+    expect(resolveRoleNamespace([declared('Frontend')], 'frontend', 'skills', []))
+      .toEqual({ ok: true, namespace: 'Frontend' });
+  });
+
+  /**
+   * Regression: the flag spelling was resolved as if it were the declaration.
+   * With both `Frontend/` and `frontend/` on disk, `--role frontend` picked the
+   * exact-looking sibling that pull excludes.
+   */
+  it('resolves the flag spelling to the declared directory, not to an exact sibling', () => {
+    expect(resolveRoleNamespace([declared('Frontend')], 'frontend', 'skills', ['Frontend', 'frontend']))
+      .toEqual({ ok: true, namespace: 'Frontend' });
+  });
+
+  it('rejects a namespace nothing declares', () => {
+    expect(resolveRoleNamespace([declared('Frontend')], 'backend', 'skills', ['Frontend']).ok).toBe(false);
   });
 });

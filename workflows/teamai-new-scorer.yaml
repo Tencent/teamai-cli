@@ -20,6 +20,7 @@ steps:
   - id: check
     needs: [draft]
     if: steps.draft.outputs.verdict == 'draft'
+    requires: { host: true }
     command: |
       case "$NAME" in
         ''|[!A-Za-z0-9]*|*[!A-Za-z0-9_-]*)
@@ -48,5 +49,6 @@ steps:
     # A scorer name is unique in the team repo. Two members who draft the same scorer share its branch and pull request.
     workspace: { team: { branch: "teamai/new-scorer/{{ steps.draft.outputs.name }}" } }
     deliver: pr
+    requires: { host: true }
     command: mkdir -p scorers && cp "$FILE" "scorers/$NAME.md"
     env: { FILE: "{{ steps.draft.outputs.file }}", NAME: "{{ steps.draft.outputs.name }}" }

@@ -67,7 +67,7 @@ import { modelsConfigure, modelsList, modelsSwitch } from '../models-cmd.js';
 import { getTeamValuesPath, saveModelInputs } from '../models/profile.js';
 import { autoDetectInit, loadLocalConfigForScope, loadTeamConfig, requireInit } from '../config.js';
 import { askSecret, isInteractive } from '../utils/prompt.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import type { TeamaiConfig, LocalConfig } from '../types.js';
 
 const PROJECTS_YAML = `

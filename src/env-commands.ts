@@ -1,7 +1,7 @@
 import { requireInit, detectProjectConfig, describeUnreadableConfig, loadTeamConfig, NotInitializedError } from './config.js';
 import { DetachedTeamRepoError, pullRepo } from './utils/git.js';
 import { pathExists } from './utils/fs.js';
-import { log, spinner } from './utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
 import { EnvHandler, envEntryReader, unknownEnvVariableKeys, type EnvVariable, type EnvYaml } from './resources/env.js';
 import { ENV_KEY_RE, envName, envValue, sameEnvName } from './resources/env-key.js';
 import {
@@ -337,7 +337,7 @@ async function followUpAfterValueChange(
 
 /** True when this scope's MCP configs were reconciled. False when they were left for a pull. */
 async function reconcileCurrentScopeMcp(localConfig: LocalConfig): Promise<boolean> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
   if (!teamConfig) return false;
 

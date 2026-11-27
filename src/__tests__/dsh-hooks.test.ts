@@ -14,7 +14,7 @@ import {
   dshSandboxNote,
   reconcileDshHooks,
 } from '../dsh-hooks.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { reconcileHooksToAllTools } from '../hooks.js';
 import type { HookDef } from '../types.js';
 import { hookAdapterDir } from '../locate.js';

@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { LineCounter, parseDocument } from 'yaml';
-import { parseYaml } from '../utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
 import { isYamlNode, locate } from '../workflow/parse-context.js';
 import { durationMs } from '../utils/duration.js';

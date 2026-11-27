@@ -10,6 +10,7 @@ import { parse as parseYaml } from 'yaml';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { benchmarkFixture, envelope, said, type BenchmarkFixture } from '../helpers/benchmark-fixture.js';
+import { installToyRuntime } from '../helpers/toy-runtime.js';
 
 const workflow = (script: string, branch = 'teamai-reports'): string => `schemaVersion: v1alpha1
 name: ${branch === 'teamai-reports' ? 'publish-note' : 'publish-learning'}
@@ -46,10 +47,10 @@ describe('a step that publishes to a teamai data branch, run through the real CL
     return shown.status === 0 ? shown.stdout : undefined;
   };
 
-  /** Runs `name`, publish-note by default, with the local driver, its step doing `body` in the place it runs in. */
-  async function run(body: string, name = 'publish-note') {
+  /** Runs `name`, publish-note by default, with `driver`, local by default, its step doing `body` in the place it runs in. */
+  async function run(body: string, name = 'publish-note', driver = 'local') {
     fs.writeFileSync(script, `const fs = require('fs'); const { execFileSync } = require('child_process');\nconst stage = (file) => execFileSync('git', ['add', '--', file]);\n${body}\n`);
-    const ran = await fixture.teamai(['workflow', 'start', name, '--driver', 'local']);
+    const ran = await fixture.teamai(['workflow', 'start', name, '--driver', driver]);
     const done = z.object({ run: z.string(), outcome: z.string() }).safeParse(envelope(ran).data?.done);
     if (!done.success) throw new Error(`no run: ${said(ran)}`);
     const state = RunSchema.parse(fixture.runFile(done.data.run));
@@ -80,6 +81,28 @@ fs.writeFileSync('stray.txt', 'not staged\\n');`);
     expect(ran.state.deliveries ?? []).toEqual([]);
     expect(Object.keys(ran.state.copies ?? {})).not.toContain('teamai-reports');
   }, 120_000);
+
+  it('publishes on the host under a definition whose only runtime offers the team workspace', async () => {
+    const state = path.join(fixture.root, 'toy-state-publish');
+    // The member's own toy, which offers the team workspace too.
+    fs.mkdirSync(path.join(fixture.home, '.teamai', 'runtimes', 'toy'), { recursive: true });
+    installToyRuntime(path.join(fixture.home, '.teamai', 'runtimes', 'toy'));
+    fs.mkdirSync(path.join(fixture.home, '.teamai', 'drivers'), { recursive: true });
+    fs.writeFileSync(path.join(fixture.home, '.teamai', 'drivers', 'toyteam.yaml'), [
+      'schemaVersion: v1alpha1', 'name: toyteam', 'runtimes:', '  - use: toy', '    options:',
+      `      state: ${JSON.stringify(state)}`, '      can: { workspace: [read-only, new, continue, team] }', '',
+    ].join('\n'));
+    const own = JSON.stringify(`notes/${member}.yaml`);
+    const before = published();
+
+    const ran = await run(`fs.mkdirSync('notes', { recursive: true }); fs.writeFileSync(${own}, 'seen: 4\\n'); stage(${own});`, 'publish-note', 'toyteam');
+
+    expect(ran.outcome, ran.said).toBe('succeeded');
+    expect(onReports(`notes/${member}.yaml`)).toBe('seen: 4\n');
+    expect(published()).toBe(before + 1);
+    // The step ran on the host: the toy opened no place.
+    expect(fs.existsSync(path.join(state, 'ops'))).toBe(false);
+  });
 
   it('lets the run be published, since a step that published to a data branch leaves nothing only this machine has', async () => {
     const ran = await run(`fs.mkdirSync('notes', { recursive: true }); fs.writeFileSync(${JSON.stringify(`notes/${member}.yaml`)}, 'seen: 6\\n'); stage(${JSON.stringify(`notes/${member}.yaml`)});`);

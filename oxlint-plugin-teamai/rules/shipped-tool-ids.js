@@ -59,6 +59,20 @@ const BASE_ID_NAMES = new Set(['CLAUDE_TOOL_ID', 'CODEX_TOOL_ID', 'CLAUDE_TOOL',
  * A new comparison fails; a count above what the file holds fails until it is lowered.
  */
 export const BASE_ID_COMPARISONS = new Map(Object.entries({
+  // A fake Paseo daemon: it runs the providers Paseo ships, by the base `baseOf` gives a provider's id.
+  'packages/runtime-paseo/src/testing/fake-daemon.ts': 6,
+  // The member's provider, a `PaseoTool` (DaemonHost.memberProvider), never an instance's name.
+  'packages/runtime-paseo/src/wake.ts': 1,
+  // Compares the command a step starts with the one executable Vercel's image holds; an instance's own command is not there.
+  'packages/runtime-sandbox/src/providers/vercel.ts': 1,
+  // `tool` is the base an instance extends (`instance?.tool ?? name`), resolved on the line that sets it.
+  'packages/runtime-sandbox/src/wrapper.ts': 1,
+  // Compares the T3 driver of the provider instance that runs the step, which is never a teamai instance's name.
+  'packages/runtime-t3/src/place.ts': 1,
+  // A fake T3 server: it compares the T3 driver and provider ids T3 ships, never a teamai instance's name.
+  'packages/runtime-t3/src/testing/fake-t3.mjs': 4,
+  // `tool` is the shipped tool of the member's T3 driver (`toolOf(driver)`), never an instance's name.
+  'packages/runtime-t3/src/wake.ts': 1,
   // The session store is ready when Codex's own executable is on PATH; an instance runs a command of its own.
   'packages/tool-core/src/formats/codex.ts': 1,
   // Every caller passes `launchAdapterIdOf(tool)`, the adapter an instance shares with its tool; the package cannot
@@ -119,8 +133,11 @@ const RESOLVERS = new Set(['baseToolOf', 'agentFormatOf', 'hookFormatOf', 'mcpFo
 /** Fields that hold such an answer, never a tool's own name: `toolOf(tool).base`, an MCP target's `format`, a descriptor's `launch`. */
 const RESOLVED_FIELDS = new Set(['base', 'format', 'family', 'kind', 'launch', 'ecosystem']);
 
-/** Types that admit only the ids teamai ships or a format, so no instance name reaches a comparison of one. */
-const RESOLVED_TYPES = new Set(['ToolName', 'AgentToolId', 'ModelAgent', 'McpFormat', 'HookFormat']);
+/**
+ * Types that admit only the ids teamai ships or a format, so no instance name reaches a comparison of one: `PaseoTool`
+ * is the shipped tool a Paseo provider runs (packages/runtime-paseo/src/providers.ts).
+ */
+const RESOLVED_TYPES = new Set(['ToolName', 'AgentToolId', 'ModelAgent', 'McpFormat', 'HookFormat', 'PaseoTool']);
 
 /**
  * Whether `node` holds the tool an instance extends, or a format or family, rather than a tool's own name: a resolver's

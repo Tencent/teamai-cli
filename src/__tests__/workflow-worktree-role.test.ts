@@ -13,12 +13,12 @@ import { syncScorersThenWorkflows } from '../scorers/team-sync.js';
 import { knownSecrets, resolveWorkflowEnv } from '../env-resolution.js';
 import { detectProjectConfig, resolveConfigForDir } from '../config.js';
 import { buildHandlerRegistry } from '../hook-handlers.js';
-import { launchHoldsCheckout } from '../launch-context.js';
+import { launchHoldsCheckout, readLaunch } from '../launch-context.js';
 import type { LocalConfig } from '../types.js';
 import { resolveAnchors } from '../utils/git.js';
 import { resolvePartitionDir } from '../utils/partition.js';
 import { _setDriverPollMs, runLocalDriver } from '../workflow/drivers/local/local-driver.js';
-import type { LocalToolAdapter, LocalToolRun } from '../workflow/drivers/local/local-tool-adapter.js';
+import { type StepLauncher, type StepRun } from '@teamai/runtime-tools';
 import { startRun } from '../workflow/engine.js';
 import { canFor } from '../workflow/drivers/skill/skill-driver.js';
 import { inProcessClient } from '../workflow/protocol.js';
@@ -121,7 +121,7 @@ async function roleWorkspace(yaml: string, options: { tools: readonly string[]; 
 }
 
 /** A tool that runs `look` on each launch in place of a session, and does nothing else. */
-function fakeTool(look: (input: LocalToolRun) => Promise<void>): LocalToolAdapter {
+function fakeTool(look: (input: StepRun) => Promise<void>): StepLauncher {
   return {
     async runInteractive() {
       return { started: false, exitCode: 1, failure: { code: 'tool_failed', message: 'interactive is not used' } };
@@ -150,7 +150,9 @@ steps:
     prompt: Review the change.
 `;
 
-describe('a prompt step that runs with a role in a worktree copy', () => {
+// Each case pulls, starts a run and prepares a worktree copy, close to two hundred git processes, which take 3 s on an
+// idle machine and up to 30 s on a loaded one.
+describe('a prompt step that runs with a role in a worktree copy', { timeout: 60_000 }, () => {
   it('is held from the skill driver, which cannot give a step a role, and from a driver that makes its own copy, which teamai delivers no role into', async () => {
     const { config, runId } = await roleWorkspace(REVIEW_IN_COPY, { tools: ['claude'] });
     const client = inProcessClient({ config, env: await resolveWorkflowEnv(config) });
@@ -210,7 +212,8 @@ steps:
       adapter: fakeTool(async (input) => {
         const own = await resolveConfigForDir(input.cwd);
         seen.role = own?.stepRole;
-        seen.holds = own && input.launch ? await launchHoldsCheckout(own, input.launch) : false;
+        const launch = readLaunch(input.launchEnv ?? {});
+        seen.holds = own && launch ? await launchHoldsCheckout(own, launch) : false;
       }),
     });
 

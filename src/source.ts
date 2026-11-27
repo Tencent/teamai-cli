@@ -2,13 +2,13 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import fse from 'fs-extra';
 import YAML from 'yaml';
-import { parseYaml } from './utils/yaml.js';
+import { parseYaml } from '@teamai/shared/yaml';
 import { z } from 'zod';
-import { loadTeamConfig, autoDetectInit, loadLocalConfig, detectProjectConfig } from './config.js';
+import { loadTeamConfig, autoDetectInit, loadLocalConfig, detectProjectConfig, NotInitializedError } from './config.js';
 import { assertAttachedTeamRepo, createGit, DetachedTeamRepoError, pullRepo } from './utils/git.js';
 import { parseFrontmatter } from './utils/frontmatter.js';
 import { detectProvider, getProvider } from './providers/index.js';
-import { log, spinner } from './utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
 import {
   pathExists,
   readFileSafe,
@@ -37,8 +37,8 @@ import { installOf, locate, ownOf, SHARED_AGENT_SKILLS_PATH } from './locate.js'
 import { resolveOpenclawWorkspace } from './openclaw-home.js';
 import { TOOL_ORDER } from './tool-registry.js';
 import { toolHome } from './tool-home.js';
-import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './builtin-skills.js';
-import { getUserHome } from './utils/home.js';
+import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './cli-skill-names.js';
+import { getUserHome } from '@teamai/shared/home';
 import { acquireLock, releaseLock } from './update.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 import type {
@@ -48,8 +48,10 @@ import type {
   SourceInstallManifest,
   GlobalOptions,
 } from './types.js';
-import { isAgentExcluded, isJsonObject, resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
+import { isJsonObject } from '@teamai/shared/json';
+import { isAgentExcluded, resolveBaseDir, scopedToolPaths, SOURCE_PULL_TTL_MS } from './types.js';
 import type { DeliveryRecorder } from './git-exclude-delivered.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 // ─── Source repo management ──────────────────────────────
 
@@ -84,6 +86,12 @@ async function teamRepoEditable(localPath: string): Promise<boolean> {
 
     return false;
   }
+}
+
+/** A refusal changed nothing, so the command exits 1 and a script can stop. */
+function refuse(message: string): void {
+  log.error(message);
+  process.exitCode = 1;
 }
 
 function getSourceDir(sourceName: string): string {
@@ -268,7 +276,7 @@ async function readSourceManifest(manifestPath: string): Promise<SourceInstallRe
   let raw: string;
 
   try {
-    raw = await fse.readFile(manifestPath, 'utf8');
+    raw = await readRegularFile(manifestPath, 'utf8');
   } catch (error) {
     if (errnoCode(error) === 'ENOENT') return null;
     throw new Error(`Cannot read source ownership record: ${manifestPath}`, { cause: error });
@@ -451,14 +459,14 @@ export async function sourceAdd(repoUrl: string, options: { name?: string } & Gl
 }
 
 async function sourceAddLocked(repoUrl: string, options: { name?: string } & GlobalOptions, localConfig: LocalConfig, initialTeamConfig: TeamaiConfig): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath) ?? initialTeamConfig;
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig) ?? initialTeamConfig;
   const repoPath = localConfig.repo.localPath;
 
   // Derive name from repo URL if not provided
   const name = options.name ?? deriveSourceName(repoUrl);
 
   if (!name) {
-    log.error('Could not derive source name from URL. Use --name to specify one.');
+    refuse('Could not derive source name from URL. Use --name to specify one.');
 
     return;
   }
@@ -466,7 +474,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   try {
     assertSafeResourceName(name);
   } catch (e) {
-    log.error(`Invalid source name "${name}": ${e instanceof Error ? e.message : String(e)}`);
+    refuse(`Invalid source name "${name}": ${e instanceof Error ? e.message : String(e)}`);
 
     return;
   }
@@ -475,13 +483,13 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   const existing = teamConfig.sources ?? [];
 
   if (existing.some((s) => s.name === name)) {
-    log.error(`Source "${name}" already exists. Use a different name or remove it first.`);
+    refuse(`Source "${name}" already exists. Use a different name or remove it first.`);
 
     return;
   }
 
   if (existing.some((s) => s.repo === repoUrl)) {
-    log.error(`Source repo "${repoUrl}" already configured (as "${existing.find((s) => s.repo === repoUrl)!.name}").`);
+    refuse(`Source repo "${repoUrl}" already configured (as "${existing.find((s) => s.repo === repoUrl)!.name}").`);
 
     return;
   }
@@ -496,7 +504,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   const cloneResult = await ensureSourceRepo({ name, repo: repoUrl }, true);
 
   if (!cloneResult) {
-    log.error('Could not access the source repo. Check the URL and your git credentials.');
+    refuse('Could not access the source repo. Check the URL and your git credentials.');
 
     return;
   }
@@ -505,7 +513,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   // source's `publicSkills` declaration, so a repo without a teamai.yaml (or
   // with an empty publicSkills list) syncs 0 skills. Say so here, at add time,
   // instead of letting pull skip it silently later.
-  const sourceConfig = await loadTeamConfig(cloneResult);
+  const sourceConfig = await loadTeamConfig(cloneResult, null);
 
   for (const line of sourceSyncWarnings(name, sourceConfig)) {
     log.warn(line);
@@ -516,7 +524,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   const content = await readFileSafe(yamlPath);
 
   if (!content) {
-    log.error('Could not read teamai.yaml');
+    refuse('Could not read teamai.yaml');
 
     return;
   }
@@ -525,7 +533,7 @@ async function sourceAddLocked(repoUrl: string, options: { name?: string } & Glo
   const sources = isJsonObject(raw) ? raw.sources ?? [] : null;
 
   if (!isJsonObject(raw) || !Array.isArray(sources)) {
-    log.error(`${yamlPath} is not a YAML mapping whose sources is a list, so the source was not added. Fix the file, then run the command again.`);
+    refuse(`${yamlPath} is not a YAML mapping whose sources is a list, so the source was not added. Fix the file, then run the command again.`);
 
     return;
   }
@@ -548,7 +556,7 @@ export async function sourceRemove(name: string, options: GlobalOptions): Promis
 }
 
 async function sourceRemoveLocked(name: string, options: GlobalOptions, localConfig: LocalConfig, initialTeamConfig: TeamaiConfig): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath) ?? initialTeamConfig;
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig) ?? initialTeamConfig;
   const repoPath = localConfig.repo.localPath;
 
   const existing = teamConfig.sources ?? [];
@@ -558,7 +566,7 @@ async function sourceRemoveLocked(name: string, options: GlobalOptions, localCon
   const manifest = await loadSourceManifest(name, localConfig);
 
   if (!source && !manifest) {
-    log.error(`Source "${name}" not found. Run \`teamai source list\` to see configured sources.`);
+    refuse(`Source "${name}" not found. Run \`teamai source list\` to see configured sources.`);
 
     return;
   }
@@ -633,7 +641,7 @@ async function sourceRemoveLocked(name: string, options: GlobalOptions, localCon
     const content = await readFileSafe(yamlPath);
 
     if (!content) {
-      log.error('Could not read teamai.yaml');
+      refuse('Could not read teamai.yaml');
 
       return;
     }
@@ -642,7 +650,7 @@ async function sourceRemoveLocked(name: string, options: GlobalOptions, localCon
     const sources = isJsonObject(raw) ? raw.sources ?? [] : null;
 
     if (!isJsonObject(raw) || !Array.isArray(sources)) {
-      log.error(`${yamlPath} is not a YAML mapping whose sources is a list, so the subscription was not removed from it. Fix the file, then run the command again.`);
+      refuse(`${yamlPath} is not a YAML mapping whose sources is a list, so the subscription was not removed from it. Fix the file, then run the command again.`);
 
       return;
     }
@@ -691,8 +699,11 @@ export async function sourceList(): Promise<void> {
     // Read-only: the load never persists a migration (#893).
     const { teamConfig } = await autoDetectInit(undefined, { dryRun: true });
     gitSources = teamConfig.sources ?? [];
-  } catch {
-    // Not initialized (no team repo) — only the HTTP bypass may exist.
+  } catch (e) {
+    // Not initialized (no team repo) — only the HTTP bypass may exist. A config
+    // that exists but cannot be read or used is not that: saying "no sources"
+    // would report a broken setup as an empty one.
+    if (!(e instanceof NotInitializedError)) throw e;
   }
 
   const { describeLocalAgent } = await import('./local-agent.js');
@@ -744,7 +755,20 @@ export async function sourceAddHttp(
   const trimmed = endpoint.trim();
 
   if (!trimmed) {
-    log.error('Endpoint is required. Usage: teamai source add-http <endpoint> --token <key>');
+    refuse('Endpoint is required. Usage: teamai source add-http <endpoint> --token <key>');
+
+    return;
+  }
+
+  // Before the scope read or a --dry-run preview: only an http(s) URL can be
+  // a source endpoint.
+  const { assertHttpEndpoint } = await import('./local-agent.js');
+
+  try {
+    assertHttpEndpoint(trimmed);
+  } catch (e) {
+    log.error(e instanceof Error ? e.message : String(e));
+    process.exitCode = 1;
 
     return;
   }
@@ -755,7 +779,7 @@ export async function sourceAddHttp(
     ?? (await loadLocalConfig({ dryRun: options.dryRun }));
 
   if (mainConfig?.repo.kind === 'http') {
-    log.error('Your main team repo is already an HTTP backend, which owns the HTTP source config.');
+    refuse('Your main team repo is already an HTTP backend, which owns the HTTP source config.');
     log.info('An HTTP bypass is only for git-based main repos. Nothing changed.');
 
     return;
@@ -800,7 +824,7 @@ export async function sourceBrowse(name: string, options: GlobalOptions): Promis
   const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: true });
 
   if (!(teamConfig.sources ?? []).some((source) => source.name === name)) {
-    log.error(`Source "${name}" not found. Run \`teamai source list\` to see configured sources.`);
+    refuse(`Source "${name}" not found. Run \`teamai source list\` to see configured sources.`);
 
     return;
   }
@@ -809,12 +833,12 @@ export async function sourceBrowse(name: string, options: GlobalOptions): Promis
 }
 
 async function sourceBrowseLocked(name: string, options: GlobalOptions, localConfig: LocalConfig, initialTeamConfig: TeamaiConfig): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath) ?? initialTeamConfig;
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig) ?? initialTeamConfig;
   const sources = teamConfig.sources ?? [];
   const source = sources.find((s) => s.name === name);
 
   if (!source) {
-    log.error(`Source "${name}" not found. Run \`teamai source list\` to see configured sources.`);
+    refuse(`Source "${name}" not found. Run \`teamai source list\` to see configured sources.`);
 
     return;
   }
@@ -823,12 +847,12 @@ async function sourceBrowseLocked(name: string, options: GlobalOptions, localCon
   const repoDir = await ensureSourceRepo(source, !!options.force, !!options.dryRun, !!options.inline);
 
   if (!repoDir) {
-    if (!options.dryRun) log.error(`Could not access source "${name}".`);
+    if (!options.dryRun) refuse(`Could not access source "${name}".`);
 
     return;
   }
 
-  const sourceTeamConfig = await loadTeamConfig(repoDir);
+  const sourceTeamConfig = await loadTeamConfig(repoDir, null);
 
   if (!sourceTeamConfig) {
     log.warn(`Source "${name}" has no teamai.yaml.`);
@@ -879,7 +903,7 @@ async function sourceBrowseLocked(name: string, options: GlobalOptions, localCon
  * Called from pull() at the top level (not inside pullForScope).
  */
 export async function pullSources(localConfig: LocalConfig, options: GlobalOptions, recorder?: DeliveryRecorder): Promise<void> {
-  if (!(await loadTeamConfig(localConfig.repo.localPath))?.sources?.length) {
+  if (!(await loadTeamConfig(localConfig.repo.localPath, localConfig))?.sources?.length) {
     // No source configured delivers nothing: copies an earlier pull left stay
     // where they are, and are no longer teamai's to keep out of git (#915).
     recorder?.succeeded('sources');
@@ -896,7 +920,7 @@ export async function pullSources(localConfig: LocalConfig, options: GlobalOptio
 }
 
 async function pullSourcesLocked(localConfig: LocalConfig, options: GlobalOptions, recorder?: DeliveryRecorder): Promise<void> {
-  const teamConfig = await loadTeamConfig(localConfig.repo.localPath);
+  const teamConfig = await loadTeamConfig(localConfig.repo.localPath, localConfig);
 
   if (!teamConfig) {
     recorder?.failed('sources');
@@ -941,7 +965,7 @@ async function pullSingleSource(
   if (!repoDir) return false;
 
   // Load source's teamai.yaml
-  const sourceTeamConfig = await loadTeamConfig(repoDir);
+  const sourceTeamConfig = await loadTeamConfig(repoDir, null);
 
   if (!sourceTeamConfig) {
     log.debug(`[source:${source.name}] No teamai.yaml, skipping`);
@@ -1789,7 +1813,7 @@ async function membersFileInTheWay(target: string, sourcePath: string, repoDir: 
     const versions = await historicalVersions(repoDir, `${skillOrigin(repoDir, skillName).pathspec}/${rel}`);
 
     if (versions === null) return null;
-    const blob = await blobIdOf(repoDir, await fse.readFile(dest));
+    const blob = await blobIdOf(repoDir, await readRegularFile(dest));
 
     if (!versions.some((version) => version.blob === blob && version.mode !== '120000')) return rel;
   }
@@ -1838,10 +1862,10 @@ async function legacyCopyKeeper(
 
       // `foreign`: a path of a skill the source has or had, but never this file, which only history can tell.
       const fromSource = async (rel: string): Promise<'today' | 'history' | 'changed' | 'foreign'> => {
-        const bytes = await fse.readFile(path.join(skillDir, rel));
+        const bytes = await readRegularFile(path.join(skillDir, rel));
         const source = sourcePath ? await fse.lstat(path.join(sourcePath, rel)).catch(() => null) : null;
 
-        if (source?.isFile() && bytes.equals(await fse.readFile(path.join(sourcePath!, rel)))) return 'today';
+        if (source?.isFile() && bytes.equals(await readRegularFile(path.join(sourcePath!, rel)))) return 'today';
 
         if (!history) return 'changed';
 

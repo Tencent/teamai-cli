@@ -100,7 +100,7 @@ async function propose(config: LocalConfig, { tool, sessionId }: { tool: string;
     };
   }
 
-  const [team, scoring] = await Promise.all([loadTeamConfig(config.repo.localPath), scopeScoring(config)]);
+  const [team, scoring] = await Promise.all([loadTeamConfig(config.repo.localPath, config), scopeScoring(config)]);
   const publish = await publishProposal(config, SessionPolicy.publish(config, team).policies.attended);
   const source = { value: platform, why: 'This session\'s tool, as teamai session list names it.' };
 

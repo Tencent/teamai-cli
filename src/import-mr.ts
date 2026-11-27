@@ -1,11 +1,12 @@
 import matter from 'gray-matter';
 import { z } from 'zod';
 
+import { fetchGitCodeMR } from './providers/gitcode/mr-fetch.js';
 import { fetchGitHubPR } from './providers/github/mr-fetch.js';
 import { fetchGitLabMR } from './providers/gitlab/mr-fetch.js';
 import { fetchTGitMR } from './providers/tgit/mr-fetch.js';
 import type { MRData, MRFetchOptions, MRThread } from './types.js';
-import { log } from './utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /**
  * Auto-detects the provider from the URL and fetches MR data.
@@ -16,21 +17,42 @@ import { log } from './utils/logger.js';
  * @throws      Error when the URL does not belong to a known provider
  */
 export async function fetchMR(url: string, opts: MRFetchOptions): Promise<MRData> {
-  if (url.includes('github.com')) {
+  // Match the host exactly, not as a substring: `github.com.example.com` is not
+  // GitHub, and a URL whose path merely mentions `github.com` is not a GitHub PR.
+  // Each provider's own URL parser still validates the host before any token is
+  // sent, so this is only about routing to the right parser.
+  let host: string | undefined;
+
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    // Not an absolute URL — no host to match; fall through to the route-based
+    // GitLab check and the same Unsupported MR URL error as before.
+  }
+
+  if (host === 'github.com') {
     return fetchGitHubPR(url, opts);
   }
 
-  if (url.includes('git.woa.com')) {
+  if (host === 'git.woa.com') {
     return fetchTGitMR(url, opts);
   }
 
+  if (host === 'gitcode.com') {
+    // GitCode is a registered provider with a working fetchGitCodeMR (see
+    // docs/designs/gitcode-provider.md §5); route its PR URLs there.
+    return fetchGitCodeMR(url);
+  }
+
   // GitLab (incl. self-hosted): the `/-/merge_requests/` route is unique to
-  // GitLab, so it identifies the platform on any host.
+  // GitLab, so it identifies the platform on any host. Checked after the
+  // known-host cases above so a `gitcode.com/.../merge_requests/1` URL is not
+  // misrouted to GitLab (GitCode accepts that route too).
   if (/\/-\/merge_requests\/\d+/.test(url)) {
     return fetchGitLabMR(url, opts);
   }
 
-  throw new Error(`Unsupported MR URL: ${url}. Only GitHub, TGit and GitLab are supported`);
+  throw new Error(`Unsupported MR URL: ${url}. Only GitHub, TGit, GitLab and GitCode are supported`);
 }
 
 /** Characters of the prompt the review threads may take (#1187). */

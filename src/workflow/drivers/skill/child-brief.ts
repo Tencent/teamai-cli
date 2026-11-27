@@ -3,12 +3,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import type { LocalConfig } from '../../../types.js';
-import { readFileSafe, writeFileAtomic } from '../../../utils/fs.js';
+import { writeFileAtomic } from '../../../utils/fs.js';
 import { redact } from '@teamai/shared/redact';
 import { expectedOutput } from '../../output.js';
-import { attemptDir, attemptResultPath, type AttemptId, type RunId } from '../../store.js';
+import { RUN_DIR_ENV, WORKFLOW_DIR_ENV } from '@teamai/runtime-protocol';
+import { attemptDir, attemptResultPath, runScratchDir, type AttemptId, type RunId } from '../../store.js';
 import type { OutputSchema } from '../../types.js';
 import type { Literal } from './literals.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /** A path the child reported changing: a leading `./` is stripped, and an absolute path or one that climbs with `..` counts as unreported. */
 function reportedPath(raw: string): string | undefined {
@@ -28,7 +30,7 @@ const ChildChangedSchema = z.array(z.string()).optional().transform((paths) => (
   return reported === undefined ? [] : [reported];
 }));
 
-/** `attempts/<a>/result.json`, as the child writes it: what the step produced, or why it could not, and the paths it changed. */
+/** `attempts/<a>/out/result.json`, as the child writes it: what the step produced, or why it could not, and the paths it changed. */
 const ChildResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('output'), output: z.unknown().optional(), changed: ChildChangedSchema }),
   z.object({ kind: z.literal('failure'), failure: z.object({ code: z.string().min(1), message: z.string() }), changed: ChildChangedSchema }),
@@ -56,15 +58,17 @@ export async function writeChildBrief(input: {
   prompt: string;
   /**
    * Who works the step: a `child` agent the orchestrator started; the orchestrator, with the `person`, in an interactive
-   * step; or the orchestrator alone (`self`), on a host that starts no child. Only a child ends when it reports.
+   * step; or the orchestrator alone (`self`), on a session host that starts no child. Only a child ends when it reports.
    */
   by: 'child' | 'person' | 'self';
   /** The step's output schema, when it declares one. */
   output?: OutputSchema;
+  /** The workflow's folder (`TEAMAI_WORKFLOW_DIR`), for a step of a workflow folder. */
+  folder?: string;
   report: Literal;
   secrets: Record<string, string>;
 }): Promise<string> {
-  const { config, run, attempt, step, dir, changes, prompt, by, output, report, secrets } = input;
+  const { config, run, attempt, step, dir, changes, prompt, by, output, folder, report, secrets } = input;
   const expected = expectedOutput(output);
   const committing = changes === 'commit';
 
@@ -101,6 +105,10 @@ export async function writeChildBrief(input: {
       none: [`- Work in \`${dir}\`: every file the step reads is there. Do not change files here: the step only reads them, and TeamAI fails a step that leaves a change.`, '- Leave git to TeamAI.'],
       confined: [`- Read only the files in \`${dir}\`. Read nothing outside it, not the repository, nor anything from the session that started you: the step is answered from that directory alone.`, '- Change nothing there.'],
     }[changes],
+    // The agent's shell is the session's, which no step's env reaches; a confined step reads only its directory.
+    ...changes === 'confined' ? [] : [folder === undefined
+      ? `- Your shell has no ${RUN_DIR_ENV}: where the step names it, the run's scratch directory is \`${runScratchDir(config, run)}\`.`
+      : `- Your shell has no ${RUN_DIR_ENV} or ${WORKFLOW_DIR_ENV}: where the step names one, the run's scratch directory is \`${runScratchDir(config, run)}\`, and the workflow's folder \`${folder}\`.`],
     '- Run one teamai command, the report below, once, at the end.',
     '',
     '## Finish',
@@ -116,6 +124,8 @@ export async function writeChildBrief(input: {
 
   const file = path.join(attemptDir(config, run, attempt), 'brief.md');
   await fs.mkdir(path.dirname(file), { recursive: true });
+  // The child writes its result there and may not create a directory first.
+  await fs.mkdir(path.dirname(attemptResultPath(config, run, attempt)), { recursive: true });
   await writeFileAtomic(file, redact(brief, { envSecrets: secrets, patterns: false }));
 
   return file;
@@ -124,7 +134,7 @@ export async function writeChildBrief(input: {
 /** The result the child of `attempt` wrote. A missing or unreadable one is a `tool_failed` failure. */
 export async function readChildResult(input: { config: LocalConfig; run: RunId; attempt: AttemptId }): Promise<ChildResult> {
   const file = attemptResultPath(input.config, input.run, input.attempt);
-  const raw = await readFileSafe(file);
+  const raw = await readRegularFile(file, 'utf8').catch(() => null);
 
   if (raw === null) {
     return { kind: 'failure', failure: { code: 'tool_failed', message: `The child of attempt ${input.attempt} wrote no ${file}, so the step has no result.` }, changed: [] };

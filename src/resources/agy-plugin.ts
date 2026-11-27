@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { writeJsonAtomic } from '../utils/fs.js';
+import { readRegularFile } from '@teamai/shared/regular-file';
 
 /**
  * Antigravity CLI reads a project's MCP servers only from a plugin
@@ -36,7 +37,7 @@ export async function removeAgyPluginManifest(mcpFile: string): Promise<void> {
   let text: string;
 
   try {
-    text = await fs.promises.readFile(manifest, 'utf8');
+    text = await readRegularFile(manifest, 'utf8');
   } catch {
     return;
   }

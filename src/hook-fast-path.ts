@@ -186,17 +186,37 @@ export function promptAnswersInForeground(sessionId: string, env: NodeJS.Process
   const file = sessionId.replace(/[^a-zA-Z0-9._-]/g, '_');
 
   return fs.existsSync(path.join(teamaiHome, 'package-hints', `${file}.pending.json`))
-    || fs.existsSync(path.join(teamaiHome, 'sessions', `${file}.mr-hint.pending.json`))
-    || (readTextFile(path.join(teamaiHome, 'sessions', `${file}.json`)) ?? '').includes('"pendingHint"')
+    || fs.existsSync(path.join(sessionStateDir(), `${file}.mr-hint.pending.json`))
+    || (readTextFile(path.join(sessionStateDir(), `${file}.json`)) ?? '').includes('"pendingHint"')
     || isHttpEnrolled(env);
 }
 
-/** A file's text, or null when it cannot be read. */
+/** `~/.teamai/sessions`, the same directory as getSessionStateDir. Copied: this file imports nothing outside UNCACHED. */
+function sessionStateDir(): string {
+  return path.join(getUserHome(), '.teamai', 'sessions');
+}
+
+/**
+ * A regular file's text, or null when it cannot be read or is anything else. A copy of @teamai/shared/regular-file's
+ * check, which the fast path cannot load: opened without blocking, so a FIFO a step left here does not hold the hook.
+ */
 function readTextFile(file: string): string | null {
+  let fd: number;
+
   try {
-    return fs.readFileSync(file, 'utf8');
+    // oxlint-disable-next-line teamai/regular-file-reads -- the fast path's own nonblocking open, since it loads only node: modules (teamai/uncached-entry)
+    fd = fs.openSync(file, process.platform === 'win32' ? fs.constants.O_RDONLY : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   } catch {
     return null;
+  }
+
+  try {
+    // oxlint-disable-next-line teamai/regular-file-reads -- reads the descriptor just checked as a regular file, not a path
+    return fs.fstatSync(fd).isFile() ? fs.readFileSync(fd, 'utf8') : null;
+  } catch {
+    return null;
+  } finally {
+    fs.closeSync(fd);
   }
 }
 
@@ -275,7 +295,7 @@ export async function runLoginDeferredHook(
 
 /** What a pass inside the login environment last saw of this session's HTTP enrolment (recordLoginEnrolment). */
 function loginEnrolmentFile(sessionId: string): string {
-  return path.join(getUserHome(), '.teamai', 'sessions', `${sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')}.http-enrolment.json`);
+  return path.join(sessionStateDir(), `${sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')}.http-enrolment.json`);
 }
 
 /**

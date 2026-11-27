@@ -24,6 +24,13 @@ export const FACTS_FILES = new Set(scopedFiles([
 const WAITED_COMMANDS = ['hook-dispatch', 'pull'];
 
 /**
+ * The modules the CLI bundle's source loads with import() only in another mode than the CLI's: a fleet step's guardian
+ * loads the bundle to stop what a killed member left (src/cli.ts), which no agent waits on. Any other module it loads
+ * that way is a startup entry.
+ */
+const OTHER_MODES = new Set(['src/workflow/fleet/guardian-stop.ts']);
+
+/**
  * A step runtime's own executable, which exists to launch tools and so loads their behaviour: it is no command or hook
  * an agent waits on. Any other executable is a startup entry.
  */
@@ -75,8 +82,11 @@ function startupsOf(root) {
     if (!RUNTIME_EXECUTABLE.test(source)) executables.push(source);
   }
 
-  // A bundle an executable loads by URL beside itself, as bin.ts loads the CLI.
-  const clis = executables.flatMap((source) => [...read(source).matchAll(/new URL\('\.\/([\w-]+)\.js'/g)].flatMap(([, name = '']) => bundles.get(name) ?? []));
+  // A bundle an executable loads by URL beside itself, as bin.ts loads the CLI. A bundle source that declares no command
+  // hands off to the modules it loads with import(), but those of OTHER_MODES, as src/cli.ts loads the command table.
+  const bundled = executables.flatMap((source) => [...read(source).matchAll(/new URL\('\.\/([\w-]+)\.js'/g)].flatMap(([, name = '']) => bundles.get(name) ?? []));
+  const handedOff = (/** @type {string} */ cli) => (/\.command\(/.test(read(cli)) ? [] : dynamicImports(path.posix.join(root, cli)).flatMap((step) => resolved(root, cli, step) ?? []).filter((module) => !OTHER_MODES.has(module)));
+  const clis = [...bundled, ...bundled.flatMap(handedOff)];
   const entries = new Set([...executables, ...clis]);
   /** @type {Set<string>} */
   const waited = new Set();

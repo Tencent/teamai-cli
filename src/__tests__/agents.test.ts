@@ -30,7 +30,7 @@ vi.mock('../utils/git.js', async () => ({
   getFileContentAtRev: (...args: [string, string, string]) => mockGetFileContentAtRev(...args),
 }));
 
-import { AgentsHandler } from '../resources/agents.js';
+import { AgentsHandler, ownedAgentDirectories, resolveAgentsForDirectory } from '../resources/agents.js';
 import { recordDelivery } from './helpers/delivered-checkout.js';
 import { shippedAgentRender } from '../builtin-agents.js';
 import { commitTeamRepo } from './helpers/team-repo-history.js';
@@ -58,6 +58,16 @@ function buildTeamConfig(
     },
     toolPaths,
   } as TeamaiConfig;
+}
+
+/** Whether names differing only in case are one file in `dir`. */
+async function caseInsensitive(dir: string): Promise<boolean> {
+  const probe = path.join(dir, 'CaseProbe');
+  await fse.writeFile(probe, '');
+  const result = await fse.pathExists(path.join(dir, 'caseprobe'));
+  await fse.remove(probe);
+
+  return result;
 }
 
 describe('AgentsHandler — Phase 1 push/pull/remove', () => {
@@ -614,6 +624,44 @@ projects:
       // stem in every other namespace, because agents deploy flattened.
       expect(await fse.pathExists(path.join(tmpDir, '.teamai/agents/vr.yaml'))).toBe(false);
     });
+
+    it('skips a tombstoned namespaced canonical source when another namespace keeps the stem', async () => {
+      const self = selfConfig();
+      await fse.outputFile(path.join(repoPath, 'agents/.removed'), 'fe/vr\n');
+      await fse.outputFile(path.join(repoPath, 'agents/be/vr.yaml'), 'name: vr\ndescription: B\ninstructions: B.\n');
+      await fse.outputFile(path.join(tmpDir, '.teamai/agents/fe/vr.yaml'), 'name: vr\ndescription: A\ninstructions: A.\n');
+
+      expect(await handler.scanLocalForPush(teamConfig, self)).toEqual([]);
+    });
+
+    it('picks up a canonical source in another namespace after a same-stem namespaced removal', async () => {
+      const self = selfConfig();
+      await fse.outputFile(path.join(repoPath, 'agents/.removed'), 'fe/vr\n');
+      await fse.outputFile(path.join(tmpDir, '.teamai/agents/be/vr.yaml'), 'name: vr\ndescription: B\ninstructions: B.\n');
+
+      const items = await handler.scanLocalForPush(teamConfig, self);
+
+      expect(items.map((item) => [item.name, item.status, item.relativePath])).toEqual([['vr', 'new', 'agents/be/vr.yaml']]);
+    });
+
+    it('removes canonical agent folders and bare-stem namespaced files from .teamai/agents', async () => {
+      const self = selfConfig();
+      await fse.outputFile(path.join(repoPath, 'agents/fe/reviewer/AGENT.md'), '---\nname: reviewer\ndescription: A\n---\nA.\n');
+      await fse.outputFile(path.join(repoPath, 'agents/be/reviewer/AGENT.md'), '---\nname: reviewer\ndescription: B\n---\nB.\n');
+      await fse.outputFile(path.join(tmpDir, '.teamai/agents/fe/reviewer/AGENT.md'), '---\nname: reviewer\ndescription: A\n---\nA.\n');
+      await fse.outputFile(path.join(tmpDir, '.teamai/agents/be/reviewer/AGENT.md'), '---\nname: reviewer\ndescription: B\n---\nB.\n');
+      await fse.outputFile(path.join(repoPath, 'agents/fe/vr.yaml'), 'name: vr\ndescription: A\ninstructions: A.\n');
+      await fse.outputFile(path.join(tmpDir, '.teamai/agents/fe/vr.yaml'), 'name: vr\ndescription: A\ninstructions: A.\n');
+
+      await handler.removeItem('fe/reviewer', teamConfig, self);
+
+      expect(await fse.pathExists(path.join(tmpDir, '.teamai/agents/fe/reviewer'))).toBe(false);
+      expect(await fse.pathExists(path.join(tmpDir, '.teamai/agents/be/reviewer/AGENT.md'))).toBe(true);
+
+      await handler.removeItem('vr', teamConfig, self);
+
+      expect(await fse.pathExists(path.join(tmpDir, '.teamai/agents/fe/vr.yaml'))).toBe(false);
+    });
   });
 
   it('still removes a bare stem from every namespace', async () => {
@@ -900,6 +948,45 @@ projects:
 
     expect(await fse.pathExists(deployed)).toBe(false);
   });
+
+  it(
+    'does not revoke the agent that delivery just recovered from a placement record',
+    async (ctx) => {
+      // Needs a case-sensitive filesystem: `agents/Frontend/` has to sit beside
+      // `agents/frontend/` for the two to compete for one declaration. Windows
+      // and a default macOS volume fold them into one directory, where the
+      // premise cannot exist — platform checks are not enough, so probe the
+      // filesystem the repo is on.
+      if (await caseInsensitive(repoPath)) ctx.skip();
+
+      const other = 'name: other\ndescription: Other\ninstructions: Read it.\n';
+      const reviewer = 'name: reviewer\ndescription: Shared\ninstructions: Read it.\n';
+      await fse.outputFile(path.join(repoPath, 'agents/Frontend/other.yaml'), other);
+      await fse.outputFile(path.join(repoPath, 'agents/frontend/reviewer.yaml'), reviewer);
+      await fse.outputFile(path.join(repoPath, 'agents/backend/reviewer.yaml'), reviewer);
+      const placedAgents = { reviewer: 'agents/backend/reviewer.yaml' };
+      await fse.outputJson(path.join(getDataHome(localConfig), 'state.json'), { placedAgents });
+
+      // What this run delivers: `Frontend/` owns the declaration, so the folded
+      // sibling claims nothing and the recorded `backend` copy is recovered.
+      const items = await handler.scanTeamForPull(teamConfig, localConfig);
+      const owned = await ownedAgentDirectories(localConfig, ['Frontend']);
+      const resolution = resolveAgentsForDirectory(items, ['Frontend'], placedAgents, owned);
+      expect(resolution.kind).toBe('resolved');
+      const delivered = resolution.kind === 'resolved' ? resolution.items.map((item) => item.value) : [];
+      expect(delivered.filter((item) => item.namespace === 'backend').map((item) => item.name)).toEqual(['reviewer']);
+      for (const item of delivered) await handler.pullItem(item, teamConfig, localConfig);
+
+      const deployed = path.join(homeDir, '.claude/agents/reviewer.md');
+      expect(await fse.pathExists(deployed)).toBe(true);
+
+      // The undo pass of the same run reads the ownership delivery used, or it
+      // classifies the copy written a moment ago as inactive and deletes it.
+      await handler.cleanupInactiveNamespaces(teamConfig, localConfig, ['Frontend']);
+
+      expect(await fse.pathExists(deployed)).toBe(true);
+    },
+  );
 
   it('still skips an inactive agent this machine never published', async () => {
     await fse.outputFile(path.join(repoPath, 'manifest/projects.yaml'),

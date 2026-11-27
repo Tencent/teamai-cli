@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { LAUNCH_TOOLS } from '../tool-launch/tools.js';
+import { LAUNCH_TOOLS } from '../launch-registry.js';
 import { TeamaiConfigSchema, type LocalConfig, type TeamaiConfig } from '../types.js';
 import { roleCopyRefusal } from '../workflow/place/role-copy.js';
 

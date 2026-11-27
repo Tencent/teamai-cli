@@ -9,6 +9,7 @@ defaults:
   inputs: { within: 7d }
 steps:
   - id: sessions
+    requires: { host: true }
     # Every finished session last active within inputs.within that no learning was contributed from, whatever the session policies say.
     command: teamai session list --finished --all --within "$WITHIN" --json
     env: { WITHIN: "{{ inputs.within }}" }

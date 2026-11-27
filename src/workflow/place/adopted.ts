@@ -1,19 +1,19 @@
 /**
- * A place the host made for a lease, which TeamAI adopts as the copy of the lease's branch instead of creating one. The
+ * A place the session host made for a lease, which TeamAI adopts as the copy of the lease's branch instead of creating one. The
  * checks change nothing, so a refused place costs the attempt nothing, and TeamAI never adds or removes the worktree.
  */
 import fs from 'node:fs/promises';
 import { gitCommonDir } from '../../utils/git.js';
 import type { WorkflowFailure } from '../types.js';
 import type { CopyContract, WorkspaceContract } from '../workspace.js';
-import { fetchMissingCommits, git, hooksPath, offBranch, setupUnfinished, worktreeHooks } from '../worktree.js';
+import { fetchMissingCommits, git, gitAnswer, hooksPath, offBranch, setupUnfinished, unansweredGit, worktreeHooks } from '../worktree.js';
 import { leaseCommits } from './created.js';
 import type { PlaceRecord } from './record.js';
 
 interface Adoption {
   /** The checkout the run started from. */
   root: string;
-  /** The place the host made. */
+  /** The place the session host made. */
   dir: string;
   run: string;
   attempt: string;
@@ -23,7 +23,7 @@ interface Adoption {
 /**
  * Why attempt `lease.attempt` cannot adopt `adopt`, as the message `adopt_mismatch` answers with, or undefined when it
  * can, or adopts nothing. A place recorded for the attempt answers for itself, so only that place may be adopted again.
- * A lease in the checkout adopts none, and a reader only `hosted`, the place the host made for its branch.
+ * A lease in the checkout adopts none, and a reader only `sessionHostPlace`, the place the session host made for its branch.
  */
 export async function adoptRefusal(input: {
   /** The checkout the run started from. */
@@ -32,13 +32,13 @@ export async function adoptRefusal(input: {
   recorded: PlaceRecord | undefined;
   lease: { attempt: string; step: string; workspace?: WorkspaceContract };
   adopt: string | undefined;
-  hosted: string | undefined;
+  sessionHostPlace: string | undefined;
 }): Promise<string | undefined> {
-  const { root, run, recorded, lease, adopt, hosted } = input;
+  const { root, run, recorded, lease, adopt, sessionHostPlace } = input;
 
   if (adopt === undefined) return undefined;
 
-  if (recorded !== undefined && recorded.phase !== 'abandoned') {
+  if (recorded !== undefined && recorded.phase !== 'abandoned' && recorded.phase !== 'retired') {
     if (recorded.dir !== adopt) return `Attempt ${lease.attempt} is already prepared in ${recorded.dir}, so it cannot adopt ${adopt}. Prepare it again without --adopt, which answers with that place.`;
 
     if (recorded.phase !== 'opening') return undefined;
@@ -50,7 +50,7 @@ export async function adoptRefusal(input: {
 
   if (workspace.mode === 'team') return `Step "${lease.step}" runs in a clone of the team repo TeamAI makes, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.`;
 
-  if (workspace.mode === 'read-only' && adopt !== hosted) return `Step "${lease.step}" reads a copy TeamAI keeps, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.`;
+  if (workspace.mode === 'read-only' && adopt !== sessionHostPlace) return `Step "${lease.step}" reads a copy TeamAI keeps, so attempt ${lease.attempt} cannot adopt a place. Prepare it without --adopt.`;
 
   return adoptedMismatch({ root, dir: adopt, run, attempt: lease.attempt, workspace });
 }
@@ -94,11 +94,19 @@ async function adoptedMismatch({ root, dir, run, attempt, workspace }: Adoption)
     return `${dir} is ${on}, not on branch ${branch} nor detached at its start ${start.commit}, so attempt ${attempt} was not prepared there. Check out ${branch} in ${dir}, then adopt it again.`;
   }
 
-  if (on !== undefined && (await git(dir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])).code === 0) {
+  const exists = on === undefined ? undefined : gitAnswer(await git(dir, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]));
+
+  if (exists?.said === 'nothing') return `${unansweredGit(`whether branch ${branch} exists in ${dir}`, exists.result).message} Attempt ${attempt} was not prepared there.`;
+
+  if (exists?.said === 'yes') {
     return `${dir} is detached at the start of branch ${branch}, which already exists, so attempt ${attempt} was not prepared there. Check out ${branch} in ${dir}, then adopt it again.`;
   }
 
-  if ((await git(dir, ['merge-base', '--is-ancestor', start.commit, 'HEAD'])).code !== 0) {
+  const holds = gitAnswer(await git(dir, ['merge-base', '--is-ancestor', start.commit, 'HEAD']));
+
+  if (holds.said === 'nothing') return `${unansweredGit(`whether branch ${branch} in ${dir} holds ${start.commit}`, holds.result).message} Attempt ${attempt} was not prepared there.`;
+
+  if (holds.said === 'no') {
     return `Branch ${branch} in ${dir} does not contain ${start.commit}, the commit the step starts from, so attempt ${attempt} was not prepared there. Adopt a worktree whose ${branch} contains it.`;
   }
 

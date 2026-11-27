@@ -4,7 +4,7 @@ import { deliversEveryNamespace } from './resource-namespaces.js';
 import { assertNotReadOnly } from './read-only.js';
 import { DetachedTeamRepoError, pullRepo, pushRepoBranch, checkoutMaster, unusedBranchName } from './utils/git.js';
 import { createPrWithFallback, filterExistingTopLevelPaths, providerOpensPullRequests } from './push.js';
-import { log, spinner } from './utils/logger.js';
+import { log, spinner } from '@teamai/shared/log';
 import { getHandler } from './resources/index.js';
 import type { GlobalOptions, ResourceType, LocalConfig, TeamaiConfig, State } from './types.js';
 import { askConfirmation } from './utils/prompt.js';

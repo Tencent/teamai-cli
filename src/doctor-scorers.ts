@@ -1,8 +1,8 @@
 import { loadModelAliases } from './models/aliases.js';
 import { cachedScorerNames, loadCachedScorer } from './scorers/cache.js';
 import { formatScorerDiagnostic } from './scorers/definition.js';
-import { confinedToolLevels, installedConfinedTools } from './tool-launch/confined.js';
-import { CONFINED_TOOLS } from './tool-launch/tools.js';
+import { confinedToolLevels, installedConfinedTools } from './workflow/confined-launch.js';
+import { CONFINED_TOOLS } from './launch-registry.js';
 import { chooseJudgeModel } from './scorers/judge-model.js';
 import { scoringUnavailable } from './scorers/home.js';
 import { Marks } from './scorers/marks.js';
@@ -11,7 +11,7 @@ import { scopeScoring, upvoteJudgeAliasNotes, type SessionScoring } from './scor
 import { RUN_MODES } from './launch-context.js';
 import { SessionPolicy, type PolicySource } from './session-flow/session-policy.js';
 import type { LocalConfig } from './types.js';
-import { isSilent, setSilent } from './utils/logger.js';
+import { isSilent, setSilent } from '@teamai/shared/log';
 import { syncTeamDefinitions } from './benchmark/suite-cache.js';
 import { formatUnknownScorer } from './scorers/team-sync.js';
 

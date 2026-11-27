@@ -25,11 +25,12 @@ import { ensureTeamaiWrapper, TEAMAI_BIN_DIR } from './builtin-hooks.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getDataHome, type LocalConfig } from './types.js';
-import { execCommand } from './utils/exec.js';
+import { execCommand } from '@teamai/shared/exec';
 import { GIT_REPOSITORY_ENV } from './utils/git-env.js';
 import { readFileIfExists, readJson, remove, writeJson } from './utils/fs.js';
 import { gitFindsNoRepository } from './utils/git-discovery.js';
-import { log } from './utils/logger.js';
+import { gitAnswer, saidYes } from './workflow/worktree.js';
+import { log } from '@teamai/shared/log';
 
 export const GIT_HOOK_EVENTS = ['post-checkout', 'post-merge', 'post-rewrite'] as const;
 
@@ -434,7 +435,7 @@ export async function isRebaseFastForward(
 
   if (!/^(?:pull|rebase)(?:\s|$)/.test(reflogAction ?? '')) return false;
 
-  return (await gitIn(cwd)(['merge-base', '--is-ancestor', oldRef, newRef])).code === 0;
+  return saidYes(gitAnswer(await gitIn(cwd)(['merge-base', '--is-ancestor', oldRef, newRef])), `whether ${newRef} holds ${oldRef}`);
 }
 
 /** Drop the repository Git exported for the hook, before teamai runs any git. */

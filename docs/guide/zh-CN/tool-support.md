@@ -30,7 +30,7 @@ teamai 为每个工具把每类 Agent 资源写到哪里，以及工具读取哪
 | Trae CN | `~/.trae-cn` | written; reads ? | written; reads ? | copy | `~/.trae-cn/user_rules` d | `~/.trae-cn/agents` d | ? | — | — |
 | ZCode | `~/.zcode` | written; reads ? | in the blocks file (ZCode AGENTS.md) | copy | `~/.zcode/AGENTS.md` s | `~/.zcode/agents` s | `~/.zcode/cli/config.json` s | `~/.zcode/cli/config.json` s | zcode |
 | Oh My Pi | `~/.omp/agent` `~/$PI_CONFIG_DIR/agent` `~/$PI_CONFIG_DIR/profiles/$OMP_PROFILE/agent` (or `$PI_PROFILE`) | `~/.omp/agent/skills` v | `~/.omp/agent/rules` v | copy | `~/.omp/agent/RULES.md` v | `~/.omp/agent/agents` v | omp-extension v | `~/.omp/agent/mcp.json` v | omp |
-| Pi Coding Agent | `~/.pi/agent` `$PI_CODING_AGENT_DIR` | `~/.pi/agent/skills` v | in the blocks file (Pi AGENTS.md) | copy | `~/.pi/agent/AGENTS.override.md` v<br>`~/.pi/agent/AGENTS.md` v | — | pi-extension v | `~/.pi/agent/mcp.json` v | pi |
+| Pi Coding Agent | `~/.pi/agent` `$PI_CODING_AGENT_DIR` | `~/.pi/agent/skills` v | in the blocks file (Pi AGENTS.md) | copy | `~/.pi/agent/AGENTS.override.md` v<br>`~/.pi/agent/AGENTS.md` v | Not delivered: Pi prompt templates are slash commands, not isolated subagents; teamai does not map team agents to templates. | pi-extension v | `~/.pi/agent/mcp.json` v | pi |
 | CodeBuddy | `~/.codebuddy` `$CODEBUDDY_CONFIG_DIR` | `~/.codebuddy/skills` v | `~/.codebuddy/rules` v | copy | `~/.codebuddy/CODEBUDDY.md` s | `~/.codebuddy/agents` s | `~/.codebuddy/settings.json` s | first of `~/.codebuddy/.mcp.json`, `~/.codebuddy/mcp.json`, `~/.codebuddy.json` (in `$CODEBUDDY_CONFIG_DIR` when set) s | codebuddy |
 | OpenClaw | `~/.openclaw` `$OPENCLAW_STATE_DIR` `$OPENCLAW_HOME/.openclaw[-$OPENCLAW_PROFILE]` | written; reads ? | in the blocks file (OpenClaw workspace AGENTS.md) | copy | written; reads ? | — | openclaw-hook v | `~/.openclaw/openclaw.json` d | — |
 | Hermes | `~/.hermes` `$HERMES_HOME` `~/.hermes$HERMES_DATA_DIR_SUFFIX` `%LOCALAPPDATA%\hermes$HERMES_DATA_DIR_SUFFIX` `<home>/profiles/<active_profile>` | `~/.hermes/skills` s | in the blocks file (Hermes SOUL.md) | copy | `~/.hermes/SOUL.md` s | — | hermes-plugin v | `~/.hermes/config.yaml` d | hermes |
@@ -62,7 +62,7 @@ teamai 为每个工具把每类 Agent 资源写到哪里，以及工具读取哪
 | Trae CN | written; reads ? | `.trae/rules` t | `.trae/rules` d | `.trae/agents` s cwd only | ? | `.trae/mcp.json` d |
 | ZCode | written; reads ? | session hook s | session hook s | `.zcode/agents` s cwd only | user hooks | `.zcode/config.json` s |
 | Oh My Pi | written; reads ? | `.omp/rules` v cwd only | extension v | `.omp/agents` v | user hooks | `.omp/mcp.json` v cwd only |
-| Pi Coding Agent | `.pi/skills` v cwd only | extension v | extension v | — | user hooks | `.pi/mcp.json` v cwd only |
+| Pi Coding Agent | `.pi/skills` v cwd only | extension v | extension v | Not delivered: Pi prompt templates are slash commands, not isolated subagents; teamai does not map team agents to templates. | user hooks | `.pi/mcp.json` v cwd only |
 | CodeBuddy | written; reads ? | `.codebuddy/rules` s cwd only | `.codebuddy/rules` s cwd only | `.codebuddy/agents` s cwd only | `.codebuddy/settings.json` s cwd only<br>`.codebuddy/settings.local.json` v cwd only | first of `.mcp.json`, `mcp.json` s cwd only |
 | OpenClaw | written; reads ? | — | — | — | user hooks | — |
 | Hermes | `~/.hermes/skills` s | — | plugin s | — | user hooks | — |

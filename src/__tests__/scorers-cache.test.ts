@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
 import { defaultScorerRubric, loadCachedScorer, pinScorers, syncScorerDefinitions } from '../scorers/cache.js';
 import { formatScorerDiagnostic } from '../scorers/definition.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { routingScorers } from '../scorers/skill-routing.js';
 import { teamToolInstances } from '../tool-instances.js';
 import { useToolInstances } from '../tool-registry.js';
@@ -87,7 +87,7 @@ describe('scorer cache', () => {
     writeScorer(config, 'style.md', VALID.replace('passingScore: 1\n', 'passingScore: 1\ntool: acme-codex\n'));
     fs.mkdirSync(path.join(config.repo.localPath, 'tools'));
     fs.writeFileSync(path.join(config.repo.localPath, 'tools', 'acme-codex.yaml'), 'schemaVersion: v1alpha1\nname: acme-codex\nextends: codex\n');
-    useToolInstances(new Map((await teamToolInstances(config.repo.localPath)).map((instance) => [instance.name, instance])));
+    useToolInstances(new Map((await teamToolInstances({ root: config.repo.localPath, namespaces: async () => 'legacy' })).map((instance) => [instance.name, instance])));
     const warn = vi.spyOn(log, 'warn');
 
     expect(await syncScorerDefinitions(config)).toEqual({ cached: ['coverage', 'quality', 'style'], invalid: [], verified: [] });

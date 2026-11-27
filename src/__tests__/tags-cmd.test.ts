@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,8 +31,8 @@ import {
   saveLocalConfigForScope,
   saveStateForScope,
 } from '../config.js';
-import { tagsList, tagsSubscribe, tagsUnsubscribe } from '../tags.js';
-import { log } from '../utils/logger.js';
+import { tagsAdd, tagsList, tagsRemove, tagsSubscribe, tagsUnsubscribe } from '../tags.js';
+import { log } from '@teamai/shared/log';
 import type { LocalConfig } from '../types.js';
 
 const userConfig: LocalConfig = {
@@ -152,11 +152,89 @@ describe('tag subscription commands', () => {
   });
 });
 
+describe('tag command refusals', () => {
+  let repoPath: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.exitCode = undefined;
+    repoPath = mkdtempSync(path.join(os.tmpdir(), 'teamai-tags-refusal-'));
+    vi.mocked(detectProjectConfig).mockResolvedValue(null);
+    vi.mocked(requireInit).mockResolvedValue({
+      localConfig: { ...userConfig, repo: { localPath: repoPath, remote: 'owner/repo' } },
+      teamConfig: {} as never,
+    });
+  });
+
+  afterEach(() => {
+    process.exitCode = undefined;
+    rmSync(repoPath, { recursive: true, force: true });
+  });
+
+  it('exits 1 when subscribe is given no tag', async () => {
+    await tagsSubscribe([], {});
+
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('at least one tag'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('exits 1 when unsubscribe is given no tag', async () => {
+    await tagsUnsubscribe([], {});
+
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('at least one tag'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('exits 1 when add is given no tag', async () => {
+    await tagsAdd('skills', 'deploy', [], {});
+
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('at least one tag'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('exits 1 when remove is given no tag', async () => {
+    await tagsRemove('skills', 'deploy', [], {});
+
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('at least one tag to remove'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('exits 1 when remove finds no tags.yaml', async () => {
+    await tagsRemove('skills', 'deploy', ['backend'], {});
+
+    expect(log.error).toHaveBeenCalledWith('No tags.yaml found in team repo.');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('leaves a tags.yaml it cannot read unchanged when adding tags', async () => {
+    const tagsPath = path.join(repoPath, 'tags.yaml');
+    writeFileSync(tagsPath, 'skills: [unclosed');
+
+    await tagsAdd('skills', 'deploy', ['backend'], {});
+
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('could not be read'));
+    expect(process.exitCode).toBe(1);
+    expect(readFileSync(tagsPath, 'utf8')).toBe('skills: [unclosed');
+  });
+
+  it('refuses to remove tags from a tags.yaml it cannot read', async () => {
+    const tagsPath = path.join(repoPath, 'tags.yaml');
+    writeFileSync(tagsPath, 'just-a-scalar');
+
+    await tagsRemove('skills', 'deploy', ['backend'], {});
+
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('could not be read'));
+    expect(process.exitCode).toBe(1);
+    expect(readFileSync(tagsPath, 'utf8')).toBe('just-a-scalar');
+  });
+});
+
 describe('tags list', () => {
   let repoPath: string;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    process.exitCode = undefined;
     repoPath = mkdtempSync(path.join(os.tmpdir(), 'teamai-tags-list-'));
     writeFileSync(path.join(repoPath, 'teamai.yaml'), 'team: demo\nrepo: owner/repo\nprovider: github\n');
     useConfig({});
@@ -172,7 +250,18 @@ describe('tags list', () => {
   }
 
   afterEach(() => {
+    process.exitCode = undefined;
     rmSync(repoPath, { recursive: true, force: true });
+  });
+
+  it('reports a tags.yaml it cannot read instead of saying there is none', async () => {
+    writeFileSync(path.join(repoPath, 'tags.yaml'), 'skills: [unclosed');
+
+    await tagsList();
+
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('could not be read'));
+    expect(log.info).not.toHaveBeenCalledWith(expect.stringContaining('No tags.yaml found'));
+    expect(process.exitCode).toBe(1);
   });
 
   function addSkill(...segments: string[]): void {

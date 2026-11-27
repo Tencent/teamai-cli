@@ -2,7 +2,7 @@ import type { DescriptorIds, ToolDescriptor } from '@teamai/tool-core/definition
 import { BUILT_IN_FACTS } from '@teamai/tool-definitions/facts';
 import type { StoredSessionPlatform } from './session-flow/adapters/platform-facts.js';
 import type { TokenFormatId } from './token-usage/index.js';
-import type { LaunchAdapterId } from './tool-launch/adapters.js';
+import type { LaunchAdapterId } from './launch-registry.js';
 
 /** What a shipped tool's descriptor names: only built-in tools, and rows the app's launch, session and token tables declare. */
 type ShippedIds = DescriptorIds & { readonly tool: ToolId; readonly launch: LaunchAdapterId; readonly platform: StoredSessionPlatform; readonly tokens: TokenFormatId };

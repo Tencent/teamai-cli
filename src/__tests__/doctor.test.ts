@@ -34,7 +34,6 @@ vi.mock('../utils/fs.js', async (importOriginal) => ({
     listDirs: vi.fn().mockResolvedValue([]),
     listFiles: vi.fn().mockResolvedValue([]),
     listFilesRecursive: vi.fn().mockResolvedValue([]),
-    expandHome: vi.fn((p: string) => p),
     symlinkTarget: vi.fn(async (p: string) => p),
 }));
 
@@ -88,7 +87,7 @@ vi.mock('../hooks.js', async (importOriginal) => ({
 import { detectProjectConfig, loadLocalConfig, loadMemberSettings, loadTeamConfig } from '../config.js';
 import { pathExists, readFileSafe } from '../utils/fs.js';
 import { TEAMAI_HOOK_SUBCOMMANDS, readCodexHookTrustForScope } from '../hooks.js';
-import { log, setStderrOnly } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 import { isGfInstalled, gfIsAuthenticated } from '../providers/tgit/index.js';
 import { buildChecks, doctor, resolveDoctorContext } from '../doctor.js';
 import { teamaiWrapperSource } from '../builtin-hooks.js';
@@ -676,9 +675,6 @@ describe('doctor — JSON report', () => {
         });
 
         const allPassed = await doctor({ json: true });
-
-        // stdout must stay a pure data channel: one console.log, logs on stderr.
-        expect(setStderrOnly).toHaveBeenCalledWith(true);
 
         const report = emittedReport();
         expect(allPassed).toBe(true);

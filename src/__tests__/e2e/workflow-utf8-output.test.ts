@@ -85,5 +85,5 @@ setTimeout(() => fs.writeSync(1, bytes.subarray(split)), 150);
   expect(stored.steps[0]).toMatchObject({ status: 'succeeded', outputs: output });
   const attempts = path.join(runDir, runId, 'attempts');
   const attempt = fs.readdirSync(attempts)[0]!;
-  expect(JSON.parse(fs.readFileSync(path.join(attempts, attempt, 'result.json'), 'utf8'))).toEqual({ output });
+  expect(JSON.parse(fs.readFileSync(path.join(attempts, attempt, 'out', 'result.json'), 'utf8'))).toEqual({ output });
 }, 60_000);

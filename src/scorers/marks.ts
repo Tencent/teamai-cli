@@ -7,7 +7,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { ConfinedUsageSchema, type ConfinedUsage } from '../tool-launch/confined-level.js';
+import { ConfinedUsageSchema, type ConfinedUsage } from '@teamai/tool-core/stdout';
 import type { LocalConfig } from '../types.js';
 import { pathExists, readFileSafe, writeFileAtomic } from '../utils/fs.js';
 import { carriedMarks, type CarriedMark } from './attempts-upgrade.js';

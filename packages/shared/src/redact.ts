@@ -41,6 +41,17 @@ export function sanitizeGitUrl(text: string): string {
   return text.replace(/(https?:\/\/)[^/@\s]+@/gi, '$1***@');
 }
 
+/** Mask credentials in git URLs, HTTP Authorization headers, and any explicit secret values. */
+export function redactGitCredentials(text: string, secrets: readonly string[] = []): string {
+  let out = sanitizeGitUrl(text).replace(/(Authorization:\s*(?:Basic|Bearer)\s+)[^\s'"]+/gi, '$1***');
+
+  for (const secret of secrets) {
+    if (secret) out = out.split(secret).join('***');
+  }
+
+  return out;
+}
+
 /**
  * Env var names that mark a value as likely-secret. `PAT` must be a whole
  * `_`-separated segment, or every `*_PATH` variable would match.

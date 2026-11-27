@@ -1,5 +1,6 @@
 import { type CodeCollectedFile } from "../code-collector.js";
-import { type CodeFact, type CodeFactKind, mapKindToEvidenceType } from "../code-extractors.js";
+import { type CodeFactKind, mapKindToEvidenceType } from "../code-fact-kind.js";
+import { type CodeFact } from "../code-extractors.js";
 
 /**
  * Java extractor.

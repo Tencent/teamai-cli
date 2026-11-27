@@ -47,7 +47,7 @@ vi.mock('../providers/github/mr-fetch.js', () => ({
 
 import { ImportFromMr } from '../import-from-mr.js';
 import { fetchGitHubPR } from '../providers/github/mr-fetch.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 const DRAFT_BODY = 'gateway retry budget exhausted under burst traffic backoff jitter';
 const URLS = ['https://github.com/o/r/pull/1', 'https://github.com/o/r/pull/2'];

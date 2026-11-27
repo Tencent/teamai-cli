@@ -99,7 +99,7 @@ describe('doctor notes — a team tool instance whose paths drop a key', () => {
       fs.writeFileSync(path.join(repo, file), text);
     }
 
-    const teamConfig = await loadTeamConfig(repo);
+    const teamConfig = await loadTeamConfig(repo, null);
     fs.rmSync(repo, { recursive: true, force: true });
     if (!teamConfig) throw new Error('teamai.yaml did not load');
     return { localConfig: {} as LocalConfig, teamConfig, toolPaths: teamConfig.toolPaths, hookToolPaths: teamConfig.toolPaths, baseDir: '/tmp' } as DoctorContext;

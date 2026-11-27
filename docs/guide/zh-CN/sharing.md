@@ -799,6 +799,10 @@ self 模式下，如果当前分支落后于默认分支，推送修改过的 sk
 | `benchmarks/` | `SUITE.yaml` | 读取：[套件](benchmarks.md#编写套件) |
 | `scorers/` | `SCORER.md` | 读取：[评分器目录](scorers.md#评分器目录) |
 | `agents/` | `AGENT.md` | 读取：[目录型 agent](#目录型-agent) |
+| `drivers/` | `DRIVER.yaml` | 读取：[各部分放在哪里](workflow-advanced.md#各部分放在哪里) |
+| `runtimes/` | `RUNTIME.yaml` | 读取：[各部分放在哪里](workflow-advanced.md#各部分放在哪里) |
+| `sandboxes/` | `SANDBOX.yaml` | 读取：[各部分放在哪里](workflow-advanced.md#各部分放在哪里) |
+| `tools/` | `TOOL.yaml` | 读取：[各部分放在哪里](workflow-advanced.md#各部分放在哪里) |
 
 一个目录就是一个资源，无论其中还有什么文件：
 

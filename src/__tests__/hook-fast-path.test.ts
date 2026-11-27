@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +11,7 @@ import { loadLocalAgentConfig } from '../local-agent.js';
 import * as launchContext from '../launch-context.js';
 import { deriveSessionId } from '../utils/session-id.js';
 import { GIT_HOOK_TOOL } from '../git-hook.js';
+import { getSessionStateDir } from '../types.js';
 import { TOOL_IDS, TOOLS } from '../tools.js';
 import { INSTANCE_BASES } from '../tool-registry.js';
 
@@ -254,7 +256,7 @@ describe('promptAnswersInForeground', () => {
   });
 
   it('keeps a prompt in the foreground while an MR hint the session start found waits for it', async () => {
-    const file = path.join(home, '.teamai', 'sessions', `${SESSION.replace(/[^a-zA-Z0-9._-]/g, '_')}.mr-hint.pending.json`);
+    const file = path.join(getSessionStateDir(), `${SESSION.replace(/[^a-zA-Z0-9._-]/g, '_')}.mr-hint.pending.json`);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ message: 'Found 1 recently merged MR(s)', shown: { owner: 'acme', repo: 'shop', ids: ['7'] } }));
 
@@ -276,13 +278,29 @@ describe('promptAnswersInForeground', () => {
 
     expect(promptAnswersInForeground(SESSION, process.env)).toBe(true);
   });
+
+  // A plain read of a FIFO waits for a writer; the child here is that writer, three seconds late, so a read that waits shows.
+  it.skipIf(process.platform === 'win32')('answers at once when a FIFO stands where the session file is', () => {
+    const file = path.join(getSessionStateDir(), `${SESSION.replace(/[^a-zA-Z0-9._-]/g, '_')}.json`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    execFileSync('mkfifo', [file]);
+    const writer = spawn(process.execPath, ['-e', 'setTimeout(() => require("node:fs").openSync(process.argv[1], "w"), 3000)', file], { stdio: 'ignore' });
+    const started = Date.now();
+
+    try {
+      expect(promptAnswersInForeground(SESSION, process.env)).toBe(false);
+      expect(Date.now() - started).toBeLessThan(1_000);
+    } finally {
+      writer.kill();
+    }
+  });
 });
 
 // A pass inside the login environment leaves, per session, what it saw of an HTTP enrolment from its cwd, for a prompt
 // whose command deferred the login shell and so cannot see the profile's or the team env's variables (runLoginDeferredHook).
 describe('recordLoginEnrolment', () => {
   let home: string;
-  const record = () => path.join(home, '.teamai', 'sessions', 's-1.http-enrolment.json');
+  const record = () => path.join(getSessionStateDir(), 's-1.http-enrolment.json');
   const payload = (fields: object = {}) => JSON.stringify({ session_id: 's-1', cwd: '/work/a', ...fields });
 
   beforeEach(() => {
@@ -302,6 +320,7 @@ describe('recordLoginEnrolment', () => {
   ])('records the session\'s cwd and enrolled: $enrolled', ({ env, enrolled }) => {
     recordLoginEnrolment(payload(), env);
 
+    expect(path.dirname(record())).toBe(getSessionStateDir());
     expect(JSON.parse(fs.readFileSync(record(), 'utf8'))).toEqual({ cwd: '/work/a', enrolled });
   });
 

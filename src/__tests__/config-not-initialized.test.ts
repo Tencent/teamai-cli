@@ -25,7 +25,7 @@ import {
 } from '../config.js';
 import type { LocalConfig } from '../types.js';
 import { projectDataHome } from '../utils/partition.js';
-import { log } from '../utils/logger.js';
+import { log } from '@teamai/shared/log';
 
 /**
  * `loadLocalConfig` returns null both for a missing file and for one it could

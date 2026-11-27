@@ -1,0 +1,5 @@
+# teamai's t3 runtime. A team replaces it with runtimes/t3.yaml, or runtimes/t3/RUNTIME.yaml with its code.
+protocol: 1
+entry: { bin: teamai-runtime-t3 }
+# It runs no command, so a run that needs no AI tool does not start it. Its init offers can.exec: false too.
+exec: false
