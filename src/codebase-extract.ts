@@ -38,10 +38,8 @@ import { isMetadataRelation } from './wiki-engine/code-knowledge/code-extractors
 import {
   loadFactsCache,
   saveFactsCache,
-  loadInterfacesCache,
   saveInterfacesCache,
   pruneFactsByFiles,
-  mergeInterfaceInventories,
 } from './wiki-engine/code-knowledge/code-incremental.js';
 import { writeIfChanged } from './utils/fs.js';
 import { createGit, redactGitCredentials, repoIdentity, resolveAnchors, type RepoAnchors } from './utils/git.js';
@@ -976,12 +974,10 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
 
   // 增量模式：加载缓存 → 剪除 → 合并
   let facts: CodeFact[];
-  let interfaceInventory: InterfaceInventory;
 
   if (changedFiles !== undefined) {
     // 增量模式（含 changedFiles=[] 即仅删除场景）
     const oldFacts = cachedFacts ?? (await loadFactsCache(indicesDir));
-    const oldInterfaces = await loadInterfacesCache(indicesDir);
 
     // 剪除已变更/删除的旧数据
     const filesToRemove = new Set([...changedFiles, ...deletedFiles]);
@@ -1005,16 +1001,14 @@ export async function extractCodebase(opts: ExtractCodebaseOptions): Promise<boo
         }
       }
     }
-
-    // 合并 interfaces（按 component+type 去重，新覆盖旧）
-    const newInterfaces = files.length > 0 ? await scanInterfaces(files) : { entries: [], scannedAt: '' };
-    interfaceInventory = mergeInterfaceInventories(oldInterfaces, newInterfaces);
   } else {
     // 全量模式
     facts = newFacts;
-    interfaceInventory = await scanInterfaces(files);
   }
 
+  // Aggregate interface counts cannot subtract a changed file's previous contribution.
+  const interfaceFiles = changedFiles !== undefined ? (await collectCode({ root, maxFiles })).files : files;
+  const interfaceInventory = await scanInterfaces(interfaceFiles);
 
   // AST track (web-tree-sitter WASM): resolve precise import/call edges for
   // TS/JS/Python/Go/Swift. Runs alongside the regex heuristic track; AST facts win
