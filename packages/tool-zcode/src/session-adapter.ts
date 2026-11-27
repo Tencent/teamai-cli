@@ -153,46 +153,26 @@ function responseMessage(record: ModelIo): Message | undefined {
     metadata: record.response.modelId ? { model: record.response.modelId } : undefined };
 }
 
-function sameMessage(left: Message, right: Message): boolean {
-  return left.role === right.role && JSON.stringify(left.content) === JSON.stringify(right.content);
-}
+function requestAdditions(record: ModelIo, previousLength: number, firstRequest: boolean): Message[] {
+  const update = record.request.messages;
+  let additions: StoredMessage[];
 
-/**
- * Add only request-side events that responses do not already supply. ZCode replays an overlapping request window on
- * every turn and may replace it with a shorter compacted window. Assistant messages come from each record's complete
- * response instead; merging the user/tool subsequence keeps early prompts, images and tool results across compaction.
- */
-function mergeRequestMessages(messages: Message[], window: Message[]): void {
-  const incoming = window.filter(({ role }) => role !== 'assistant');
+  if (firstRequest) additions = update;
+  else {
+    const lastAssistant = update.findLastIndex(({ role }) => role === 'assistant');
 
-  if (!incoming.length) return;
-  const existing = messages.filter(({ role }) => role !== 'assistant');
-  let overlap = 0;
-  let overlapEnd = 0;
-
-  for (let start = 0; start < incoming.length; start++) {
-    const possible = Math.min(existing.length, incoming.length - start);
-
-    for (let count = possible; count > overlap; count--) {
-      const oldStart = existing.length - count;
-      let matches = true;
-
-      for (let offset = 0; offset < count; offset++) {
-        if (!sameMessage(existing[oldStart + offset]!, incoming[start + offset]!)) {
-          matches = false;
-          break;
-        }
-      }
-
-      if (matches) {
-        overlap = count;
-        overlapEnd = start + count;
-        break;
-      }
+    if (lastAssistant >= 0) additions = update.slice(lastAssistant + 1);
+    else {
+      const extendedBy = Math.max(record.request.messageOffset + update.length - previousLength, 0);
+      additions = extendedBy ? update.slice(-extendedBy) : [];
     }
   }
 
-  messages.push(...incoming.slice(overlap ? overlapEnd : 0));
+  return additions.flatMap((stored) => {
+    const message = messageFrom(stored);
+
+    return message && message.role !== 'assistant' ? [message] : [];
+  });
 }
 
 /** Parse one ZCode model-I/O rollout. Project discovery waits on the store's cwd source. */
@@ -201,7 +181,8 @@ export function parseZCodeFile(filePath: string): ParsedZCode | undefined {
 
   if (!match) return undefined;
   const sessionId = match[1]!;
-  const selected = new Map<string, { index: number; record: ModelIo }>();
+  const records: { index: number; record: ModelIo }[] = [];
+  const selectedResponses = new Map<string, { index: number; record: ModelIo }>();
   let index = 0;
 
   for (const line of readRegularFileSync(filePath, 'utf8').split(/\r?\n/)) {
@@ -213,40 +194,43 @@ export function parseZCodeFile(filePath: string): ParsedZCode | undefined {
     const parsed = ModelIo.safeParse(stored);
 
     if (!parsed.success || parsed.data.sessionId !== `sess_${sessionId}`) continue;
-    const previous = selected.get(parsed.data.requestId);
+    const current = { index, record: parsed.data };
+    const previous = selectedResponses.get(parsed.data.requestId);
 
-    if (!previous || parsed.data.attempt >= previous.record.attempt) selected.set(parsed.data.requestId, { index, record: parsed.data });
+    records.push(current);
+
+    if (!previous || parsed.data.attempt >= previous.record.attempt) selectedResponses.set(parsed.data.requestId, current);
     index++;
   }
 
-  const records = [...selected.values()].sort((a, b) => a.index - b.index).map(({ record }) => record);
-
   if (!records.length) return undefined;
   let storedMessages: StoredMessage[] = [];
-
   const messages: Message[] = [];
+  const seenRequests = new Set<string>();
 
-  for (const record of records) {
+  for (const { index: recordIndex, record } of records) {
+    const previousLength = storedMessages.length;
+
     if (record.request.messagesKind === 'full') storedMessages = record.request.messages;
     else storedMessages.splice(record.request.messageOffset, storedMessages.length, ...record.request.messages);
 
-    const window = storedMessages.flatMap((stored) => {
-      const message = messageFrom(stored);
+    if (!seenRequests.has(record.requestId)) {
+      messages.push(...requestAdditions(record, previousLength, seenRequests.size === 0));
+      seenRequests.add(record.requestId);
+    }
 
-      return message ? [message] : [];
-    });
-
-    mergeRequestMessages(messages, window);
+    if (selectedResponses.get(record.requestId)?.index !== recordIndex) continue;
     const response = responseMessage(record);
 
     if (response) messages.push(response);
   }
 
-  const last = records.at(-1)!;
+  const first = records[0]!.record;
+  const last = records.at(-1)!.record;
 
   return {
     filePath, sessionId, model: last.model.modelId ?? last.response.modelId,
-    provider: last.model.providerId, createdAt: records[0]!.startedAt,
+    provider: last.model.providerId, createdAt: first.startedAt,
     updatedAt: last.completedAt, messages,
   };
 }

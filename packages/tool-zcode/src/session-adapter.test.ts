@@ -117,6 +117,59 @@ describe('ZCode model-I/O parser', () => {
     expect(parsed.messages[0]!.content).toContainEqual({ type: 'image', mimeType: 'image/png', data: 'YQ==' });
   });
 
+  it('replays every retry request update but keeps only the final response', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-zcode-retry-window-'));
+    roots.push(root);
+    const id = '00000000-0000-0000-0000-000000000000';
+    const file = path.join(root, `model-io-sess_${id}.jsonl`);
+    const common = {
+      type: 'model_io', sessionId: `sess_${id}`, turnId: 'turn-1', requestId: 'request-1',
+      model: { modelId: 'model', providerId: 'provider' },
+    };
+    const lines = [
+      { ...common, attempt: 1, startedAt: '2026-11-15T10:00:01.000Z', completedAt: '2026-11-15T10:00:01.500Z',
+        request: { messagesKind: 'full', messageOffset: 0, messages: [{ role: 'user', content: 'Retry this' }] },
+        response: { text: 'discarded response', reasoningText: '', toolCalls: [], modelId: 'model' } },
+      { ...common, attempt: 2, startedAt: '2026-11-15T10:00:02.000Z', completedAt: '2026-11-15T10:00:02.500Z',
+        request: { messagesKind: 'delta', messageOffset: 1, messages: [] },
+        response: { text: 'final response', reasoningText: '', toolCalls: [], modelId: 'model' } },
+    ];
+    fs.writeFileSync(file, lines.map((line) => JSON.stringify(line)).join('\n'));
+
+    const parsed = parseZCodeFile(file)!;
+
+    expect(parsed.messages.map(({ role }) => role)).toEqual(['user', 'assistant']);
+    expect(parsed.messages.flatMap(({ content }) => content.flatMap((block) => block.type === 'text' ? [block.text] : [])))
+      .toEqual(['Retry this', 'final response']);
+  });
+
+  it('preserves a repeated prompt after a compacted full window', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-zcode-repeated-prompt-'));
+    roots.push(root);
+    const id = '00000000-0000-0000-0000-000000000000';
+    const file = path.join(root, `model-io-sess_${id}.jsonl`);
+    const record = (requestId: string, startedAt: string, request: object, response: string) => ({
+      type: 'model_io', sessionId: `sess_${id}`, turnId: requestId, requestId, attempt: 1,
+      model: { modelId: 'model', providerId: 'provider' }, startedAt,
+      completedAt: startedAt.replace('.000Z', '.500Z'), request, response: { text: response, modelId: 'model' },
+    });
+    const lines = [
+      record('request-1', '2026-11-15T10:00:01.000Z',
+        { messagesKind: 'full', messageOffset: 0, messages: [{ role: 'user', content: 'continue' }] }, 'first'),
+      record('request-2', '2026-11-15T10:00:02.000Z', { messagesKind: 'full', messageOffset: 0, messages: [
+        { role: 'system', content: 'summary' }, { role: 'assistant', content: 'first' },
+        { role: 'user', content: 'continue' },
+      ] }, 'second'),
+    ];
+    fs.writeFileSync(file, lines.map((line) => JSON.stringify(line)).join('\n'));
+
+    const parsed = parseZCodeFile(file)!;
+
+    expect(parsed.messages.map(({ role }) => role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(parsed.messages.flatMap(({ content }) => content.flatMap((block) => block.type === 'text' ? [block.text] : [])))
+      .toEqual(['continue', 'first', 'continue', 'second']);
+  });
+
   it('keeps every request in an agentic turn and accepts object image sources', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-zcode-agentic-'));
     roots.push(root);

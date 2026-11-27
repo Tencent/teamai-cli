@@ -5,7 +5,7 @@ import { tools } from './definitions.js';
 const platformFacts = {
   zcode: {
     store: { in: 'tool-home', home: 'zcode', dir: 'cli' },
-    resume: (id) => `zcode --resume ${id}`,
+    resume: (id) => `zcode --resume sess_${id}`,
     thinking: true,
     images: true,
     nativeTools: new Set(['Bash', 'Read', 'Write']),

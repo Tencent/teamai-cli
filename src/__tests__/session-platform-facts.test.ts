@@ -68,6 +68,7 @@ describe('session platform facts (#1140)', () => {
     expect(resumeCommand('qoder-cn', 'id1')).toBe('qoderclicn --resume id1');
     expect(resumeCommand('joycode', 'id1')).toBe('joycode --resume id1');
     expect(resumeCommand('cursor', 'id1')).toBe('cursor-agent --resume id1');
+    expect(resumeCommand('zcode', 'id1')).toBe('zcode --resume sess_id1');
   });
 
   it('rejects inherited object keys as platform names', () => {
