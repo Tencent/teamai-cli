@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocalConfig } from '../types.js';
-import { defaultScorerRubric, loadCachedScorer, pinScorers, syncScorerDefinitions } from '../scorers/cache.js';
+import { defaultScorerRubric, loadCachedScorer, pinScorers, scorerSourceHash, syncScorerDefinitions } from '../scorers/cache.js';
 import { formatScorerDiagnostic } from '../scorers/definition.js';
 import { log } from '@teamai/shared/log';
 import { routingScorers } from '../scorers/skill-routing.js';
@@ -446,5 +446,16 @@ Judge the diff against {{ task.successCriteria }}, for {{ task.prompt }}.
     const { invalid } = await syncScorerDefinitions(config);
 
     expect(invalid).toEqual([{ file: 'scorers/teamai-correctness.md', code: 'default_scorer_variable', message: 'reads {{ task.title }}, which teamai\'s default scorer teamai-correctness does not offer. It offers task.prompt and task.successCriteria; teamai\'s default runs until the file reads only those' }]);
+  });
+});
+
+describe('scorerSourceHash', () => {
+  it('gives a rubric and a folder holding the same bytes different hashes', () => {
+    // A rubric whose text spells one of its support files, next to that file's path and text, is not the same source as
+    // that text with the file beside it: a hash has to mark where each part ends.
+    const spelled = scorerSourceHash('draft\0notes.md\0ship it');
+    const folder = scorerSourceHash('draft', [{ path: 'notes.md', content: 'ship it' }]);
+
+    expect(spelled).not.toBe(folder);
   });
 });
