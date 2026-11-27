@@ -38,10 +38,10 @@ teamai uninstall --force
 teamai uninstall --agent claude
 ```
 
-卸载后如需重新加入：
+卸载后如需重新加入，请重新运行最初使用的 `teamai init` 命令。例如，在原工作区中运行：
 
 ```bash
-teamai init --repo https://github.com/your-org/your-repo --scope user --role <role_id> --force
+teamai init https://github.com/your-org/your-repo
 ```
 
 ---
