@@ -251,7 +251,7 @@ describe('repository replacement with unrecorded source destinations', () => {
       expect(after.installedSkills).toEqual(['legacy', 'free']);
       for (const tool of ['.claude', '.codex']) {
         for (const name of ['legacy', 'free']) {
-          const relative = `${tool}/skills/${name}`;
+          const relative = path.join(tool, 'skills', name);
           expect(await fse.readFile(path.join(home, relative, 'SKILL.md'), 'utf8')).toBe(`# Incoming ${name}\n`);
           expect(after.installedPaths?.[name]).toContain(relative);
           expect(after.installedPhysicalPaths?.[relative]).toBe(path.join(home, relative));

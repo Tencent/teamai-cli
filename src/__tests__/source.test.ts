@@ -755,7 +755,7 @@ describe('source', () => {
         teamConfig.sources = [{ name: 'platform', repo: 'https://source.test/platform/repo.git' }];
         const YAML = (await import('yaml')).default;
         await fse.writeFile(path.join(localConfig.repo.localPath, 'teamai.yaml'), YAML.stringify(teamConfig));
-        const ownPath = '.claude/skills/old-skill';
+        const ownPath = path.join('.claude', 'skills', 'old-skill');
         await fse.outputFile(path.join(homeDir, ownPath, 'SKILL.md'), '# Shared source copy');
         await fse.outputJson(getSourceManifestPath('platform', localConfig), {
           destinationRoot: homeDir, teamCheckout: localConfig.repo.localPath, lastPull: new Date(0).toISOString(),
@@ -882,7 +882,7 @@ describe('source', () => {
       if (repository === 'same') {
         const current = await fse.readJson(manifestPath) as SourceInstallManifest;
         expect(current.installedSkills).toEqual(['free-skill', 'old-skill']);
-        expect(current.installedPaths?.['old-skill']).toEqual(['.claude/skills/old-skill']);
+        expect(current.installedPaths?.['old-skill']).toEqual([path.join('.claude', 'skills', 'old-skill')]);
       } else {
         expect(await fse.readFile(manifestPath, 'utf8')).toBe(previousManifest);
       }
@@ -918,7 +918,7 @@ describe('source', () => {
 
       const current = await fse.readJson(manifestPath) as SourceInstallManifest;
       expect(current.repositoryId).toBe(createHash('sha256').update(repo).digest('hex'));
-      expect(current.installedPaths?.['shared-skill']).toEqual(['.codex/skills/shared-skill']);
+      expect(current.installedPaths?.['shared-skill']).toEqual([path.join('.codex', 'skills', 'shared-skill')]);
       expect(await fse.pathExists(path.join(homeDir, oldPath))).toBe(hasOtherOwner);
       const newPath = path.join(homeDir, '.codex/skills/shared-skill/SKILL.md');
       expect(await fse.readFile(newPath, 'utf8')).toBe('# Replacement content');
@@ -1033,7 +1033,7 @@ describe('source', () => {
       // The shared copy is no version of the source skill: the member's.
       const updatedManifest = await fse.readJson(getSourceManifestPath('platform', localConfig)) as SourceInstallManifest;
       expect(updatedManifest.installedPaths?.['old-skill']).toEqual([
-        '.codex/skills/old-skill',
+        path.join('.codex', 'skills', 'old-skill'),
       ]);
       expect(await fse.readFile(path.join(homeDir, '.codex/skills/old-skill/SKILL.md'), 'utf8')).toBe('# Updated source');
       expect(await fse.readFile(path.join(homeDir, '.agents/skills/old-skill/SKILL.md'), 'utf8')).toBe('# User copy');
