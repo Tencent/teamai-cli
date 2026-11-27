@@ -337,6 +337,7 @@ export async function contribute(
   // Validate file
   if (!options.file) {
     log.error('Usage: teamai contribute --file <path> [--title <title>] [--namespace <ns>]');
+    process.exitCode = 1;
 
     return;
   }
@@ -347,12 +348,14 @@ export async function contribute(
     content = await readRegularFile(options.file, 'utf-8');
   } catch (e) {
     log.error(`Cannot read file: ${options.file} — ${e instanceof Error ? e.message : String(e)}`);
+    process.exitCode = 1;
 
     return;
   }
 
   if (!content.trim()) {
     log.error('Contribution file is empty — nothing to push.');
+    process.exitCode = 1;
 
     return;
   }
@@ -379,6 +382,7 @@ export async function contribute(
 
     if (!cfg) {
       log.error('No workspace teamai config in this directory');
+      process.exitCode = 1;
 
       return;
     }
@@ -463,6 +467,7 @@ export async function contribute(
   } catch (e) {
     spin.fail(`Contribution failed: ${e instanceof Error ? e.message : String(e)}`);
     log.info('You can retry with: teamai contribute --file <path>');
+    process.exitCode = 1;
 
     return;
   }

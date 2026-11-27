@@ -43,10 +43,14 @@ describe('contribute', () => {
 
     // Capture log output
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitCodeBefore = process.exitCode;
 
+    process.exitCode = 0;
     await contribute({ file: emptyFile });
 
-    // Should not crash — graceful error
+    // Should not crash — graceful error, reported as a failure to the caller
+    expect(process.exitCode).toBe(1);
+    process.exitCode = exitCodeBefore;
     errorSpy.mockRestore();
     vi.doUnmock('../config.js');
   });
@@ -55,10 +59,14 @@ describe('contribute', () => {
     const { contribute } = await import('../contribute.js');
 
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitCodeBefore = process.exitCode;
 
+    process.exitCode = 0;
     await contribute({ file: '/nonexistent/path.md' });
 
-    // Should not crash
+    // Should not crash, and a file it cannot read is a failure
+    expect(process.exitCode).toBe(1);
+    process.exitCode = exitCodeBefore;
     errorSpy.mockRestore();
   });
 
