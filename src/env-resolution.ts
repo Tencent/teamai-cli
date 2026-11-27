@@ -239,18 +239,33 @@ async function withHeldValues(
   if (variables.kind !== 'resolved' || !variables.held?.length) return variables;
   const backup = await readEnvBackup(localConfig);
   const unexported = variables.held.filter((key) => !Object.hasOwn(backup, key));
+  const workspacePath = getWorkspaceEnvPath(localConfig);
+  const workspaceSource = workspacePath ?? getTeamSecretsPath(localConfig);
+  const workspace = workspacePath && unexported.length > 0 ? await readSecretStore(workspacePath) : NO_VALUES;
   const team = unexported.length > 0 ? await readSecretStore(getTeamSecretsPath(localConfig)) : NO_VALUES;
 
-  const fromEnv = (key: string): boolean => {
+  const fromEnv = (key: string): string | undefined => {
+    if (workspacePath && !workspace.ok) return undefined;
+    const workspaceEntry = workspace.ok ? storeEntry(workspace.values, key, 'variable') : undefined;
     const entry = team.ok ? storeEntry(team.values, key, 'variable') : undefined;
+    const resolvedEntry = workspaceEntry ?? entry;
 
-    return entry !== undefined && 'env' in entry && storedSecretValue(entry, env) !== undefined;
+    return resolvedEntry !== undefined
+      && 'env' in resolvedEntry
+      && storedSecretValue(resolvedEntry, env) !== undefined
+      ? workspaceEntry ? workspaceSource : getTeamSecretsPath(localConfig)
+      : undefined;
   };
 
   const kept = variables.held.flatMap((key): ResolvedEntry<EnvVariable>[] => {
-    if (!Object.hasOwn(backup, key) && !fromEnv(key)) return [];
+    const fromEnvSource = fromEnv(key);
+
+    if (!Object.hasOwn(backup, key) && fromEnvSource === undefined) return [];
     // Without a backup value, the member's entry decides the value (variableValues): this one is never read.
-    const [value, source] = Object.hasOwn(backup, key) ? [backup[key], getEnvBackupPath(localConfig)] : ['', getTeamSecretsPath(localConfig)];
+    const value = Object.hasOwn(backup, key) ? backup[key] : '';
+    const source = Object.hasOwn(backup, key) ? getEnvBackupPath(localConfig) : fromEnvSource;
+
+    if (source === undefined) return [];
 
     return [{ entry: { key, value }, name: key, namespace: null, source, replaces: null, replacedEntry: null }];
   });

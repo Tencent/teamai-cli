@@ -929,24 +929,35 @@ describe('a workspace keeps what is installed for a name it holds back (#913)', 
     expect(list.output).toMatch(/Team secrets \(1\):\s+WS_TOKEN\s+missing\s+\(platform\)/);
   });
 
-  it('runs with the variable a member set with --from-env for a held key', async () => {
-    publish('platform defines WS_FROM_ENV', (seed) => extend(seed, 'env', 'platform', 'variables', [{ key: 'WS_FROM_ENV', value: 'platform-from-env' }]));
+  it('runs with the variables a member set with --from-env for held keys', async () => {
+    publish('platform defines held --from-env variables', (seed) => extend(seed, 'env', 'platform', 'variables', [
+      { key: 'WS_FROM_ENV', value: 'platform-from-env' },
+      { key: 'WS_WORKSPACE_FROM_ENV', value: 'platform-workspace-from-env' },
+    ]));
     expect((await run(['pull'], ws)).code).toBe(0);
     const set = await run(['env', 'set', 'WS_FROM_ENV', '--from-env', 'MEMBER_FROM_ENV'], ws);
     expect(set.code, set.output).toBe(0);
+    const setWorkspace = await run(['env', 'set', 'WS_WORKSPACE_FROM_ENV', '--workspace', '--from-env', 'MEMBER_WORKSPACE_FROM_ENV'], ws);
+    expect(setWorkspace.code, setWorkspace.output).toBe(0);
     expect((await run(['pull'], ws)).code).toBe(0);
     expect(envSh()).not.toContain('WS_FROM_ENV');
-    publish('svc-a defines WS_FROM_ENV differently', (seed) => extend(seed, 'env', 'svc-a', 'variables', [{ key: 'WS_FROM_ENV', value: 'svc-a-from-env' }]));
+    expect(envSh()).not.toContain('WS_WORKSPACE_FROM_ENV');
+    if (!fs.existsSync(path.join(ws, 'svc-a', '.teamai', 'config.yaml'))) await setUpChild(path.join(ws, 'svc-a'), 'svc-a');
+    publish('svc-a defines held --from-env variables differently', (seed) => extend(seed, 'env', 'svc-a', 'variables', [
+      { key: 'WS_FROM_ENV', value: 'svc-a-from-env' },
+      { key: 'WS_WORKSPACE_FROM_ENV', value: 'svc-a-workspace-from-env' },
+    ]));
 
     const result = await run(['pull'], ws);
 
     expect(result.code, result.output).toBe(0);
     expect(result.output).toContain('env: variable "WS_FROM_ENV" differs between');
     expect(envSh()).not.toContain('WS_FROM_ENV');
+    expect(envSh()).not.toContain('WS_WORKSPACE_FROM_ENV');
     const exec = (env: Record<string, string>): Promise<RunResult> =>
-      runCLI(['env', 'exec', '--', 'sh', '-c', 'printf "[%s]" "${WS_FROM_ENV-unset}"'], ws, home, { ...cliEnv, ...env });
-    expect((await exec({ MEMBER_FROM_ENV: 'member-value' })).output).toContain('[member-value]');
-    expect((await exec({})).output).toContain('[unset]');
+      runCLI(['env', 'exec', '--', 'sh', '-c', 'printf "[%s][%s]" "${WS_FROM_ENV-unset}" "${WS_WORKSPACE_FROM_ENV-unset}"'], ws, home, { ...cliEnv, ...env });
+    expect((await exec({ MEMBER_FROM_ENV: 'member-value', MEMBER_WORKSPACE_FROM_ENV: 'workspace-member-value' })).output).toContain('[member-value][workspace-member-value]');
+    expect((await exec({})).output).toContain('[unset][unset]');
   });
 
   it('moves a held MCP server to the file OpenCode reads it from now, as installed', async () => {
