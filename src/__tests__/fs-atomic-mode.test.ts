@@ -46,3 +46,43 @@ describe.skipIf(process.platform === 'win32')('atomic writes create the temp fil
     expect((await fse.stat(file)).mode & 0o777).toBe(0o600);
   });
 });
+
+describe('atomic JSON replacement failures', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-json-replacement-'));
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await fse.remove(tmpDir);
+  });
+
+  it.each([false, true].flatMap((existing) => ['EBUSY', 'EIO'].map((code) => ({ existing, code }))))(
+    'preserves the destination and permits retry after $code (existing: $existing)',
+    async ({ existing, code }) => {
+      const file = path.join(tmpDir, 'state.json');
+      const original = '{"lastPullRev":"old"}\n';
+      if (existing) await fse.writeFile(file, original, 'utf8');
+      const failure = Object.assign(new Error('JSON replacement failed'), { code });
+      const updated = { lastPullRev: 'new' };
+      let staged: unknown;
+      vi.spyOn(fse, 'rename').mockImplementationOnce(async (source) => {
+        staged = await fse.readJson(source);
+        throw failure;
+      });
+
+      await expect(writeJsonAtomic(file, updated)).rejects.toBe(failure);
+
+      expect(staged).toEqual(updated);
+      expect(await fse.readdir(tmpDir)).toEqual(existing ? ['state.json'] : []);
+      if (existing) expect(await fse.readFile(file, 'utf8')).toBe(original);
+
+      await writeJsonAtomic(file, updated);
+
+      expect(await fse.readJson(file)).toEqual(updated);
+      expect(await fse.readdir(tmpDir)).toEqual(['state.json']);
+    },
+  );
+});
