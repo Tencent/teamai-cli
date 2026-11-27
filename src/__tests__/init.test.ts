@@ -429,6 +429,15 @@ describe('init', () => {
       vi.unstubAllEnvs();
     });
 
+    it('keeps an explicit role when the team has no roles manifest, as the legacy convention did', async () => {
+      const { saveLocalConfigForScope } = await import('../config.js');
+
+      await init({ ...target, scope: 'workspace', force: true, role: 'hai' });
+
+      const saved = vi.mocked(saveLocalConfigForScope).mock.calls.at(-1)?.[0];
+      expect(saved?.primaryRole).toBe('hai');
+    });
+
     it('keeps the member\'s workflow settings on re-init', async () => {
       const { saveLocalConfigForScope } = await import('../config.js');
       const { LocalConfigSchema } = await import('../types.js');
