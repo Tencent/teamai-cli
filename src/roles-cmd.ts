@@ -2,7 +2,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { autoDetectInit } from './config.js';
 import { saveScopeSelection } from './scope-selection.js';
-import { loadRolesManifest, saveRolesManifest, findRole, listRoleIds } from './roles.js';
+import { loadRolesManifest, saveRolesManifest, findRole, listRoleIds, RolesManifestNotFoundError } from './roles.js';
 import type { RolesManifest, TeamRole } from './roles.js';
 import { ROLE_ASSIGNMENTS_FILE, type RoleSource } from './role-assignments.js';
 import { pathExists } from './utils/fs.js';
@@ -22,6 +22,15 @@ function parseNamespaces(input: string): string[] {
 }
 
 // ─── roles init ─────────────────────────────────────────
+
+/** Report a roles manifest that cannot be read: a missing one wants `roles init`, a broken one wants the file fixed. */
+function reportUnreadableRoles(cause: unknown): void {
+    log.error(cause instanceof Error ? cause.message : String(cause));
+    log.info(cause instanceof RolesManifestNotFoundError
+        ? 'Run `teamai roles init` to create a roles manifest first.'
+        : 'Fix manifest/roles.yaml in the team repo, then try again.');
+    process.exitCode = 1;
+}
 
 export async function rolesInit(options: GlobalOptions): Promise<void> {
     const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
@@ -224,9 +233,7 @@ async function listRoles(options: { json?: boolean }): Promise<void> {
     try {
         manifest = await loadRolesManifest(repoPath);
     } catch (e) {
-        log.error(e instanceof Error ? e.message : String(e));
-        log.info('Run `teamai roles init` to create a roles manifest.');
-        process.exitCode = 1;
+        reportUnreadableRoles(e);
 
         return;
     }
@@ -286,9 +293,7 @@ export async function rolesSet(
     try {
         manifest = await loadRolesManifest(repoPath);
     } catch (e) {
-        log.error(e instanceof Error ? e.message : String(e));
-        log.info('Run `teamai roles init` to create a roles manifest first.');
-        process.exitCode = 1;
+        reportUnreadableRoles(e);
 
         return;
     }
@@ -364,9 +369,7 @@ export async function rolesAdd(
         try {
             manifest = await loadRolesManifest(repoPath);
         } catch (e) {
-            log.error(e instanceof Error ? e.message : String(e));
-            log.info('Run `teamai roles init` to create a roles manifest first.');
-            process.exitCode = 1;
+            reportUnreadableRoles(e);
 
             return;
         }
@@ -428,9 +431,7 @@ export async function rolesRemove(
         try {
             manifest = await loadRolesManifest(repoPath);
         } catch (e) {
-            log.error(e instanceof Error ? e.message : String(e));
-            log.info('Run `teamai roles init` to create a roles manifest first.');
-            process.exitCode = 1;
+            reportUnreadableRoles(e);
 
             return;
         }
@@ -506,9 +507,7 @@ export async function rolesUpdate(
         try {
             manifest = await loadRolesManifest(repoPath);
         } catch (e) {
-            log.error(e instanceof Error ? e.message : String(e));
-            log.info('Run `teamai roles init` to create a roles manifest first.');
-            process.exitCode = 1;
+            reportUnreadableRoles(e);
 
             return;
         }
