@@ -109,6 +109,8 @@ teamai push --role pm
 
 A new skill, rule, or agent asks which directory it goes to. The choices come from your role and the active projects. An open pull request is updated in place.
 
+Push screens what it delivers for secrets (#2023). A file whose content matches a precise secret shape (vendor token prefixes, PEM blocks, JWTs, bearer headers) refuses the push; a loose `key=value` pair or a value of a local environment secret warns and pushes anyway. The report names the file, the line and the matched label, and prints either way; `--allow-secrets` pushes past a refusal on purpose.
+
 ### Check status
 
 ```bash

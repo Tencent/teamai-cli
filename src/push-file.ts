@@ -31,6 +31,10 @@ import { createGit, generateBranchName, getConfiguredRemoteUrl, getDefaultBranch
 import { withoutGitRepositoryEnv } from './utils/git-env.js';
 import { log, spinner } from '@teamai/shared/log';
 
+import { readRegularFile } from '@teamai/shared/regular-file';
+import { collectEnvSecrets, findRedactions } from '@teamai/shared/redact';
+import { findHitLines, looksBinary } from './utils/secret-screen.js';
+
 export interface PushFileOptions {
   file?: string;
   path?: string;
@@ -41,6 +45,7 @@ export interface PushFileOptions {
   all?: boolean;
   carried?: string[];
   branch?: string;
+  allowSecrets?: boolean;
 }
 
 /** Whether a push names one file or its destination: the route this module owns, not push's scan. */
@@ -125,6 +130,34 @@ export async function pushFile(options: GlobalOptions & PushFileOptions, result?
     refuse(`${options.file} is not a file. Give the local file to push with --file.`, 2);
 
     return;
+  }
+
+  // #2023: the byte-for-byte route skips the scan pipeline, so it screens the
+  // file itself. Secret shapes refuse (exit 1); loose pairs and environment
+  // values warn and proceed. The matched labels ride along, as the guide
+  // promises the report names them.
+  const content = await readRegularFile(source);
+
+  if (!looksBinary(content)) {
+    const envSecrets = collectEnvSecrets();
+    const text = content.toString('utf8');
+    const found = findRedactions(text, { envSecrets });
+
+    if (found.length > 0) {
+      const tier = found.some((match) => match.layer === 'shape') ? 'refuse' : 'warn';
+      const labels = found.slice(0, 3).map((match) => match.label).join(', ');
+      const what = `${tier === 'refuse' ? 'secret shape' : 'possible secret'} (${labels})`;
+      const at = findHitLines(text, envSecrets, tier).join(', ');
+
+      if (tier === 'refuse' && options.allowSecrets !== true) {
+        refuse(`${options.file} matches the secret screen (${what} at line ${at}). Scrub it, or re-run with --allow-secrets to push it anyway.`, 1);
+
+        return;
+      }
+
+      // The report prints even when --allow-secrets overrides the refusal.
+      log.warn(`${options.file} matches the secret screen (${what} at line ${at}); pushing${tier === 'refuse' ? ' (--allow-secrets)' : ''}.`);
+    }
   }
 
   const { localConfig, teamConfig } = await autoDetectInit(undefined, { dryRun: options.dryRun });
