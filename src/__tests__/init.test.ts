@@ -944,7 +944,7 @@ describe('init', () => {
     it('trusts Codex after injecting hooks and forces the initialization pass', async () => {
       const { reconcileTeamHooksForConfig, trustCodexForScope } = await import('../hooks.js');
       await initWithTeamConfig();
-      expect(trustCodexForScope).toHaveBeenCalledWith(expect.anything(), expect.anything(), { filterAgents: undefined, force: true });
+      expect(trustCodexForScope).toHaveBeenCalledWith(expect.anything(), expect.anything(), { filterAgents: undefined, force: true, consent: expect.any(Function) });
       expect(vi.mocked(reconcileTeamHooksForConfig).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(trustCodexForScope).mock.invocationCallOrder[0]);
     });
 
@@ -1032,7 +1032,7 @@ describe('init', () => {
       const { reportCodexTrust, trustCodexForScope } = await import('../hooks.js');
       const warned = await initWithCodex(['codex', 'claude']);
 
-      expect(trustCodexForScope).toHaveBeenCalledWith(expect.anything(), expect.anything(), { filterAgents: ['codex', 'claude'], force: true });
+      expect(trustCodexForScope).toHaveBeenCalledWith(expect.anything(), expect.anything(), { filterAgents: ['codex', 'claude'], force: true, consent: expect.any(Function) });
       expect(reportCodexTrust).toHaveBeenCalledWith(undefined, 'all');
       expect(warned).not.toContain('open /hooks');
     });

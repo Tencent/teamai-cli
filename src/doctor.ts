@@ -638,7 +638,7 @@ function sessionHookRulesCheck(tool: string, settingsPath: string): Check {
       + `\`additionalContextLimit: 0\`. Without them ${tool} keeps only the start and end of a large set of `
       + 'team rules and instructions, and a fresh subagent gets none. Run `teamai pull` to rewrite them'
       + (isCodexTrustGatedTool(tool)
-        ? ' (teamai trusts them in Codex; with `codexTrustEnabled: false`, approve them in Codex /hooks).'
+        ? ' (teamai trusts them in Codex, unless you declined at `init` or set `codexTrustEnabled: false`; then approve them in Codex /hooks).'
         : '.'),
   };
 }

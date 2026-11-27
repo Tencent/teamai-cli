@@ -269,6 +269,32 @@ describe('Codex hook ownership', () => {
     expect((await fse.readJson(file)).hooks.PreToolUse).toEqual([member]);
   });
 
+  it('asks before recording trust and leaves Codex untouched when the person declines', async () => {
+    await writeYaml(LINT_HOOK + '    matcher: Bash\n');
+    await fse.outputJson(path.join(home, '.teamai', 'managed-hooks.json'), {
+      codex: [{ id: 'lint', event: 'PreToolUse', matcher: 'Bash', command: 'npm run lint' }],
+    });
+    await reconcileTeamHooksForConfig(teamConfig, userConfig());
+    const consent = vi.fn().mockResolvedValue(false);
+
+    expect(await trustCodexForScope(teamConfig, userConfig(), { consent })).toEqual({ kind: 'declined' });
+    expect(consent).toHaveBeenCalledTimes(1);
+    expect(trustedKeys()).toEqual([]);
+    expect((await fse.readJson(path.join(codexHome(), 'hooks.json'))).hooks.PreToolUse).toHaveLength(1);
+  });
+
+  it('does not ask again once the recorded trust matches', async () => {
+    await writeYaml(LINT_HOOK + '    matcher: Bash\n');
+    await fse.outputJson(path.join(home, '.teamai', 'managed-hooks.json'), {
+      codex: [{ id: 'lint', event: 'PreToolUse', matcher: 'Bash', command: 'npm run lint' }],
+    });
+    await writeAndTrust(userConfig());
+    const consent = vi.fn().mockResolvedValue(false);
+
+    expect(await trustCodexForScope(teamConfig, userConfig(), { consent })).toEqual({ kind: 'trusted', hooks: 0 });
+    expect(consent).not.toHaveBeenCalled();
+  });
+
   it('preserves legacy option collisions and multi-handler member groups', async () => {
     await writeYaml(LINT_HOOK + '    matcher: Bash\n');
     const file = path.join(codexHome(), 'hooks.json');
