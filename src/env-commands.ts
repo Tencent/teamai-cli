@@ -433,6 +433,11 @@ export async function envAdd(
   // where the user still sees what they typed.
   if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
 
+  // Delivery drops a reserved name, so the file would hold a value no member receives; say so now, as `env set` does.
+  const reserved = reservedTeamEnvWarning([key]);
+
+  if (reserved) log.warn(reserved);
+
   // Every member supplies a secret's value on their own machine; the value
   // passed here is neither stored nor printed.
   if (options.secret && value !== undefined) {
