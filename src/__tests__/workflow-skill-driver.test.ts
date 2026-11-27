@@ -22,6 +22,22 @@ import { log } from '@teamai/shared/log';
 import { Crash, fakeConfinedClaude, fakeJudge, githubOrigin, LABEL_PASS, scoringStarted, skillHarness, untilStopped } from './helpers/skill-harness.js';
 import { signalPid } from '@teamai/shared/process-group';
 
+/**
+ * CLI names this file's cases treat as absent, though the login-shell fallback in `resolveCliPath` would find them: a
+ * developer machine with the tool installed must not change what a case proves.
+ */
+const hiddenClis = vi.hoisted(() => ({ names: new Set<string>() }));
+
+vi.mock('@teamai/shared/cli-path', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@teamai/shared/cli-path')>();
+
+  return {
+    ...actual,
+    resolveCliPath: (cmd: string, platform?: NodeJS.Platform) =>
+      hiddenClis.names.has(cmd) ? null : actual.resolveCliPath(cmd, platform),
+  };
+});
+
 const CHECK = `schemaVersion: v1alpha1
 name: check
 description: Lint and test
@@ -1672,7 +1688,9 @@ steps:
     const gated = 'schemaVersion: v1alpha1\nname: gated\ndescription: Build, scored\ninvoke: allow\nsteps:\n  - id: built\n    workflow: build\n    scorers: [review-quality]\n';
     const harness = await skillHarness({ build, gated }, { scorers: { 'review-quality': REVIEW_QUALITY }, tool: 'pi' });
     roots.push(harness.root);
-    // No pi on PATH, which would judge the run in the background.
+    // No pi that would judge the run in the background, on this machine or through the login-shell fallback.
+    hiddenClis.names.add('pi');
+    onTestFinished(() => { hiddenClis.names.delete('pi'); });
     const withoutPi = (process.env.PATH ?? '').split(path.delimiter).filter((dir) => !['pi', 'pi.cmd', 'pi.exe'].some((name) => fs.existsSync(path.join(dir, name))));
     vi.stubEnv('PATH', withoutPi.join(path.delimiter));
     const started = await harness.call({ kind: 'start', name: 'gated', answers: { confirmed: false }, inputs: undefined });
