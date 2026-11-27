@@ -227,7 +227,14 @@ describe('webhook', () => {
       mockAutoDetectInit.mockResolvedValueOnce(singleEndpointConfig(0));
       mockFetch.mockResolvedValue({ ok: false, status: 500 });
 
-      await testWebhook();
+      const previousExitCode = process.exitCode;
+      try {
+        process.exitCode = 0;
+        await testWebhook();
+        expect(process.exitCode).toBe(1);
+      } finally {
+        process.exitCode = previousExitCode;
+      }
 
       expect(log.success).not.toHaveBeenCalled();
       expect(log.error).toHaveBeenCalledWith('Webhook test failed: https://example.com/hook');
