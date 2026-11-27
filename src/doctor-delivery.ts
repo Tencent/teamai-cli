@@ -2372,6 +2372,8 @@ export async function buildEnvDeliveryCheck(ctx: DoctorContext): Promise<Check[]
   const { directoryEnv } = await import('./resources/env-loader.js');
   const dir = localConfig.scope === 'project' && localConfig.projectRoot ? localConfig.projectRoot : process.cwd();
   const directory = isLoaderOwed ? await directoryEnv(localConfig, dir) : null;
+  // Each problem may already end with its own sentence, so the advice adds the one period.
+  const detail = problems.map((problem) => problem.replace(/\.$/, '')).join('; ');
 
   return [
     {
@@ -2380,7 +2382,7 @@ export async function buildEnvDeliveryCheck(ctx: DoctorContext): Promise<Check[]
       check: async () => problems.length === 0,
       fix: problems.length === 0
         ? 'Run `teamai pull` to inject env variables into shell profile'
-        : `${problems.join('; ')}. Run \`teamai pull\` after fixing the cause, then open a new shell.`,
+        : `${detail}. Run \`teamai pull\` after fixing the cause, then open a new shell.`,
     },
     // Several projects open at once each load their own env (#1018): this
     // asks the loader, in a real shell started here, which env.sh it loads.

@@ -368,6 +368,17 @@ describe('doctor — env variables reach a shell', () => {
     expect(check.fix).toContain('variables:');
   });
 
+  it('adds no second period after a problem that already ends with one', async () => {
+    await writeEnvYaml('variables:\n  - key: PORT\n    value: 8080\n');
+    await writeEnvSh('');
+    await writeProfile(loaderLine());
+
+    const check = await envCheck();
+    expect(await check.check()).toBe(false);
+    expect(check.fix).not.toContain('push..');
+    expect(check.fix).toContain('push. Run `teamai pull` after fixing the cause');
+  });
+
   it('passes for a multiline value the shell quotes across several lines', async () => {
     // A YAML block scalar is a legal env value, and single-quoting one spans
     // physical lines. A reader that scans env.sh line by line can never match
