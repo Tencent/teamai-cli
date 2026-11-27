@@ -3,7 +3,7 @@ import path from 'node:path';
 import { defineRule } from '@oxlint/plugins';
 import { dynamicImports, importVisitors, sourceImport, sourceModules } from '../imports.js';
 import { z } from 'zod';
-import { FAMILY, lintedPath, scopedFiles, sourcePath, workspaceFile, workspaceRoot } from '../utils.js';
+import { FAMILY, lintedPath, scopedFiles, sourcePath, toPosix, workspaceFile, workspaceRoot } from '../utils.js';
 
 /**
  * The facts modules outside a family: the list of every family's facts and the app modules that read only facts. A
@@ -60,7 +60,8 @@ export function startupEntries(root) {
  * it answers.
  * @param {string} root
  */
-function startupsOf(root) {
+function startupsOf(nativeRoot) {
+  const root = toPosix(nativeRoot);
   const known = startups.get(root);
 
   if (known !== undefined) return known;
