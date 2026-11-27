@@ -19,10 +19,10 @@ it.each([false, true])('keeps installation ownership separate (shared team check
   fs.mkdirSync(home);
   const env = { ...process.env, ...GIT_ENV, HOME: home, FORCE_COLOR: '0' };
   const git = (args: string[], cwd: string) => execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  const run = (args: string[], cwd: string) => {
+  const run = (args: string[], cwd: string, expectedStatus = 0) => {
     const result = spawnSync(process.execPath, [CLI, ...args], { cwd, env, encoding: 'utf8' });
     const output = result.stdout + result.stderr;
-    expect(result.status, output).toBe(0);
+    expect(result.status, output).toBe(expectedStatus);
     return output;
   };
   const skill = (project: string, name: string) => path.join(project, '.claude', 'skills', name, 'SKILL.md');
@@ -125,7 +125,8 @@ it.each([false, true])('keeps installation ownership separate (shared team check
     expect(fs.existsSync(skill(projects[1], 'new-skill'))).toBe(false);
     expect(fs.readFileSync(skill(projects[1], 'old-skill'), 'utf8')).toBe('# Beta local draft\n');
     expect(fs.readFileSync(legacyPath, 'utf8')).toBe(legacyManifest);
-    expect(run(['source', 'remove', 'shared'], projects[1])).toContain('Source "shared" not found.');
+    // Removing a source that is already gone is a refused command and exits 1 (#2041).
+    expect(run(['source', 'remove', 'shared'], projects[1], 1)).toContain('Source "shared" not found.');
     expect(fs.readFileSync(skill(projects[1], 'legacy-local'), 'utf8')).toBe('# beta legacy local draft\n');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

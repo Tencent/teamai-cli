@@ -493,7 +493,8 @@ describe('remote commands', () => {
     'teamai source add + list + remove — roundtrip on a public repo',
     async () => {
       const PUBLIC_SOURCE = 'https://github.com/anthropics/skills.git';
-      const SOURCE_NAME = 'skills'; // deriveSourceName → repo name
+      // deriveSourceName names a source after the repo owner, so this one is "anthropics".
+      const SOURCE_NAME = 'anthropics';
 
       // Pre-clean: in case a previous failed run left it behind.
       await runCLI(['source', 'remove', SOURCE_NAME]);
