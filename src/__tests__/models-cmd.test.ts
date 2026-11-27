@@ -125,6 +125,18 @@ describe('models commands', () => {
       { protocols: ['anthropic', 'openai-responses', 'openai-chat-completions'], models: ['glm-5.3', 'kimi-k3'] },
       { protocols: ['anthropic', 'openai-chat-completions'], models: ['deepseek-v4-flash'] },
     ]);
+
+    await modelsAdd('mixed', {
+      name: 'Mixed', protocol: 'anthropic', baseUrl: 'https://gateway.example.test',
+      model: 'first,second', fromEnv: 'MY_MODEL_KEY',
+    });
+    await modelsConfigure('local:mixed', { protocol: 'anthropic,openai-responses', model: 'third' });
+    await modelsConfigure('local:mixed', { protocol: 'openai-responses', model: 'first' });
+    const mixed = (await loadLocalProfiles()).profiles.find((item) => item.id === 'mixed')!;
+    expect(mixed.model_groups.filter((group) => group.protocols.includes('anthropic')).flatMap((group) => group.models)[0])
+      .toBe('first');
+    expect(mixed.model_groups.filter((group) => group.protocols.includes('openai-responses')).flatMap((group) => group.models))
+      .toContain('first');
   });
 
   it('leaves models.yaml unchanged when an edit is invalid or no key is configured', async () => {

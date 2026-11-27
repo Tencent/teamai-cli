@@ -442,7 +442,9 @@ function addModelProtocol(groups: ModelGroup[], models: string[], protocol: Mode
     const position = !source ? updated.length : source.models[0] === model ? sourceIndex : sourceIndex + 1;
 
     if (source) source.models = source.models.filter((item) => item !== model);
-    let target = updated.find((group) => sameProtocols(group.protocols, protocols));
+
+    let target = updated.find((group, index) => sameProtocols(group.protocols, protocols)
+      && (!source || index <= sourceIndex));
 
     if (!target) {
       target = { protocols, models: [] };
