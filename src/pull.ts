@@ -726,6 +726,10 @@ function tombstoneExtensions(type: ResourceType, tool: string): readonly string[
   return [''];
 }
 
+function warnKeptAfterUnpin(scopeLabel: string, localPath: string, unpinnedRef: string): void {
+  log.warn(`[${scopeLabel}] Kept ${localPath} when returning from "${unpinnedRef}". Preview what would be sent with \`teamai push --dry-run\`.`);
+}
+
 /**
  * Delete the local copies of every resource the team has tombstoned.
  *
@@ -743,7 +747,7 @@ async function cleanupTombstonedResources(
   unpinnedRef?: string,
 ): Promise<void> {
   const sayUnpinnedCopy = (localPath: string) => {
-    if (unpinnedRef) log.warn(`[${scopeLabel}] Kept ${localPath}: it holds "${unpinnedRef}"'s content, which teamai push would send to the default branch.`);
+    if (unpinnedRef) warnKeptAfterUnpin(scopeLabel, localPath, unpinnedRef);
   };
 
   // Each entry maps a resource type to the field on toolPath that names the
@@ -2527,7 +2531,7 @@ async function pullForScope(
 
   const reportKeptCopies = (): number => {
     if (unpinnedRef) {
-      for (const { dest } of ledger.kept) log.warn(`[${scopeLabel}] Kept ${dest}: it holds "${unpinnedRef}"'s content, which teamai push would send to the default branch.`);
+      for (const { dest } of ledger.kept) warnKeptAfterUnpin(scopeLabel, dest, unpinnedRef);
     }
 
     return reportKept(ledger, scopeLabel);
