@@ -140,6 +140,7 @@ import { acquireLock, releaseLock } from './update.js';
 import { parseJson, JsonValueSchema, type JsonValue, isJsonObject, JsonObjectSchema, type JsonObject } from '@teamai/shared/json';
 import { editJsonText, parseJsonAs } from './utils/json.js';
 import { parseYaml } from '@teamai/shared/yaml';
+import { getHermesConfigPath } from './hermes-config.js';
 import { resolveOpenclawConfigPath } from './openclaw-home.js';
 import { realHost, toolHome } from './tool-home.js';
 import YAML from 'yaml';
@@ -541,6 +542,10 @@ function getConfigPath(): string {
   return path.join(getLocalAgentHome(), CONFIG_FILE);
 }
 
+function getHermesA2aOwnerPath(): string {
+  return path.join(getLocalAgentHome(), 'hermes-a2a-owner.json');
+}
+
 function getManifestPath(): string {
   return path.join(getLocalAgentHome(), MANIFEST_FILE);
 }
@@ -863,8 +868,10 @@ function getPluginStatePath(): string {
   return path.join(getLocalAgentHome(), 'plugins.json');
 }
 
-async function readPluginState(): Promise<Record<string, PluginState>> {
-  return (await readJson<Record<string, PluginState>>(getPluginStatePath())) ?? {};
+type LocalAgentPluginState = PluginState & { a2a?: A2aPluginRuntime };
+
+async function readPluginState(): Promise<Record<string, LocalAgentPluginState>> {
+  return (await readJson<Record<string, LocalAgentPluginState>>(getPluginStatePath())) ?? {};
 }
 
 /**
@@ -872,7 +879,7 @@ async function readPluginState(): Promise<Record<string, PluginState>> {
  * cannot be acquired within the timeout, throws (the caller skips this cycle
  * rather than writing without the lock — reconcile is throttled, so skipping is safe).
  */
-async function withPluginStateLock(mutate: (m: Record<string, PluginState>) => void): Promise<void> {
+async function withPluginStateLock(mutate: (m: Record<string, LocalAgentPluginState>) => void): Promise<void> {
   const statePath = getPluginStatePath();
   const lockPath = `${statePath}.lock`;
   await ensureDir(path.dirname(lockPath));
@@ -1455,10 +1462,72 @@ function a2aEndpointScheme(endpoint: string): 'http' | 'https' | undefined {
   return undefined;
 }
 
-export function canRunOpenClawA2aControl(config: LocalAgentConfig): boolean {
+type A2aTool = 'openclaw' | 'hermes';
+
+function a2aToken(config: LocalAgentConfig, tool: A2aTool): string | undefined {
+  if (tool === 'hermes' && !config.agentTokens?.hermes && legacyTokenAgent(config) !== 'hermes') return undefined;
+
+  const token = tokenForAgent(config, tool);
+
+  return token?.startsWith('sk-') ? token : undefined;
+}
+
+function canRunA2aControl(config: LocalAgentConfig, tool: A2aTool): boolean {
   return os.platform() === 'linux' && a2aEndpointScheme(config.endpoint) !== undefined
-    && tokenForAgent(config, 'openclaw')?.startsWith('sk-') === true
+    && a2aToken(config, tool) !== undefined
     && (!isCloudStudioSandbox() || process.env.TEAMAI_ALLOW_SANDBOX_REPORT === '1');
+}
+
+export function canRunOpenClawA2aControl(config: LocalAgentConfig): boolean {
+  return canRunA2aControl(config, 'openclaw');
+}
+
+/** Serialize OpenClaw service registration with HTTP source shutdown. */
+export async function withOpenClawA2aControlLock(install: () => Promise<void>): Promise<void> {
+  if (!await acquireLocalAgentLock(5_000)) return;
+
+  try {
+    await install();
+  } finally {
+    await releaseLock(localAgentLockPath());
+  }
+}
+
+export function canRunHermesA2aControl(config: LocalAgentConfig): boolean {
+  return process.env.HERMES_SAFE_MODE !== '1' && canRunA2aControl(config, 'hermes');
+}
+
+/** The first qualifying Gateway hook pins the profile without rotating its device identity. */
+export async function claimHermesA2aProfile(home: string, install?: () => Promise<boolean>): Promise<boolean> {
+  const config = await loadLocalAgentConfig({ dryRun: true, envFallback: false });
+
+  if (!config || !canRunHermesA2aControl(config)) return false;
+  const profile = await canonicalHermesA2aProfile(home);
+
+  if (!profile || !await acquireLocalAgentLock(5_000)) return false;
+
+  try {
+    const current = await loadLocalAgentConfig({ envFallback: false });
+
+    if (!current || !canRunHermesA2aControl(current)) return false;
+    const owner = await readHermesA2aOwner();
+
+    if (owner?.endpoint === current.endpoint && owner.profile !== profile) return false;
+
+    if (await canonicalHermesA2aProfile(home) !== profile) return false;
+
+    if (owner && owner.profile !== profile && await removeHermesA2aProfileHook(owner.profile)) return false;
+
+    if (install && !await install()) return false;
+
+    if (owner?.endpoint !== current.endpoint) {
+      await writeJsonAtomic(getHermesA2aOwnerPath(), { endpoint: current.endpoint, profile });
+    }
+
+    return true;
+  } finally {
+    await releaseLock(localAgentLockPath());
+  }
 }
 
 /** Request headers by name. */
@@ -1577,11 +1646,32 @@ function redactSecrets(s: string): string {
  * emit 'close', producing a false timeout even though the command itself finished.
  * Rejects on non-zero exit, termination by signal, or timeout.
  */
-export async function execPluginCommand(cmd: string, timeoutMs: number, deviceToken?: string): Promise<void> {
+export async function execPluginCommand(
+  cmd: string,
+  timeoutMs: number,
+  a2a?: { deviceToken?: string; hermesRuntime?: HermesA2aRuntime },
+): Promise<void> {
   const { spawn } = await import('node:child_process');
+  const hermesRuntime = a2a?.hermesRuntime;
+  let hermesEnv: NodeJS.ProcessEnv | undefined;
+
+  if (hermesRuntime) {
+    const { toolCommandEnv } = await import('./launch-registry.js');
+    hermesEnv = toolCommandEnv('hermes', { kind: 'at', dir: hermesRuntime.profile });
+  }
+
   await new Promise<void>((resolve, reject) => {
-    const env = deviceToken ? { ...process.env, TEAMAI_CLAWPRO_A2A_DEVICE_TOKEN: deviceToken } : undefined;
-    const stdio = ['ignore', 'ignore', deviceToken ? 'ignore' : 'pipe'] as const;
+    const env = a2a ? {
+      ...process.env,
+      TEAMAI_CLAWPRO_A2A_DEVICE_TOKEN: a2a.deviceToken,
+      ...(hermesRuntime && {
+        ...hermesEnv,
+        TERMINAL_ENV: 'local',
+        TERMINAL_CWD: hermesRuntime.workspace,
+      }),
+    } : undefined;
+
+    const stdio = ['ignore', 'ignore', a2a ? 'ignore' : 'pipe'] as const;
 
     const child = process.platform === 'win32'
       ? spawn('cmd', ['/c', cmd], { windowsHide: true, stdio: [...stdio], env })
@@ -1659,16 +1749,53 @@ const A2A_PLUGIN_PREFIX = 'clawpro-a2a-';
 const A2A_PLUGIN_RETRY_MS = 60_000;
 const A2A_PLUGIN_RUN_TIMEOUT_MS = 180_000;
 const A2aPluginRevisionSchema = z.string().min(1).max(256);
+const A2aRuntimePathSchema = z.string().max(512).refine((value) => path.isAbsolute(value) && !/[\0\r\n]/.test(value));
+const HermesA2aRuntimeSchema = z.strictObject({ profile: A2aRuntimePathSchema, workspace: A2aRuntimePathSchema });
+const HermesA2aOwnerSchema = z.strictObject({ endpoint: z.string(), profile: A2aRuntimePathSchema });
+
+type HermesA2aRuntime = z.infer<typeof HermesA2aRuntimeSchema>;
+
+/** Only source enrollment and hook installation write this record, while holding the lifecycle lock. */
+async function readHermesA2aOwner() {
+  return HermesA2aOwnerSchema.safeParse(await readJson<JsonValue>(getHermesA2aOwnerPath())).data;
+}
+
+async function isHermesA2aOwner(endpoint: string, profile: string): Promise<boolean> {
+  const owner = await readHermesA2aOwner();
+
+  return owner?.endpoint === endpoint && owner.profile === profile;
+}
+
+const A2aPluginRuntimeFields = {
+  instanceId: z.string().regex(/^local-(?:openclaw|hermes)-[a-f0-9]{6}$/),
+  hermesRuntime: HermesA2aRuntimeSchema.optional(),
+};
+
+function matchesA2aRuntime({ instanceId, hermesRuntime }: { instanceId: string; hermesRuntime?: HermesA2aRuntime }): boolean {
+  return instanceId.startsWith('local-hermes-') === Boolean(hermesRuntime);
+}
+
+const A2aPluginRuntimeSchema = z.strictObject(A2aPluginRuntimeFields).refine(matchesA2aRuntime);
 
 const A2aPluginRequestSchema = z.strictObject({
+  ...A2aPluginRuntimeFields,
   scope: z.string().regex(/^[a-f0-9]{64}$/),
-  instanceId: z.string().regex(/^local-openclaw-[a-f0-9]{6}$/),
   revision: A2aPluginRevisionSchema,
-});
+}).refine(matchesA2aRuntime);
+
+type A2aPluginRuntime = z.infer<typeof A2aPluginRuntimeSchema>;
 
 type A2aPluginRequest = z.infer<typeof A2aPluginRequestSchema>;
 
-type A2aPullState = { observedRevision: string; nextCheckAt: number };
+type A2aPullState = { observedRevision: string; nextCheckAt: number; hermesRuntime?: HermesA2aRuntime };
+
+function sameHermesA2aRuntime(a?: HermesA2aRuntime, b?: HermesA2aRuntime): boolean {
+  return a?.profile === b?.profile && a?.workspace === b?.workspace;
+}
+
+function localA2aInstanceId(tool: A2aTool): string {
+  return deriveInstanceId(tool, resolveLocalAgentId({ tool }).toLowerCase());
+}
 
 function a2aPluginScope(endpoint: string, instanceId: string): string {
   return createHash('sha256').update(endpoint + '\0' + instanceId).digest('hex');
@@ -1681,7 +1808,8 @@ function a2aPullStatePath(scope: string): string {
 async function a2aPullDue(request: A2aPluginRequest): Promise<boolean> {
   const state = await readJson<A2aPullState>(a2aPullStatePath(request.scope));
 
-  return state?.observedRevision !== request.revision || state.nextCheckAt <= Date.now();
+  return state?.observedRevision !== request.revision || !sameHermesA2aRuntime(state.hermesRuntime, request.hermesRuntime)
+    || state.nextCheckAt <= Date.now();
 }
 
 async function scheduleA2aPlugins(
@@ -1689,10 +1817,15 @@ async function scheduleA2aPlugins(
   identity: AgentIdentityPayload,
   revision: string,
   reportedInstanceId?: string,
+  hermesRuntime?: HermesA2aRuntime,
 ): Promise<void> {
-  if (identity.agent_type !== 'openclaw' || !a2aEndpointScheme(config.endpoint) || !tokenForAgent(config, 'openclaw')?.startsWith('sk-')) return;
-  const instanceId = reportedInstanceId ?? deriveInstanceId(identity.agent_type, identity.local_agent_id.toLowerCase());
-  const request = A2aPluginRequestSchema.safeParse({ scope: a2aPluginScope(config.endpoint, instanceId), instanceId, revision });
+  const tool = hermesRuntime ? 'hermes' : 'openclaw';
+
+  if (identity.agent_type !== tool || !a2aEndpointScheme(config.endpoint) || !a2aToken(config, tool)) return;
+  const instanceId = deriveInstanceId(tool, identity.local_agent_id.toLowerCase());
+
+  if (reportedInstanceId !== undefined && reportedInstanceId !== instanceId) return;
+  const request = A2aPluginRequestSchema.safeParse({ scope: a2aPluginScope(config.endpoint, instanceId), instanceId, revision, hermesRuntime });
 
   if (!request.success) return;
 
@@ -1720,14 +1853,26 @@ async function spawnPluginReconcile(env: Record<string, string>): Promise<void> 
 }
 
 async function reconcileA2aPlugins(config: LocalAgentConfig, tag: string, request: A2aPluginRequest): Promise<void> {
-  const tool = 'openclaw';
-  const token = tokenForAgent(config, tool);
+  const tool = request.hermesRuntime ? 'hermes' : 'openclaw';
+  const token = a2aToken(config, tool);
   const scheme = a2aEndpointScheme(config.endpoint);
 
-  if (!token?.startsWith('sk-') || !scheme || request.scope !== a2aPluginScope(config.endpoint, request.instanceId) || !await a2aPullDue(request)) return;
+  if (!token || !scheme || request.scope !== a2aPluginScope(config.endpoint, request.instanceId) || !await a2aPullDue(request)) return;
+
+  if (request.hermesRuntime) {
+    const profile = await canonicalHermesA2aProfile();
+
+    if (!canRunHermesA2aControl(config) || !profile || !await isHermesA2aOwner(config.endpoint, profile)) return;
+    const current = await resolveHermesA2aRuntime(profile, config.workspaceBindings);
+
+    if (current?.profile !== request.hermesRuntime.profile || current.workspace !== request.hermesRuntime.workspace
+      || request.instanceId !== localA2aInstanceId(tool)) return;
+  }
+
   const slug = A2A_PLUGIN_PREFIX + request.scope;
   const statePath = a2aPullStatePath(request.scope);
   const deps = buildReconcileDeps(tag);
+  const runtime: A2aPluginRuntime = { instanceId: request.instanceId, hermesRuntime: request.hermesRuntime };
 
   const scopedDeps: ReconcileDeps = {
     ...deps,
@@ -1737,7 +1882,13 @@ async function reconcileA2aPlugins(config: LocalAgentConfig, tag: string, reques
       // The instance pull stamp controls retries, including after a new revision.
       return state ? { [slug]: { ...state, lastAttemptAt: undefined } } : {};
     },
-    execCommand: (command, timeout) => execPluginCommand(command, timeout, token),
+    mutatePlugins: (mutate) => withPluginStateLock((states) => {
+      mutate(states);
+      const state = states[slug];
+
+      if (state && !state.a2a) state.a2a = runtime;
+    }),
+    execCommand: (command, timeout) => execPluginCommand(command, timeout, { deviceToken: token, hermesRuntime: request.hermesRuntime }),
     runTimeoutMs: A2A_PLUGIN_RUN_TIMEOUT_MS,
   };
 
@@ -1760,7 +1911,7 @@ async function reconcileA2aPlugins(config: LocalAgentConfig, tag: string, reques
     }
 
     const plugin = desired[0];
-    const previous = (await scopedDeps.readPlugins())[slug];
+    let previous: LocalAgentPluginState | undefined = (await readPluginState())[slug];
 
     const isCurrent = (state: PluginState | undefined) =>
       plugin && state?.ready && state.version === plugin.version && state.cmdFingerprint === commandFingerprint(plugin);
@@ -1771,29 +1922,46 @@ async function reconcileA2aPlugins(config: LocalAgentConfig, tag: string, reques
       if (plugin.version?.includes(token) || commands.some((command) => command !== undefined && (command.trim() === '' || command.includes(token)))) {
         throw new Error('Invalid A2A lifecycle command');
       }
+    }
 
-      // Keep the cleanup command even if the worker is interrupted during first install.
-      if (!previous) {
-        await scopedDeps.mutatePlugins((states) => {
-          states[slug] = { slug, ready: false, uninstallCmd: plugin.uninstallCmd };
-        });
-      }
+    const installedRuntime = A2aPluginRuntimeSchema.safeParse(previous?.a2a).data?.hermesRuntime;
+
+    if (installedRuntime && !sameHermesA2aRuntime(installedRuntime, request.hermesRuntime)) {
+      await removeA2aPluginsBeforeHandoff(config, slug);
+      previous = undefined;
+    }
+
+    // Keep the cleanup command even if the worker is interrupted during first install.
+    if (plugin && !previous) {
+      await scopedDeps.mutatePlugins((states) => {
+        states[slug] = { slug, ready: false, uninstallCmd: plugin.uninstallCmd };
+      });
     }
 
     await reconcilePlugins(desired, scopedDeps);
-    const current = (await scopedDeps.readPlugins())[slug];
+    const current = (await readPluginState())[slug];
 
     if (plugin ? !isCurrent(current) : current !== undefined) throw new Error('A2A plugin did not converge');
 
-    if (plugin && isCurrent(previous)) await scopedDeps.execCommand(plugin.runCmd, A2A_PLUGIN_RUN_TIMEOUT_MS);
+    if (plugin && isCurrent(previous)) {
+      if (current && !current.a2a) {
+        await withPluginStateLock((states) => { if (states[slug]) states[slug].a2a ??= runtime; });
+      }
+
+      await scopedDeps.execCommand(plugin.runCmd, A2A_PLUGIN_RUN_TIMEOUT_MS, slug);
+    }
+
     await writeJsonAtomic<A2aPullState>(statePath, {
       observedRevision: request.revision,
       nextCheckAt: Date.now() + (plugin ? A2A_PLUGIN_RETRY_MS : PLUGIN_PULL_INTERVAL_MS),
+      hermesRuntime: request.hermesRuntime,
     });
   } catch {
     // Responses and process errors may contain sensitive data.
     deps.log.warn('A2A plugin reconciliation failed and will retry');
-    await writeJsonAtomic<A2aPullState>(statePath, { observedRevision: request.revision, nextCheckAt: Date.now() + A2A_PLUGIN_RETRY_MS });
+    await writeJsonAtomic<A2aPullState>(statePath, {
+      observedRevision: request.revision, nextCheckAt: Date.now() + A2A_PLUGIN_RETRY_MS, hermesRuntime: request.hermesRuntime,
+    });
   }
 }
 
@@ -2335,10 +2503,10 @@ async function resolveWorkspacePath(cwd?: string): Promise<string | undefined> {
 }
 
 async function resolveAgentWorkspacePath(config: LocalAgentConfig, tool?: string, cwd?: string): Promise<string | undefined> {
-  if (tool === 'openclaw' && cwd) {
+  if ((tool === 'openclaw' || tool === 'hermes') && cwd) {
     const exact = await canonicalizeWorkspacePath(path.resolve(cwd));
 
-    if (config.workspaceBindings[exact]?.ideType === 'openclaw') return exact;
+    if (config.workspaceBindings[exact]?.ideType === tool) return exact;
   }
 
   return resolveWorkspacePath(cwd);
@@ -2376,22 +2544,31 @@ function resolveSource(slug: string, manifestSlugs: Set<string>): string {
 async function scanSkillsFromDisk(
   skillsDir: string,
   manifestSlugs: Set<string>,
+  workspaceOnly = false,
 ): Promise<ReportedResource[]> {
   if (!(await pathExists(skillsDir))) return [];
+
+  if (workspaceOnly && await fs.promises.realpath(skillsDir) !== skillsDir) return [];
+
   const dirs = (await listDirs(skillsDir)).filter((name) => !name.startsWith('.') && !name.startsWith('_'));
   const results: ReportedResource[] = [];
 
   for (const dir of dirs) {
     const skillMd = path.join(skillsDir, dir, 'SKILL.md');
 
-    if (!(await pathExists(skillMd))) continue;
+    const exists = workspaceOnly
+      ? await fs.promises.lstat(skillMd).then((stat) => stat.isFile(), () => false)
+      : await pathExists(skillMd);
+
+    if (!exists) continue;
     const fm = await readFrontmatter(skillMd);
-    const slug = fm.name || dir;
+    const displayName = fm.name || dir;
+    const slug = workspaceOnly ? dir : displayName;
     const version = fm.version != null ? String(fm.version) : undefined;
     results.push({
       slug,
       version,
-      display_name: slug,
+      display_name: displayName,
       source: resolveSource(slug, manifestSlugs),
     });
   }
@@ -2858,6 +3035,8 @@ export type ReportPayload = AgentIdentityPayload & {
   host_name: string;
   os: string;
   default_workspace?: string;
+  runtime_type?: 'hermes';
+  runtime_profile?: string;
   started_at?: string;
   last_status: string;
   user_level: { group_id: number | undefined } & ReportedScopeResources;
@@ -2909,30 +3088,95 @@ async function openclawDefaultWorkspace(): Promise<string> {
   }
 }
 
+const HermesTerminalConfigSchema = z.object({
+  terminal: z.object({ backend: z.string().optional(), cwd: z.string().optional() }).optional(),
+});
+
+const IMATE_HERMES_WORKSPACE = '/data/projects';
+
+async function canonicalHermesA2aProfile(home = process.env.HERMES_HOME?.trim() || toolHome('hermes')): Promise<string | undefined> {
+  if (!A2aRuntimePathSchema.safeParse(home).success) return undefined;
+
+  try {
+    const profile = await fs.promises.realpath(home);
+
+    return A2aRuntimePathSchema.safeParse(profile).success && (await fs.promises.stat(profile)).isDirectory() ? profile : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function resolveHermesA2aRuntime(
+  profile: string, bindings: LocalAgentConfig['workspaceBindings'], env = process.env,
+): Promise<HermesA2aRuntime | null | undefined> {
+  try {
+    const raw = await readFileSafe(getHermesConfigPath(profile));
+
+    if (raw === null) return undefined;
+    const { terminal } = HermesTerminalConfigSchema.parse(parseYaml(raw) ?? {});
+    const backend = env.TERMINAL_ENV?.trim() || terminal?.backend?.trim() || 'local';
+
+    if (backend !== 'local') return null;
+    const configuredCwd = terminal?.cwd?.trim();
+    const gatewayCwd = env.TERMINAL_CWD?.trim();
+    const binding = bindings[IMATE_HERMES_WORKSPACE];
+
+    // Hermes substitutes the Gateway user's home for an implicit terminal cwd.
+    const useImateWorkspace = profile === path.join(IMATE_HERMES_WORKSPACE, '.hermes')
+      && (!configuredCwd || terminal?.cwd === '.') && binding?.ideType === 'hermes' && binding.projectId > 0
+      && (!gatewayCwd || (path.isAbsolute(gatewayCwd) && await isUserHomeDir(gatewayCwd)));
+
+    const cwd = useImateWorkspace ? IMATE_HERMES_WORKSPACE : gatewayCwd || configuredCwd;
+
+    if (!cwd || !A2aRuntimePathSchema.safeParse(cwd).success) return null;
+
+    const workspace = await fs.promises.realpath(cwd).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+
+      throw error;
+    });
+
+    if (!workspace || (useImateWorkspace && workspace !== IMATE_HERMES_WORKSPACE)
+      || !(await fs.promises.stat(workspace)).isDirectory()) return null;
+
+    return HermesA2aRuntimeSchema.safeParse({ profile, workspace }).data ?? null;
+  } catch {
+    return undefined;
+  }
+}
+
 const A2aWorkspaceBindingSchema = z.object({
   id: z.number().int().positive(),
   project_id: z.number().int().positive(),
   workspace: z.string().min(1).max(512),
+  runtime_profile: A2aRuntimePathSchema.optional(),
 });
 
 async function reportA2aWorkspace(
   config: LocalAgentConfig,
   tag: string,
-  context: LocalAgentContext,
+  context: LocalAgentContext & { tool: A2aTool },
   workspace: string,
   instanceId: string,
   bindingTaskId?: number,
+  hermesRuntime?: HermesA2aRuntime,
 ): Promise<void> {
-  const body = await buildReportPayload(config, context, workspace);
+  const body = await buildReportPayload(config, context, workspace || undefined);
+
+  if (context.tool === 'hermes') {
+    body.runtime_type = 'hermes';
+    body.default_workspace = workspace;
+    body.runtime_profile = hermesRuntime?.profile ?? '';
+  }
 
   const response = await localAgentFetch<{ instance_id?: string }>(config, tag, 'report', {
     method: 'POST', body: JSON.stringify({ ...body, a2a_binding_task_id: bindingTaskId }), redirect: 'error',
-  }, { tool: 'openclaw' });
+  }, { tool: context.tool });
 
-  if (response?.instance_id !== instanceId) throw new Error('OpenClaw A2A report returned a different instance');
+  if (response?.instance_id !== instanceId) throw new Error(`${context.tool === 'openclaw' ? 'OpenClaw' : 'Hermes'} A2A report returned a different instance`);
 }
 
-async function readA2aControl(config: LocalAgentConfig, tag: string, identity: AgentIdentityPayload) {
+async function readA2aControl(config: LocalAgentConfig, tag: string, identity: AgentIdentityPayload, tool: A2aTool) {
   return localAgentFetch<{
     ok?: boolean;
     plugin_config_revision?: unknown;
@@ -2941,31 +3185,56 @@ async function readA2aControl(config: LocalAgentConfig, tag: string, identity: A
     method: 'POST',
     body: JSON.stringify({ ...identity, status: 'running', a2a_control: true }),
     redirect: 'error',
-  }, { redactResponseLog: true, tool: 'openclaw' });
+  }, { redactResponseLog: true, tool });
 }
 
 /** One Gateway tick, independent of per-workspace/session enrollment. */
-export async function runOpenClawA2aControl(refreshReport: boolean): Promise<boolean> {
+async function runA2aControl(tool: A2aTool, refreshReport: boolean): Promise<boolean> {
+  const eligible = tool === 'openclaw' ? canRunOpenClawA2aControl : canRunHermesA2aControl;
   const stored = await loadLocalAgentConfig({ dryRun: true, envFallback: false });
 
-  if (!stored || !canRunOpenClawA2aControl(stored)) return true;
+  if (!stored || !eligible(stored)) return true;
 
   if (!await acquireLocalAgentLock()) return false;
 
   try {
     const config = await loadLocalAgentConfig({ envFallback: false });
 
-    if (!config || !canRunOpenClawA2aControl(config)) return true;
+    if (!config || !eligible(config)) return true;
 
-    const context: LocalAgentContext = { tool: 'openclaw' };
+    const context = { tool };
     const tag = localAgentTag(context);
     const identity = buildAgentIdentityPayload(context);
-    const instanceId = deriveInstanceId('openclaw', identity.local_agent_id.toLowerCase());
-    let workspace = refreshReport ? await openclawDefaultWorkspace() : undefined;
+    const instanceId = deriveInstanceId(tool, identity.local_agent_id.toLowerCase());
+    let resolvedHermes: HermesA2aRuntime | null | undefined;
 
-    if (workspace) await reportA2aWorkspace(config, tag, context, workspace, instanceId);
+    if (tool === 'hermes') {
+      const profile = await canonicalHermesA2aProfile();
 
-    let response = await readA2aControl(config, tag, identity);
+      if (!profile || !await isHermesA2aOwner(config.endpoint, profile)) return true;
+      resolvedHermes = await resolveHermesA2aRuntime(profile, config.workspaceBindings);
+    }
+
+    if (tool === 'hermes' && !resolvedHermes) {
+      if (resolvedHermes === undefined) return false;
+
+      try {
+        if (refreshReport) await reportA2aWorkspace(config, tag, context, '', instanceId);
+      } finally {
+        const slug = A2A_PLUGIN_PREFIX + a2aPluginScope(config.endpoint, instanceId);
+
+        await removeA2aPluginsBeforeHandoff(config, slug);
+      }
+
+      return true;
+    }
+
+    const hermesRuntime = resolvedHermes ?? undefined;
+    let workspace = hermesRuntime?.workspace ?? (refreshReport ? await openclawDefaultWorkspace() : undefined);
+
+    if (refreshReport && workspace) await reportA2aWorkspace(config, tag, context, workspace, instanceId, undefined, hermesRuntime);
+
+    let response = await readA2aControl(config, tag, identity, tool);
 
     if (response?.ok !== true) return false;
 
@@ -2977,12 +3246,12 @@ export async function runOpenClawA2aControl(refreshReport: boolean): Promise<boo
       // Native discovery can transiently fail while the Gateway is changing.
       if (!workspace) return false;
 
-      const { projected, error } = await prepareA2aWorkspaceBinding(config, binding, workspace);
+      const { projected, error } = await prepareA2aWorkspaceBinding(config, binding, workspace, tool, hermesRuntime);
 
       if (projected) {
         // Let the server verify the intent is still current before changing
         // local state. The acknowledgement attests that it reached disk.
-        await reportA2aWorkspace(projected, tag, context, workspace, instanceId, binding.id);
+        await reportA2aWorkspace(projected, tag, context, workspace, instanceId, binding.id, hermesRuntime);
 
         if (projected !== config) await saveLocalAgentConfig(projected);
       }
@@ -2994,20 +3263,21 @@ export async function runOpenClawA2aControl(refreshReport: boolean): Promise<boo
           status: error ? 'failed' : 'success', error,
         }),
         redirect: 'error',
-      }, { tool: 'openclaw' });
+      }, { tool });
 
       // Read the revision created by a successful acknowledgement, since
       // the previous revision could still be 'absent'.
-      if (!error) response = await readA2aControl(config, tag, identity);
+      if (!error) response = await readA2aControl(config, tag, identity, tool);
     }
 
     const revision = A2aPluginRevisionSchema.safeParse(response?.plugin_config_revision).data;
 
-    if (response?.ok === true && revision) await scheduleA2aPlugins(config, identity, revision, instanceId);
+    if (response?.ok === true && revision) await scheduleA2aPlugins(config, identity, revision, instanceId, hermesRuntime);
 
     return response?.ok === true && (!refreshReport || Boolean(workspace));
   } catch (error) {
-    log.debug(`[local-agent] OpenClaw A2A control tick failed: ${messageOf(error)}`);
+    const name = tool === 'openclaw' ? 'OpenClaw' : 'Hermes';
+    log.debug(`[local-agent] ${name} A2A control tick failed: ${messageOf(error)}`);
 
     return false;
   } finally {
@@ -3015,29 +3285,41 @@ export async function runOpenClawA2aControl(refreshReport: boolean): Promise<boo
   }
 }
 
+export async function runOpenClawA2aControl(refreshReport: boolean): Promise<boolean> {
+  return runA2aControl('openclaw', refreshReport);
+}
+
+export async function runHermesA2aControl(refreshReport: boolean): Promise<boolean> {
+  return runA2aControl('hermes', refreshReport);
+}
+
 async function prepareA2aWorkspaceBinding(
   config: LocalAgentConfig,
   binding: z.infer<typeof A2aWorkspaceBindingSchema>,
   workspace: string,
+  tool: A2aTool,
+  hermesRuntime?: HermesA2aRuntime,
 ): Promise<
   { projected: LocalAgentConfig; error?: undefined }
   | { projected?: undefined; error: 'default_workspace_changed' | 'workspace_binding_conflict' }
 > {
-  if (binding.workspace !== workspace) return { error: 'default_workspace_changed' };
+  if (binding.workspace !== workspace || (hermesRuntime && binding.runtime_profile !== hermesRuntime.profile)) {
+    return { error: 'default_workspace_changed' };
+  }
 
   const existing = config.workspaceBindings[workspace];
   const checkout = await resolveWorkspacePath(workspace);
   const checkoutBinding = checkout ? config.workspaceBindings[checkout] : undefined;
   const conflictingProject = [existing, checkoutBinding].some((row) => row && row.projectId > 0 && row.projectId !== binding.project_id);
 
-  if (conflictingProject || (existing?.ideType && existing.ideType !== 'openclaw')) return { error: 'workspace_binding_conflict' };
+  if (conflictingProject || (existing?.ideType && existing.ideType !== tool)) return { error: 'workspace_binding_conflict' };
 
-  if (existing?.projectId === binding.project_id && existing.ideType === 'openclaw') return { projected: config };
+  if (existing?.projectId === binding.project_id && existing.ideType === tool) return { projected: config };
 
   // The default agent executes in this physical directory even when it sits
   // inside a checkout. Leave the checkout's general TeamAI binding as written.
   const workspaceBinding: WorkspaceBinding = {
-    projectId: binding.project_id, ideType: 'openclaw', boundAt: new Date().toISOString(),
+    projectId: binding.project_id, ideType: tool, boundAt: new Date().toISOString(),
     projectName: existing?.projectId === binding.project_id ? existing.projectName : undefined,
   };
 
@@ -3073,12 +3355,16 @@ export async function buildReportPayload(
     if (!toolPath) return { skills: [], rules: [] };
     const install = installOf(teamConfig, localConfig);
 
+    const hermesA2aWorkspace = tool === 'hermes' && workspacePath !== undefined && workspacePath === a2aDefaultWorkspace;
+
     // OpenClaw's default workspace may belong to a different native agent.
     const skillsDir = tool === 'openclaw' && workspacePath
       ? path.join(workspacePath, 'skills')
-      : ownOf(await locate(tool, 'skills', install))?.path ?? null;
+      : hermesA2aWorkspace
+        ? path.join(workspacePath, '.agents', 'skills')
+        : ownOf(await locate(tool, 'skills', install))?.path ?? null;
 
-    const skills = skillsDir === null ? [] : await scanSkillsFromDisk(skillsDir, manifestSkillSlugs);
+    const skills = skillsDir === null ? [] : await scanSkillsFromDisk(skillsDir, manifestSkillSlugs, hermesA2aWorkspace);
     const rulesDir = ownOf(await locate(tool, 'rules', install));
     const diskRules = rulesDir?.kind === 'dir' ? await scanRulesFromDisk(rulesDir.path) : [];
 
@@ -3096,7 +3382,7 @@ export async function buildReportPayload(
 
   const [userScope, defaultWorkspace, agentVersion] = await Promise.all([
     scanScope(),
-    tool === 'openclaw' ? a2aDefaultWorkspace ?? openclawDefaultWorkspace() : undefined,
+    tool === 'openclaw' ? a2aDefaultWorkspace ?? openclawDefaultWorkspace() : a2aDefaultWorkspace,
     getAgentVersion(tool),
   ]);
 
@@ -3164,7 +3450,9 @@ export async function buildReportPayload(
           project_id: !wsBinding?.ideType || wsBinding.ideType === currentTool ? wsBinding?.projectId : undefined,
         };
 
-        if (wsScope.skills.length > 0 || currentTool === 'openclaw') workspace.skills = wsScope.skills;
+        if (wsScope.skills.length > 0 || currentTool === 'openclaw' || (currentTool === 'hermes' && wsPath === a2aDefaultWorkspace)) {
+          workspace.skills = wsScope.skills;
+        }
 
         if (wsScope.rules.length > 0) workspace.rules = wsScope.rules;
         const wsMcps = await scanMcpFromManifest('project', tool, wsPath);
@@ -6702,18 +6990,20 @@ export function validateLocalAgentTokenReplacement(options: {
   }
 }
 
-/**
- * Point the HTTP local agent at `endpoint`. A caller that must not replace
- * another one checks `assertNoLocalAgentReplacement` first; `force` overwrites
- * what this endpoint already holds.
- */
-export async function initLocalAgentHttp(options: {
+type InitLocalAgentHttpOptions = {
   endpoint: string;
   token?: string;
   force?: boolean;
   replaceToken?: boolean;
   filterAgents?: string[];
-}): Promise<void> {
+};
+
+/**
+ * Point the HTTP local agent at `endpoint`. A caller that must not replace
+ * another one checks `assertNoLocalAgentReplacement` first; `force` overwrites
+ * what this endpoint already holds.
+ */
+export async function initLocalAgentHttp(options: InitLocalAgentHttpOptions): Promise<void> {
   const endpoint = normalizeEndpoint(options.endpoint);
 
   if (!endpoint) {
@@ -6723,18 +7013,61 @@ export async function initLocalAgentHttp(options: {
   assertHttpEndpoint(endpoint);
 
   validateLocalAgentTokenReplacement(options);
+  await configureLocalAgentHttpLocked(endpoint, options);
 
+  const teamConfig = createLocalAgentTeamConfig(endpoint);
+  // The local agent is always user-scope and always rooted at HOME, so resolve
+  // the user-scope paths (Qoder CN's user config lives under ~/.qoder-cn).
+  const toolRoots = await memberToolRoots();
+
+  await injectHooksToAllTools(
+    scopedToolPaths(teamConfig, { scope: 'user', toolRoots }),
+    getUserHome(),
+    options.filterAgents,
+    toolRoots,
+    await memberCodexTrust(),
+  );
+  log.success(`HTTP local agent initialized at ${getConfigPath()}`);
+  log.info('Run `teamai bind-project` once in each workspace it should sync; it leaves any other workspace alone.');
+}
+
+export async function prepareLocalAgentHttpEndpointReplacement(options: InitLocalAgentHttpOptions): Promise<void> {
+  const endpoint = normalizeEndpoint(options.endpoint);
+
+  if (endpoint && await pathExists(getConfigPath())) await configureLocalAgentHttpLocked(endpoint, options, true);
+}
+
+async function configureLocalAgentHttpLocked(
+  endpoint: string, options: InitLocalAgentHttpOptions, onlyEndpointReplacement = false,
+): Promise<void> {
+  if (!await acquireLocalAgentLock(30_000)) throw new Error('The HTTP local agent is busy. Wait for the current operation to finish and retry.');
+
+  try {
+    await configureLocalAgentHttp(endpoint, options, onlyEndpointReplacement);
+  } finally {
+    await releaseLock(localAgentLockPath());
+  }
+}
+
+async function configureLocalAgentHttp(endpoint: string, options: InitLocalAgentHttpOptions, onlyEndpointReplacement: boolean): Promise<void> {
   // `init --http` writes the user config.yaml and saves the API key before this
   // runs, and a missing config.json is backfilled from them (loadLocalAgentConfig).
   // That backfill is this command's own footprint, not an install to refuse, so
   // only a config.json that existed before this call counts as "already initialized".
   const configExisted = await pathExists(getConfigPath());
-  const existing = await loadLocalAgentConfig();
+  const existing = await loadLocalAgentConfig({ dryRun: onlyEndpointReplacement });
   const token = options.token?.trim() || undefined;
   const sameEndpoint = existing !== null && normalizeEndpoint(existing.endpoint) === endpoint;
   const namedCount = options.filterAgents?.length ?? 0;
   // The agents that already hold a credential of this endpoint.
   const held = sameEndpoint ? Object.keys(existing?.agentTokens ?? {}) : [];
+
+  if (!existing && await interruptedRemovalConfig() && Object.keys(await readPluginState()).some((slug) => slug.startsWith(A2A_PLUGIN_PREFIX))) {
+    throw new Error('The previous A2A installation still needs cleanup. Retry `teamai source remove-http` before enrolling again.');
+  }
+
+  if (onlyEndpointReplacement && (!existing || sameEndpoint)) return;
+
   // Only an agent access token (`sk-`) is bound to one agent; a user token
   // (`hk-`) works for every agent, so it stays in the shared slot.
   const agentScoped = isAgentToken(token);
@@ -6828,6 +7161,24 @@ export async function initLocalAgentHttp(options: {
     ? { endpoint, token: sharedToken, agentTokens, createdAt, workspaceBindings, userGroupId, userGroupName }
     : { endpoint, token: sharedToken, createdAt, workspaceBindings, userGroupId, userGroupName };
 
+  const [namedAgent] = options.filterAgents ?? [];
+  const explicitHermes = namedCount === 1 && namedAgent !== undefined && normalizeAgentType(namedAgent) === 'hermes';
+  const owner = await readHermesA2aOwner();
+  const profile = explicitHermes && canRunHermesA2aControl(config) ? await canonicalHermesA2aProfile() : undefined;
+
+  if (existing && !sameEndpoint) await removeA2aPluginsBeforeHandoff(existing);
+
+  if (existing && sameEndpoint && owner && profile && owner.profile !== profile) {
+    const slug = A2A_PLUGIN_PREFIX + a2aPluginScope(existing.endpoint, localA2aInstanceId('hermes'));
+    await removeA2aPluginsBeforeHandoff(existing, slug);
+  }
+
+  if (owner && (profile ? owner.profile !== profile : owner.endpoint !== endpoint)) {
+    if (await removeHermesA2aProfileHook(owner.profile)) {
+      throw new Error(`Could not remove the previous Hermes A2A startup hook in ${owner.profile}. Fix its permissions and retry enrollment.`);
+    }
+  }
+
   await ensureDir(getLocalAgentHome());
   await saveLocalAgentConfig(config);
 
@@ -6835,19 +7186,13 @@ export async function initLocalAgentHttp(options: {
     await writeTokenFile(getTokenPath(), perAgent ? agentTokens[agent!] : token);
   }
 
-  const teamConfig = createLocalAgentTeamConfig(endpoint);
-  // The local agent is always user-scope and always rooted at HOME, so resolve
-  // the user-scope paths (Qoder CN's user config lives under ~/.qoder-cn).
-  const toolRoots = await memberToolRoots();
-  await injectHooksToAllTools(
-    scopedToolPaths(teamConfig, { scope: 'user', toolRoots }),
-    getUserHome(),
-    options.filterAgents,
-    toolRoots,
-    await memberCodexTrust(),
-  );
-  log.success(`HTTP local agent initialized at ${getConfigPath()}`);
-  log.info('Run `teamai bind-project` once in each workspace it should sync; it leaves any other workspace alone.');
+  if (profile) {
+    if (owner?.endpoint !== endpoint || owner.profile !== profile) {
+      await writeJsonAtomic(getHermesA2aOwnerPath(), { endpoint, profile });
+    }
+  } else if (owner && owner.endpoint !== endpoint) {
+    await remove(getHermesA2aOwnerPath());
+  }
 }
 
 export async function pullLocalAgentForCwd(context?: LocalAgentContext): Promise<boolean> {
@@ -6907,6 +7252,62 @@ function parseScopeKey(key: string): ScopeOfKey {
   return { scope: key === 'instance' ? 'instance' : 'user' };
 }
 
+async function legacyA2aPluginRuntime(config: LocalAgentConfig, slug: string): Promise<A2aPluginRuntime | undefined> {
+  const openClawId = localA2aInstanceId('openclaw');
+
+  if (slug === A2A_PLUGIN_PREFIX + a2aPluginScope(config.endpoint, openClawId)) return { instanceId: openClawId };
+  const hermesId = localA2aInstanceId('hermes');
+
+  if (slug !== A2A_PLUGIN_PREFIX + a2aPluginScope(config.endpoint, hermesId)) return;
+  const owner = await readHermesA2aOwner();
+  const hermesRuntime = owner?.endpoint === config.endpoint ? await resolveHermesA2aRuntime(owner.profile, config.workspaceBindings, {}) : undefined;
+
+  if (!hermesRuntime) throw new Error('Could not recover the enrolled Hermes A2A profile and workspace.');
+
+  return { instanceId: hermesId, hermesRuntime };
+}
+
+async function teardownLocalAgentPluginState(config: LocalAgentConfig, select: (slug: string) => boolean = () => true): Promise<void> {
+  const deps = buildReconcileDeps('[local-agent] [uninstall]');
+  const plugins = Object.fromEntries(Object.entries(await readPluginState()).filter(([slug]) => select(slug)));
+
+  await teardownAllPlugins({
+    ...deps,
+    readPlugins: async () => plugins,
+    execCommand: async (cmd, timeout, slug) => {
+      if (!slug.startsWith(A2A_PLUGIN_PREFIX)) return deps.execCommand(cmd, timeout, slug);
+      const stored = A2aPluginRuntimeSchema.safeParse(plugins[slug]?.a2a).data;
+      const runtime = stored ?? await legacyA2aPluginRuntime(config, slug);
+
+      // An endpoint change may leave local files behind, but its token belongs only to the new endpoint.
+      const deviceToken = runtime && slug === A2A_PLUGIN_PREFIX + a2aPluginScope(config.endpoint, runtime.instanceId)
+        ? a2aToken(config, runtime.instanceId.startsWith('local-hermes-') ? 'hermes' : 'openclaw')
+        : undefined;
+
+      if (!stored && runtime) {
+        await withPluginStateLock((states) => { if (states[slug]) states[slug].a2a = runtime; });
+      }
+
+      await execPluginCommand(cmd, timeout, { deviceToken, hermesRuntime: runtime?.hermesRuntime });
+    },
+  });
+}
+
+async function removeA2aPluginsBeforeHandoff(config: LocalAgentConfig, onlySlug?: string): Promise<void> {
+  const selected = (slug: string) => slug.startsWith(A2A_PLUGIN_PREFIX) && (onlySlug === undefined || slug === onlySlug);
+  const previous = Object.keys(await readPluginState()).filter(selected);
+
+  await teardownLocalAgentPluginState(config, selected);
+
+  if (Object.keys(await readPluginState()).some(selected)) throw new Error('Could not uninstall the previous A2A runtime. Retry after correcting the cleanup failure.');
+
+  for (const slug of previous) {
+    const scope = slug.slice(A2A_PLUGIN_PREFIX.length);
+
+    if (/^[a-f0-9]{64}$/.test(scope)) await remove(a2aPullStatePath(scope));
+  }
+}
+
 /**
  * Run each installed plugin's uninstall_cmd (stop daemons, deregister autostart,
  * remove packages) using the persisted plugin manifest. No-op when no HTTP source
@@ -6921,7 +7322,7 @@ export async function teardownLocalAgentPlugins(): Promise<void> {
     const config = await loadLocalAgentConfig();
 
     if (!config) return;
-    await teardownAllPlugins(buildReconcileDeps('[local-agent] [uninstall]'));
+    await teardownLocalAgentPluginState(config);
   } catch (e) {
     log.warn(`[local-agent] plugin teardown failed: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -7014,11 +7415,49 @@ async function interruptedRemovalConfig(): Promise<LocalAgentConfig | null> {
   return isJsonObject(marker) && marker.disabled === true ? storedLocalAgentConfig(marker.removing)?.config ?? null : null;
 }
 
+async function removeHermesA2aProfileHook(profile?: string): Promise<string | undefined> {
+  try {
+    if (profile !== undefined) {
+      const canonical = await fs.promises.realpath(profile).catch((error) => {
+        if (errnoCode(error) !== 'ENOENT') throw error;
+      });
+
+      if (!canonical) return;
+
+      if (canonical !== profile) throw new Error(`Hermes profile path has changed: ${profile}`);
+    }
+
+    const { removeHermesA2aControl } = await import('./hermes-hooks.js');
+
+    await removeHermesA2aControl(profile, { strict: profile !== undefined });
+  } catch (error) {
+    log.warn(`[local-agent] Failed to remove the Hermes A2A control service: ${messageOf(error)}`);
+
+    return profile;
+  }
+}
+
+async function removeOpenClawA2aControlHooks(): Promise<string[]> {
+  const { OPENCLAW_A2A_CONTROL_RECORD, removeRecordedOpenClawA2aControls } = await import('./openclaw-hooks.js');
+
+  try {
+    return await removeRecordedOpenClawA2aControls();
+  } catch (error) {
+    log.warn(`[local-agent] Failed to remove OpenClaw A2A control services: ${messageOf(error)}`);
+
+    return [path.join(getLocalAgentHome(), OPENCLAW_A2A_CONTROL_RECORD)];
+  }
+}
+
 async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'removed' | 'incomplete'> {
   const config = await loadLocalAgentConfig() ?? await interruptedRemovalConfig();
+  const hermesOwner = await readHermesA2aOwner();
 
   if (!config) {
     if (!await disabledSourceLeftovers()) return 'none';
+
+    const openClawHooksLeft = await removeOpenClawA2aControlHooks();
+    const hermesHookLeft = hermesOwner ? await removeHermesA2aProfileHook(hermesOwner.profile) : undefined;
     // A retry: the caches an earlier run could not delete are still in the manifest.
     const cachesLeft: string[] = [];
 
@@ -7033,27 +7472,25 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
     const blocks = await removeLocalAgentGitExclude(await localAgentCheckouts());
     const models = await removeWorkspaceModels();
 
-    return finishAgentHookTeardown(retry, { models, caches: cachesLeft, blocks: [...blocks, ...await releaseModelKeyLines()] });
+    return finishAgentHookTeardown(retry, { models, caches: cachesLeft, openClawHooksLeft, hermesHookLeft, blocks: [...blocks, ...await releaseModelKeyLines()] });
   }
 
   // Read before the marker and the teardown below delete what names them (#915).
   const checkouts = await localAgentCheckouts();
+  const { rememberExistingOpenClawA2aControl } = await import('./openclaw-hooks.js');
+
+  await rememberExistingOpenClawA2aControl();
 
   // No sync or plugin worker can write after this point until teardown finishes.
   // The marker keeps the config until every entry is uninstalled, for a retry.
   await writeJsonAtomic(getConfigPath(), { disabled: true, removing: config });
 
-  try {
-    const { removeOpenClawA2aControl } = await import('./openclaw-hooks.js');
-
-    await removeOpenClawA2aControl();
-  } catch (error) {
-    log.warn(`[local-agent] Failed to remove the OpenClaw A2A control service: ${messageOf(error)}`);
-  }
+  const openClawHooksLeft = await removeOpenClawA2aControlHooks();
+  const hermesHookLeft = await removeHermesA2aProfileHook(hermesOwner?.profile);
 
   // Tear down installed plugins before removing teamai's local-agent state.
   try {
-    await teardownAllPlugins(buildReconcileDeps('[local-agent] [uninstall]'));
+    await teardownLocalAgentPluginState(config);
   } catch (e) { log.warn(`[local-agent] plugin teardown failed: ${messageOf(e)}`); }
 
   const kinds: CommandResourceKind[] = ['skill', 'rule', 'claudemd'];
@@ -7088,7 +7525,7 @@ async function removeLocalAgentHttpLocked(retry: string): Promise<'none' | 'remo
   const models = await removeWorkspaceModels();
 
   return finishAgentHookTeardown(retry, {
-    models, caches: cachesLeft, entries: entriesLeft, removing: config,
+    models, caches: cachesLeft, entries: entriesLeft, removing: config, openClawHooksLeft, hermesHookLeft,
     // The lines of models files the teardown deleted, with any an earlier run could not write.
     blocks: [...blocks, ...await releaseModelKeyLines()],
   });
@@ -7148,6 +7585,11 @@ async function removeWorkspaceCache(workspacePath: string): Promise<boolean> {
 async function disabledSourceLeftovers(): Promise<boolean> {
   if (Object.keys(await loadAgentHookManifest()).length > 0) return true;
 
+  if (await pathExists(getHermesA2aOwnerPath())) return true;
+  const { hasRecordedOpenClawA2aControl } = await import('./openclaw-hooks.js');
+
+  if (await hasRecordedOpenClawA2aControl()) return true;
+
   // A teardown keeps these only for what it could not remove.
   if (await pathExists(getModelManifestPath()) || await pathExists(getManifestPath())) return true;
 
@@ -7171,7 +7613,15 @@ async function disabledSourceLeftovers(): Promise<boolean> {
  */
 async function finishAgentHookTeardown(
   retry: string,
-  left: { models: string[]; caches: string[]; entries?: string[]; removing?: LocalAgentConfig; blocks?: string[] } = { models: [], caches: [] },
+  left: {
+    models: string[];
+    caches: string[];
+    entries?: string[];
+    removing?: LocalAgentConfig;
+    blocks?: string[];
+    hermesHookLeft?: string;
+    openClawHooksLeft?: string[];
+  } = { models: [], caches: [] },
 ): Promise<'removed' | 'incomplete'> {
   const entries = left.entries ?? [];
   const blocks = [...new Set(left.blocks ?? [])];
@@ -7181,6 +7631,14 @@ async function finishAgentHookTeardown(
   const a2aLeft = Object.keys(await readPluginState()).some((slug) => slug.startsWith(A2A_PLUGIN_PREFIX));
 
   if (hooksLeft.length > 0) keep.add(path.basename(getAgentHookManifestPath()));
+
+  if (left.hermesHookLeft || a2aLeft) keep.add(path.basename(getHermesA2aOwnerPath()));
+
+  if (left.openClawHooksLeft?.length) {
+    const { OPENCLAW_A2A_CONTROL_RECORD } = await import('./openclaw-hooks.js');
+
+    keep.add(OPENCLAW_A2A_CONTROL_RECORD);
+  }
 
   if (a2aLeft) keep.add(path.basename(getPluginStatePath()));
 
@@ -7202,6 +7660,8 @@ async function finishAgentHookTeardown(
 
   const held = [
     ...hooksLeft.length > 0 ? [`agent hooks ${hooksLeft.map((h) => `${h.slug} (${h.tool})`).join(', ')}`] : [],
+    ...left.openClawHooksLeft?.length ? [`OpenClaw A2A control services in ${left.openClawHooksLeft.join(', ')}`] : [],
+    ...left.hermesHookLeft ? [`the Hermes A2A startup hook in ${left.hermesHookLeft}`] : [],
     ...a2aLeft ? ['the ClawPro A2A plugin'] : [],
     ...left.models.length > 0 ? [`teamai's models in ${left.models.join(', ')}`] : [],
     ...left.caches.length > 0 ? [`the local agent's cache in ${left.caches.map((dir) => path.join(dir, '.teamai')).join(', ')}`] : [],

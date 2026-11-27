@@ -169,8 +169,12 @@ export function toolCommandEnv(name: string, home: ToolCommandHome): ToolCommand
   const variable = resolved === undefined ? undefined : homeVariableOf(resolved.base);
 
   switch (home.kind) {
-    case 'at':
-      return Object.fromEntries([variable, instance?.home?.env].flatMap((one) => one === undefined ? [] : [[one, home.dir]]));
+    case 'at': {
+      const chosenVariable = resolved?.base === 'hermes' ? 'HERMES_HOME' : variable;
+
+      return Object.fromEntries([chosenVariable, instance?.home?.env].flatMap((one) => one === undefined ? [] : [[one, home.dir]]));
+    }
+
     case 'delivered': {
       if (resolved === undefined) return { kind: 'ready', env: {} };
       const own = instance?.home;
