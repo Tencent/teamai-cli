@@ -36,6 +36,11 @@ const OTHER_MODES = new Set(['src/workflow/fleet/guardian-stop.ts']);
  */
 const RUNTIME_EXECUTABLE = /^packages\/runtime-[^/]+\/src\/main\.ts$/;
 
+/** @param {string} root @param {string} file */
+function repoRelative(root, file) {
+  return path.relative(root, file).split(path.sep).join('/');
+}
+
 /** package.json's `bin`: one executable named after the package, or a name for each. */
 const ManifestSchema = z.object({ bin: z.union([z.string().transform((one) => ({ [one]: one })), z.record(z.string(), z.string())]).default({}) });
 
@@ -110,7 +115,7 @@ function startupsOf(root) {
     if (loaded.length === 0) throw new Error(`teamai/family-facts: its ${command} command loads no module with import() in ${found.map(({ cli }) => cli).join(', ')}, so the rule cannot find what an agent waits on there. Load the command's module with import('./<module>.js') in its action.`);
 
     for (const module of loaded) {
-      const relative = path.posix.relative(root, module);
+      const relative = repoRelative(root, module);
       entries.add(relative);
       waited.add(relative);
 
@@ -163,7 +168,7 @@ function resolved(root, from, specifier) {
   if (specifier.startsWith('.')) {
     const file = sourceImport(path.posix.join(root, from), specifier);
 
-    return file === undefined ? undefined : path.posix.relative(root, file);
+    return file === undefined ? undefined : repoRelative(root, file);
   }
 
   return specifier.startsWith('@teamai/') ? workspaceFile(root, specifier) : undefined;
@@ -214,7 +219,7 @@ export default defineRule({
   create(context) {
     const file = lintedPath(context);
     const root = workspaceRoot(path.posix.dirname(file));
-    const from = root === undefined ? sourcePath(context) : path.posix.relative(root, file);
+    const from = root === undefined ? sourcePath(context) : repoRelative(root, file);
 
     if (isFactsModule(from)) {
       return importVisitors(({ node, specifier, typeOnly }) => {
