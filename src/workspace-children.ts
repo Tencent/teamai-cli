@@ -29,6 +29,7 @@ import { findProject, loadProjectsManifest, resolveActiveLearningsNamespaces } f
 import type { LocalConfig, State } from './types.js';
 import type { JsonValue } from '@teamai/shared/json';
 import { readFileSafe, readJsonObject, writeJson } from './utils/fs.js';
+import { readRegularFileSync } from '@teamai/shared/regular-file';
 import { remotesMatch } from './utils/git.js';
 import { log } from '@teamai/shared/log';
 import { resolvePartitionDir } from './utils/partition.js';
@@ -79,7 +80,57 @@ export interface WorkspaceChildren {
  * config as given when there are none: a scope without children reads and
  * delivers exactly as before. Only the workspace scope (internally `project`)
  * has children.
+/**
+ * Roots of the workspaces already registered under this workspace's data home
+ * that sit strictly inside its checkout (`<dataHome>/workspaces/<id>/root`,
+ * #2124): each is a scope of its own — a linked worktree a session in it
+ * registered — so the workspace's team-hook gate must leave it out, or both
+ * prefixes match a session's `$PWD` and every team hook fires twice.
+ *
+ * A registry entry counts only when its `root` file is there and names a
+ * checkout that still exists. The directory outlives the file: uninstall and a
+ * removed worktree's cleanup leave `workspaces/<id>/` behind for a while
+ * (#373, #808), so a missing or unreadable file is a registration to skip,
+ * never an error.
  */
+function registeredNestedRoots(dataHome: string | undefined, projectRoot: string): string[] {
+  if (!dataHome) return [];
+
+  const workspaces = path.join(dataHome, 'workspaces');
+  const inside = path.resolve(projectRoot);
+  const found: string[] = [];
+  let dirs: string[];
+
+  try {
+    dirs = fs.readdirSync(workspaces, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+
+  for (const dir of dirs) {
+    let root: string;
+
+    try {
+      // readRegularFileSync, so a FIFO left in place of the file does not block.
+      root = readRegularFileSync(path.join(workspaces, dir, 'root'), 'utf8').trim();
+    } catch {
+      continue;
+    }
+
+    if (!root) continue;
+
+    const resolved = path.resolve(root);
+
+    if (resolved === inside) continue;
+
+    const relative = path.relative(inside, resolved);
+
+    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative) && fs.existsSync(resolved)) found.push(resolved);
+  }
+
+  return [...new Set(found)];
+}
+
 export async function readWorkspaceChildren(workspace: LocalConfig): Promise<LocalConfig> {
   const { projectRoot } = workspace;
 
@@ -122,7 +173,16 @@ export async function readWorkspaceChildren(workspace: LocalConfig): Promise<Loc
     }
   }
 
-  if (children.length === 0 && leftOut.length === 0) return workspace;
+  // A nested workspace this checkout registered (a linked worktree a session
+  // in it pulled, #2124) has no teamai config for the walk to find, but its
+  // gate must still stay out of this one's: merge the registered roots in.
+  const nested = registeredNestedRoots(workspace.dataHome, projectRoot);
+
+  for (const nestedRoot of nested) {
+    if (!roots.some((existing) => path.resolve(existing) === nestedRoot)) roots.push(nestedRoot);
+  }
+
+  if (children.length === 0 && leftOut.length === 0 && nested.length === 0) return workspace;
 
   // Run from a linked worktree, the children read are the main checkout's; the same folders in this checkout are theirs too.
   if (root !== projectRoot) roots.push(...roots.map((childRoot) => path.join(projectRoot, path.relative(root, childRoot))));

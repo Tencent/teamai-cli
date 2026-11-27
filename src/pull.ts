@@ -3345,8 +3345,12 @@ async function pullForScope(
   if (localConfig.scope === 'project' && localConfig.projectRoot && !options.dryRun) {
     try {
       const { pruneWorkspaceDirs, writeWorkspaceRoot } = await import('./utils/partition.js');
-      const { releaseRemovedCheckoutHooks } = await import('./hooks.js');
+      const { releaseRemovedCheckoutHooks, regateAncestorWorkspaceGates } = await import('./hooks.js');
       await writeWorkspaceRoot(getDataHome(localConfig), localConfig.projectRoot);
+      // Registering a workspace nested under another one must re-gate that
+      // ancestor's team hooks at once (#2124), or both prefixes match a
+      // session's $PWD in the nested checkout until the ancestor's own next pull.
+      await regateAncestorWorkspaceGates(freshConfig, localConfig, resolveHookScope(localConfig).manifestPath);
       await releaseRemovedCheckoutHooks(freshConfig, localConfig);
       const removed = await pruneWorkspaceDirs(getDataHome(localConfig), localConfig.projectRoot);
 
