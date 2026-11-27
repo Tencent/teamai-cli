@@ -208,6 +208,17 @@ describe('teamai codebase reconcile CLI (issue #360 slice 2)', () => {
 });
 
 describe('teamai codebase deep-enrich CLI', () => {
+  it.each(['0.5', '2extra', '0x10'])('rejects an invalid hidden deep-enrich module limit %j', async (limit) => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-deep-enrich-limit-'));
+    try {
+      const result = await runCLI(['deep-enrich', '--project', 'widget', '--wiki-root', path.join(fixture, 'teamwiki'), '--max-modules', limit], fixture);
+      expect(result.code, result.output).toBe(1);
+      expect(result.output).toContain('--max-modules must be an integer >= 0');
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
   it('hidden deep-enrich exits non-zero when _manifest.json has no components', async () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-hidden-deep-enrich-508-'));
     try {

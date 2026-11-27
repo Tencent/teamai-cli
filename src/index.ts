@@ -2246,7 +2246,7 @@ program
   .description('Run deep AI knowledge generation for an imported repo, as codebase --deep-enrich does, without publishing: the default workflow teamai-codebase-deep-enrich, on the team repo\'s teamwiki or another --wiki-root, which needs no teamai init')
   .requiredOption('--project <slug>', 'Project slug (directory name in evidence/code/)')
   .option('--wiki-root <path>', 'Teamwiki root path')
-  .option('--max-modules <n>', 'Max modules to process (cost control)', parseInt)
+  .option('--max-modules <n>', 'Max modules to process (cost control)', (value) => parseIntOption('--max-modules', value, 0))
   .action(async (cmdOpts: { project: string; wikiRoot?: string; maxModules?: number }) => {
     const { hiddenDeepEnrichTarget, startDeepEnrich } = await import('./codebase-cmd.js');
     const { DetachedTeamRepoError } = await import('./utils/git.js');
