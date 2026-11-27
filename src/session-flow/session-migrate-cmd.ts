@@ -340,7 +340,7 @@ async function migrateSession(sessionId: string | undefined, opts: MigrationOpti
           continue;
         }
 
-        const num = parseInt(ans, 10);
+        const num = /^[0-9]+$/.test(ans) ? Number(ans) : NaN;
 
         if (!Number.isNaN(num) && num >= 1 && num <= sorted.length) {
           targets = [sorted[num - 1]];

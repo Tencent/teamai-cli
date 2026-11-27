@@ -780,7 +780,7 @@ describe('session migrate interactive picker', () => {
     mocks.lineArmed = push; // 等第一次 createInterface
   }
 
-  it('pages with n and migrates a session from the second page', async () => {
+  it('rejects partial numbers, then pages and migrates the selected session', async () => {
     // 12 sessions: the picker shows 10, the 11th is reachable only after paging.
     const sessions = Array.from({ length: 12 }, (_, i) =>
       mkSession({
@@ -814,11 +814,12 @@ describe('session migrate interactive picker', () => {
       filePath: '/tmp/tgt.jsonl',
       fidelity: { score: 1 },
     };
-    feedAnswers(['n', '11']);
+    feedAnswers(['1junk', 'n', '11']);
     await runSession('migrate', '-s', 'fakeplat', '-t', 'tgtplat', '--cwd', '/run/dir');
 
     // The picker is on page 2 by the time the number is entered, and the
     // selected id is the 11th newest -- unreachable before paging existed.
+    expect(out.join('\n')).toContain('Enter a number between 1 and 12');
     expect(out.join('\n')).toContain('page 2/2');
     expect(mocks.previewCalls).toContainEqual({ session: sessions[1], source: 'fakeplat', target: 'tgtplat' });
   });
