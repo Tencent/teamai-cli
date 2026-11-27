@@ -3,7 +3,7 @@ import path from 'node:path';
 import { parse } from '@babel/parser';
 import { defineRule } from '@oxlint/plugins';
 
-import { lintedPath, stringLiteralValue } from '../utils.js';
+import { lintedPath, resolveFrom, stringLiteralValue } from '../utils.js';
 
 /**
  * The source file a relative module specifier resolved from `dir` names, as TypeScript resolves it here: `./x.js`,
@@ -13,7 +13,7 @@ import { lintedPath, stringLiteralValue } from '../utils.js';
  * @returns {string | undefined}
  */
 function sourceFile(dir, specifier) {
-  const base = path.posix.resolve(dir, specifier).replace(/\.[cm]?[jt]s$/, '');
+  const base = resolveFrom(dir, specifier).replace(/\.[cm]?[jt]s$/, '');
 
   return [`${base}.ts`, `${base}/index.ts`].find((candidate) => fs.existsSync(candidate));
 }
@@ -70,7 +70,7 @@ export default defineRule({
 
         if (mockedFile === undefined || target === undefined) return;
         // A relative target is relative to the re-exporting file; the suggestion is written from the test.
-        const suggestion = target.startsWith('.') ? `./${path.posix.relative(dir, path.posix.resolve(path.posix.dirname(mockedFile), target))}`.replace(/^\.\/\.\./, '..') : target;
+        const suggestion = target.startsWith('.') ? `./${path.posix.relative(dir, resolveFrom(path.posix.dirname(mockedFile), target))}`.replace(/^\.\/\.\./, '..') : target;
 
         context.report({
           node,
