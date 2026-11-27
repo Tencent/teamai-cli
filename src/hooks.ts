@@ -548,6 +548,7 @@ const FileHookSchema = z.object({
   commandWindows: OptionalTextSchema,
   args: z.array(z.unknown()).optional().catch(undefined),
   timeout: z.number().optional().catch(undefined),
+  additionalContextLimit: z.int().nonnegative().optional().catch(undefined),
   async: z.boolean().optional().catch(undefined),
 }).catch({});
 
@@ -1745,6 +1746,8 @@ async function heldCodexFileHooks(file: string, recorded: readonly ManagedHookRe
     if (matcher && matcher !== '*') fileHook.matcher = matcher;
 
     if (hook.timeout !== undefined) fileHook.timeout = hook.timeout;
+
+    if (hook.additionalContextLimit !== undefined) fileHook.additionalContextLimit = hook.additionalContextLimit;
     found.push(fileHook);
   }
 
@@ -1788,6 +1791,8 @@ async function placeCodexTeamHooks(
 
     if (hook.timeout !== undefined) def.timeout = hook.timeout;
 
+    if (hook.additionalContextLimit !== undefined) def.additionalContextLimit = hook.additionalContextLimit;
+
     return def;
   });
 
@@ -1799,6 +1804,8 @@ async function placeCodexTeamHooks(
     if (def.matcher && def.matcher !== '*') hook.matcher = def.matcher;
 
     if (def.timeout !== undefined) hook.timeout = def.timeout;
+
+    if (def.additionalContextLimit !== undefined) hook.additionalContextLimit = def.additionalContextLimit;
 
     return hook;
   }), ...heldHooks, ...heldInFile];

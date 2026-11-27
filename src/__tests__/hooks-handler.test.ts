@@ -61,6 +61,7 @@ hooks:
     matcher: Bash
     command: 'bash -lc "scan.sh" || true'
     timeout: 15
+    additionalContextLimit: 800
 `);
     const defs = await teamHookDefs();
     expect(defs).toHaveLength(1);
@@ -70,6 +71,7 @@ hooks:
       event: 'PreToolUse',
       matcher: 'Bash',
       timeout: 15,
+      additionalContextLimit: 800,
       description: '[teamai:hook:block-secret] 扫描密钥',
     });
   });

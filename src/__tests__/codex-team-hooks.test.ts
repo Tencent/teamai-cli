@@ -96,7 +96,7 @@ describe('reconcileCodexDispatchers — the Windows override keeps the block con
     vi.spyOn(process, 'platform', 'get').mockReturnValue(platform);
     vi.spyOn(bundledRuntime, 'findGitBashWindows').mockReturnValue('C:/Program Files/Git/bin/bash.exe');
     _resetShellCache();
-    seed({ hooks: [{ id: 'team', event: 'Stop', command: 'echo blocked >&2; exit 2' }] });
+    seed({ hooks: [{ id: 'team', event: 'Stop', command: 'echo blocked >&2; exit 2', additionalContextLimit: 800 }] });
     const hooksFile = path.join(root, 'hooks.json');
     fs.writeFileSync(hooksFile, JSON.stringify({ hooks: {} }));
 
@@ -110,6 +110,7 @@ describe('reconcileCodexDispatchers — the Windows override keeps the block con
     // redirected — no tail needed, no junk arguments (#1215).
     expect(entry.commandWindows).toBe('teamai hook-dispatch Stop --tool codex --team-hooks');
     expect(entry.statusMessage).toBe('teamai-team-Stop');
+    expect(entry.additionalContextLimit).toBe(800);
   });
 
   it('reconciles idempotently: a second run writes the same bytes', async () => {

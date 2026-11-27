@@ -593,7 +593,12 @@ async function buildHookChecks(
     // ZCode and DeepSeek Harness get the rules from their session-start hook
     // too, checked with the rules (`buildProjectRulesHookChecks`); only Codex
     // has the SubagentStart entry and the context limit this check is about.
-    if (isCodexTool(tool)) checks.push(sessionHookRulesCheck(tool, settingsPath));
+    if (isCodexTool(tool)) {
+      checks.push(sessionHookRulesCheck(tool, settingsPath));
+      const limits = await codexContextLimitsCheck(tool, settingsPath);
+
+      if (limits) checks.push(limits);
+    }
 
     if ((await readFileSafe(settingsPath))?.includes(`${LOGIN_DEFERRED_ENV}=deferred`)) loginDeferredIn.push(settingsPath);
   }
@@ -641,6 +646,49 @@ function sessionHookRulesCheck(tool: string, settingsPath: string): Check {
         ? ' (teamai trusts them in Codex; with `codexTrustEnabled: false`, approve them in Codex /hooks).'
         : '.'),
   };
+}
+
+const CodexContextLimitsSchema = z.object({
+  hooks: z.record(z.string(), z.array(z.object({ hooks: z.array(z.object({
+    additionalContextLimit: z.unknown().optional(),
+  })) }))),
+});
+
+async function codexContextLimitsCheck(tool: string, settingsPath: string): Promise<Check | undefined> {
+  const content = await readFileSafe(settingsPath);
+
+  if (!content) return undefined;
+
+  try {
+    const file = CodexContextLimitsSchema.safeParse(JSON.parse(content));
+
+    if (!file.success) return undefined;
+    const values: string[] = [];
+    let valid = true;
+
+    for (const [event, groups] of Object.entries(file.data.hooks)) {
+      for (const [index, group] of groups.entries()) {
+        for (const [entry, hook] of group.hooks.entries()) {
+          const limit = hook.additionalContextLimit;
+
+          if (limit === undefined) continue;
+          const parsed = z.int().nonnegative().safeParse(limit);
+
+          if (!parsed.success) valid = false;
+          values.push(`${event}[${index}][${entry}]=${parsed.success ? parsed.data : 'invalid'}`);
+        }
+      }
+    }
+
+    return {
+      name: `${tool} additionalContextLimit: ${values.join(', ') || 'host defaults'}`,
+      source: 'local',
+      check: async () => valid,
+      fix: `Use a non-negative integer for additionalContextLimit in ${settingsPath}.`,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 /** One start event's handler groups; anything but a list reads as none. */
