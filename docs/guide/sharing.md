@@ -377,11 +377,11 @@ Pull copies the folder and puts its path, with forward slashes, in place of `${T
 | Workspace with a team repo | `~/.teamai/projects/<slug>/hooks/block-secrets.e246f037/`, one for every worktree, as every worktree runs the same hook entries |
 | Self mode | `.teamai/delivered/hooks/block-secrets.e246f037/` in each worktree, which git ignores |
 
-In self mode, Claude Code's command reads `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"`, so `.claude/settings.json` is the same in every worktree. Editing only a script gives the folder a new version too, so pull rewrites that path in `.claude/settings.json`: a team that commits the file commits that change with it. Other tools get the worktree's absolute path, so their project file differs from one worktree to the next. Cursor's `.cursor/hooks.json`, for example:
+In self mode, Claude Code's command reads `"$CLAUDE_PROJECT_DIR/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"`, so `.claude/settings.json` is the same in every worktree. Editing only a script gives the folder a new version too, so pull rewrites that path in `.claude/settings.json`: a team that commits the file commits that change with it. Other tools get the worktree's absolute path, so a native project file differs from one worktree to the next. CodeBuddy's `.codebuddy/settings.json`, for example:
 
 ```text
-~/work/shop/.cursor/hooks.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
-~/work/shop-hotfix/.cursor/hooks.json  bash "/Users/ana/work/shop-hotfix/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
+~/work/shop/.codebuddy/settings.json         bash "/Users/ana/work/shop/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
+~/work/shop-hotfix/.codebuddy/settings.json  bash "/Users/ana/work/shop-hotfix/.teamai/delivered/hooks/block-secrets.e246f037/scan.sh"
 ```
 
 Once a worktree is removed, the next pull of another worktree, or `teamai doctor --fix`, removes the entries it left in HOME. `HOOK.yaml` takes the keys of a `hooks.yaml` entry except `id`, `roles` and `projects`. A hook for one namespace goes in `hooks/<ns>/<id>/`.
@@ -458,11 +458,10 @@ What a hook can do depends on its event. Every tool that runs the event does thi
 
 ```text
   [no-force-push] PreToolUse [Bash]  →  jq -r '.tool_input.command' | grep -Eq 'git push.* (-f|--force)( |$)' && { echo 'Use git push --force-with-lease' >&2; exit 2; } || true  (tools: all)  from root
-      runs in: claude, omp, opencode
-      not in: cursor (no PreToolUse hook there)
+      runs in: claude, cursor, omp, opencode
 ```
 
-OpenCode, Oh My Pi, Pi, OpenClaw, Kiro, Hermes, and Antigravity have no Claude Code hook file. Their hooks run through teamai, with Claude Code's payload and tool names (`matcher: Bash` matches OpenCode's `bash` and Hermes's `terminal`). There:
+Cursor team hooks run through teamai's bridge too: `~/.cursor/hooks.json` gets one dispatcher entry per event, and teamai maps Cursor's `Shell`, `StrReplace`, and `ApplyPatch` names to the Claude matchers. A `UserPromptSubmit` hook that blocks is returned as Cursor's `continue: false` response, so the prompt stays rejected. OpenCode, Oh My Pi, Pi, OpenClaw, Kiro, Hermes, and Antigravity have no Claude Code hook file. Their hooks also run through teamai, with Claude Code's payload and tool names (`matcher: Bash` matches OpenCode's `bash` and Hermes's `terminal`). For those tools:
 
 - Only `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop` run. Pull warns about a team hook on any other event.
 - `UserPromptSubmit` adds context but cannot block the prompt.

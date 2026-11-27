@@ -195,11 +195,11 @@ describe('reconcileHooks — team (B) hooks', () => {
       expect(claudeHooks().PostToolUse).toHaveLength(2);
     });
 
-    it('skips a team hook for an event Cursor does not support, but injects it for Claude', async () => {
+    it('injects a PreToolUse team hook in both Cursor and Claude formats', async () => {
       const preToolUse = teamDef({ key: 'pre', event: 'PreToolUse', description: '[teamai:hook:pre] x' });
       await reconcileHooks(CURSOR, 'cursor', [preToolUse], { manifestPath: MANIFEST });
-      // No PreToolUse mapping for cursor → nothing injected, only built-in events present
-      expect(Object.keys(cursorHooks())).toEqual(['sessionStart', 'stop', 'postToolUse', 'beforeSubmitPrompt']);
+      expect(cursorHooks().preToolUse).toHaveLength(1);
+      expect(cursorHooks().preToolUse[0].command).toBe(preToolUse.command);
 
       await reconcileHooks(SETTINGS, 'claude', [preToolUse], { manifestPath: MANIFEST });
       expect(claudeHooks().PreToolUse).toHaveLength(1);
@@ -227,6 +227,15 @@ describe('reconcileHooks — team (B) hooks', () => {
       await reconcileHooks(CURSOR, 'cursor', []);
       expect(cursorHooks().postToolUse.some((h) => h.command.includes('scan.sh'))).toBe(true);
       expect(cursorHooks().postToolUse).toHaveLength(2);
+    });
+
+    it('Cursor: a built-in-only refresh preserves a team-hook dispatcher entry', async () => {
+      const command = 'teamai hook-dispatch PreToolUse --tool cursor --team-hooks';
+      mockFiles[CURSOR] = { version: 1, hooks: { preToolUse: [{ command }] } };
+
+      await reconcileHooks(CURSOR, 'cursor', []);
+
+      expect(cursorHooks().preToolUse).toContainEqual({ command });
     });
 
     it('Cursor: a built-in-only refresh keeps a member hook that runs a teamai command outside the built-in markers', async () => {

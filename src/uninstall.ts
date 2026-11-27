@@ -6,7 +6,7 @@ import { autoDetectInit, loadLocalConfig, loadStateForScope, readConfigFrom, res
 import { createDeliveryRecorder, deliveredOwner, deliveredOwnerElsewhere } from './git-exclude-delivered.js';
 import { gitExcludeFile, gitTracks, gitUntracked, MCP_EXCLUDE_OWNER, realFilePath, remove as removeGitExclude, stateHomeRecord, type GitExcludeFileRemoval } from './git-exclude.js';
 import {
-  codexTrustPolicy, migrateLegacyManagedHooks, OPENCLAW_TOOLS, reconcileHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope, hasTeamaiHooks, hasUnrecordedTeamHooks, mainCheckoutHookFile, resolveMainCheckoutHooks, selfLocalTeamHookFile,
+  codexTrustPolicy, forgetBridgedTeamHookManifest, migrateLegacyManagedHooks, OPENCLAW_TOOLS, reconcileHooks, reconcileTeamHooksForConfig, reportCodexTrust, trustCodexForScope, hasTeamaiHooks, hasUnrecordedTeamHooks, mainCheckoutHookFile, resolveMainCheckoutHooks, selfLocalTeamHookFile,
   stopCodexTeamHookDispatch, teamHookHistory, canonicalProjectRoot, getToolCheckouts, unregisterCheckoutFromSharedManifest,
   type CodexTrustPolicy, type MainCheckoutHooks, type ReconcileHooksOptions, type SharedHooksManifest, type TeamHookHistory,
 } from './hooks.js';
@@ -3100,6 +3100,7 @@ async function executeRemoval(
   // (a2e) Remove the team hooks teamai's bridge runs, and OpenClaw's plugin that runs them.
   for (const file of plan.bridgedTeamHookFiles) {
     try {
+      await forgetBridgedTeamHookManifest(plan.hookManifestPath, path.basename(file, '.json'));
       await remove(file);
       log.success(`Removed the team hooks teamai runs from ${file}`);
     } catch (e) {

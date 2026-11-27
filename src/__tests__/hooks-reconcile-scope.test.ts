@@ -23,6 +23,7 @@ import { resetBundledRuntimeCache } from '../bundled-runtime.js';
 import { findOnPath } from '@teamai/shared/lookpath';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { claudeHookOtherHostSkip, getHookStatus, reconcileHooks, reconcileHooksToAllTools, reconcileTeamHooksForConfig } from '../hooks.js';
+import { bridgedTeamHookFile } from '../bridged-team-hooks.js';
 import * as gitHook from '../git-hook.js';
 import { readWorkspaceChildren } from '../workspace-children.js';
 import { useToolInstances } from '../tool-registry.js';
@@ -68,6 +69,23 @@ function claudeSettings(): Promise<{ hooks: Record<string, Array<{ description?:
 function cursorSettings(): Promise<{ hooks: Record<string, Array<{ command: string }>> }> {
   return fse.readJson(path.join(home, '.cursor', 'hooks.json'));
 }
+
+async function cursorTeamCommands(event: string): Promise<string[]> {
+  const file = bridgedTeamHookFile('cursor');
+  if (!await fse.pathExists(file)) return [];
+  const bridge = await fse.readJson(file);
+  const entries = bridge.hooks?.[event] as Array<{ hooks?: Array<{ command?: string }> }> | undefined;
+  return entries?.flatMap((entry) => entry.hooks?.flatMap((hook) => hook.command === undefined ? [] : [hook.command]) ?? []) ?? [];
+}
+
+function runTeamCommandIn(command: string, cwd: string): string {
+  const shellPwd = process.platform === 'win32'
+    ? cwd.replace(/^([A-Za-z]):[\\/]/, (_, drive: string) => `/${drive.toLowerCase()}/`).replace(/\\/g, '/')
+    : cwd;
+  const quoted = `'${shellPwd.replace(/'/g, `'\\''`)}'`;
+  return execFileSync('sh', ['-c', `PWD=${quoted}; export PWD;\n${command}`], { cwd, encoding: 'utf8' });
+}
+
 function codexSettings(): Promise<{ hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout?: number; statusMessage?: string }> }>> }> {
   return fse.readJson(path.join(home, '.codex', 'hooks.json'));
 }
@@ -155,7 +173,8 @@ hooks:
     // Every other tool: built-in + gated team hook in HOME.
     const cursor = await cursorSettings();
     expect(cursor.hooks.stop).toHaveLength(2);
-    expect(cursor.hooks.stop.some((h) => h.command.includes('npm run lint'))).toBe(true);
+    expect(cursor.hooks.stop.filter((h) => h.command.includes('--team-hooks'))).toHaveLength(1);
+    expect((await cursorTeamCommands('Stop')).some((command) => command.includes('npm run lint'))).toBe(true);
 
     const codex = await codexSettings();
     expect(codex.hooks.Stop).toHaveLength(1);
@@ -164,7 +183,8 @@ hooks:
     expect((await codexProject()).hooks.Stop[0].hooks[0].statusMessage).toBe('lint');
 
     const m = await manifest();
-    expect(m.cursor.map((r) => r.id)).toEqual(['lint']);
+    expect(m.cursor.map((r) => r.id)).toEqual(['cursor-team-hooks-Stop']);
+    expect(m['cursor:bridge'].map((r) => r.id)).toEqual(['lint']);
     expect(m.claude).toBeUndefined();
     expect(m.codex).toBeUndefined();
     const main = await mainManifest();
@@ -203,14 +223,17 @@ hooks:
       const cursor = await cursorSettings();
       const teamCommands = cursor.hooks.stop
         .map((entry) => entry.command)
-        .filter((command) => command.includes('echo project-'));
+        .filter((command) => command.includes('--team-hooks'));
       expect(teamCommands).toHaveLength(2);
+      expect(new Set(teamCommands).size).toBe(2);
+      const bridgeCommands = await cursorTeamCommands('Stop');
       const [rootA, rootB] = [await fse.realpath(project), await fse.realpath(projectB)];
-      expect(teamCommands.some((command) => command.includes('echo project-a') && command.includes(rootA))).toBe(true);
-      expect(teamCommands.some((command) => command.includes('echo project-b') && command.includes(rootB))).toBe(true);
+      expect(bridgeCommands.some((command) => command.includes('echo project-a') && command.includes(rootA))).toBe(true);
+      expect(bridgeCommands.some((command) => command.includes('echo project-b') && command.includes(rootB))).toBe(true);
 
       const m = await manifest();
       expect(m.cursor).toHaveLength(2);
+      expect(m['cursor:bridge'].map((r) => r.id)).toEqual(['project-a', 'project-b']);
 
       // Claude's team hooks live in each project's own checkout.
       expect((await claudeLocal()).hooks.Stop.map((e) => e.hooks[0].command)).toEqual([`${claudeHookOtherHostSkip('Stop', undefined, 'echo project-a')}echo project-a`]);
@@ -244,9 +267,9 @@ hooks:
       },
     });
 
-    const command = (await cursorSettings()).hooks.stop.map((entry) => entry.command).find((c) => c.includes('ws-hook-ran'));
-    const runIn = (cwd: string): string => execFileSync('sh', ['-c', command!], { cwd, encoding: 'utf8' });
-    expect(runIn(root)).toBe('ws-hook-ran\n');
+    const command = (await cursorTeamCommands('Stop')).find((c) => c.includes('ws-hook-ran'));
+    const runIn = (cwd: string): string => runTeamCommandIn(command!, cwd);
+    expect(runIn(root), command).toBe('ws-hook-ran\n');
     expect(runIn(path.join(root, 'notes'))).toBe('ws-hook-ran\n');
     expect(runIn(child)).toBe('');
     expect(runIn(path.join(child, 'src'))).toBe('');
@@ -273,9 +296,9 @@ hooks:
       },
     });
     const written = async (): Promise<string[]> =>
-      (await cursorSettings()).hooks.stop.map((entry) => entry.command).filter((c) => c.includes('ws-hook-ran'));
+      (await cursorTeamCommands('Stop')).filter((c) => c.includes('ws-hook-ran'));
     const recorded = async (): Promise<string[]> =>
-      ((await manifest()).cursor as unknown as Array<{ command: string }>).map((r) => r.command).filter((c) => c.includes('ws-hook-ran'));
+      ((await manifest())['cursor:bridge'] as unknown as Array<{ command: string }>).map((r) => r.command).filter((c) => c.includes('ws-hook-ran'));
 
     await reconcileTeamHooksForConfig(teamConfig, withChildren([svcA]));
     expect(await recorded()).toEqual(await written());
@@ -285,8 +308,8 @@ hooks:
     const commands = await written();
     expect(commands).toHaveLength(1);
     expect(await recorded()).toEqual(commands);
-    const runIn = (cwd: string): string => execFileSync('sh', ['-c', commands[0]!], { cwd, encoding: 'utf8', env: { ...process.env, PWD: cwd } });
-    expect(runIn(root)).toBe('ws-hook-ran\n');
+    const runIn = (cwd: string): string => runTeamCommandIn(commands[0]!, cwd);
+    expect(runIn(root), commands[0]).toBe('ws-hook-ran\n');
     expect(runIn(svcB)).toBe('');
   });
 
@@ -319,9 +342,9 @@ hooks:
 
     await reconcileTeamHooksForConfig(teamConfig, configured);
 
-    const command = (await cursorSettings()).hooks.stop.map((entry) => entry.command).find((c) => c.includes('ws-hook-ran'));
-    const runIn = (cwd: string): string => execFileSync('sh', ['-c', command!], { cwd, encoding: 'utf8' });
-    expect(runIn(root)).toBe('ws-hook-ran\n');
+    const command = (await cursorTeamCommands('Stop')).find((c) => c.includes('ws-hook-ran'));
+    const runIn = (cwd: string): string => runTeamCommandIn(command!, cwd);
+    expect(runIn(root), command).toBe('ws-hook-ran\n');
     expect(runIn(child)).toBe('');
     expect(runIn(worktree)).toBe('');
     expect(runIn(other)).toBe('');
@@ -404,8 +427,10 @@ hooks:
     expect((await mainManifest()).claude.map((r) => r.id)).toEqual(['guard-tf']);
 
     const cursor = await cursorSettings();
-    expect(cursor.hooks.stop.some((h) => h.command.includes('npm run lint:css'))).toBe(false);
-    expect(cursor.hooks.stop.some((h) => h.command.includes('guard-tf.sh'))).toBe(true);
+    expect(cursor.hooks.stop.filter((h) => h.command.includes('--team-hooks'))).toHaveLength(1);
+    const cursorCommands = await cursorTeamCommands('Stop');
+    expect(cursorCommands.some((command) => command.includes('npm run lint:css'))).toBe(false);
+    expect(cursorCommands.some((command) => command.includes('guard-tf.sh'))).toBe(true);
   });
 
   // #707: an invalid file used to reconcile to an empty team set, removing
@@ -509,7 +534,7 @@ hooks:
     const claude = await claudeSettings();
     expect(claude.hooks.SessionStart).toHaveLength(1);
     expect((await claudeLocal()).hooks.Stop.some((h) => h.hooks[0].command.includes('npm run lint'))).toBe(true);
-    expect((await cursorSettings()).hooks.stop.some((h) => h.command.includes('npm run lint'))).toBe(true);
+    expect((await cursorTeamCommands('Stop')).some((command) => command.includes('npm run lint'))).toBe(true);
     expect((await mainManifest()).claude.map((r) => r.id)).toEqual(['lint']);
   });
 
@@ -2226,7 +2251,7 @@ describe('reconcileTeamHooksForConfig — the old Git-directory hooks', () => {
 
     await reconcileTeamHooksForConfig(teamConfig, localConfig());
 
-    expect(JSON.stringify((await cursorSettings()).hooks.stop)).toContain('npm run lint');
+    expect(await cursorTeamCommands('Stop')).toContainEqual(expect.stringContaining('npm run lint'));
     expect(await fse.readFile(legacy, 'utf8')).toBe('{"hooks":null}');
   });
 });

@@ -496,6 +496,45 @@ describe('uninstall', () => {
     expect(await fse.pathExists(teamaiHome)).toBe(false);
   });
 
+  it('removes a Cursor bridge manifest record with the bridge file', async () => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    const defaults = TeamaiConfigSchema.parse({ team: 'test', repo: 'https://example.invalid/test.git' }).toolPaths;
+    const cursorRoot = path.join(homeDir, '.cursor');
+    const bridgeFile = path.join(homeDir, '.teamai', 'team-hooks', 'cursor.json');
+    const manifestPath = path.join(homeDir, '.teamai', 'managed-hooks.json');
+    await fse.ensureDir(cursorRoot);
+    await fse.outputJson(path.join(cursorRoot, 'hooks.json'), { version: 1, hooks: {} });
+    await fse.outputJson(bridgeFile, {
+      hooks: {
+        PreToolUse: [{
+          matcher: 'Bash',
+          hooks: [{ type: 'command', command: 'exit 2', timeout: 10 }],
+          description: '[teamai:hook:no-force-push] Block force pushes',
+        }],
+      },
+    });
+    await fse.outputJson(manifestPath, {
+      'cursor:bridge': [{
+        id: 'no-force-push',
+        event: 'PreToolUse',
+        matcher: 'Bash',
+        command: 'exit 2',
+      }],
+    });
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(homeDir, repoPath, { enabledAgents: ['cursor'] }),
+      teamConfig: makeTeamConfig({ toolPaths: { cursor: defaults.cursor } }),
+    });
+    commitTeamRepo(repoPath);
+
+    await uninstall({ force: true, agent: 'cursor' });
+
+    expect(await fse.pathExists(bridgeFile)).toBe(false);
+    expect(await fse.pathExists(manifestPath)).toBe(false);
+  });
+
   // Regression (#693 review): the Windows fix in #682 changed which profile
   // file `pull` prefers, so a machine last pulled with an older CLI can carry
   // a stale env block in a file the current detectShellProfile() resolution

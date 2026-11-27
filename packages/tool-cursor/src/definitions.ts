@@ -53,7 +53,7 @@ export const tools = {
       tokens: { cell: '+d', note: 'usage is in the Cursor account dashboard only' },
       aiBackend: '✓d',
       sessionJudge: { cell: '✓t', note: '#1386 the session judges its skill-driven run; not rerun' },
-      agentHooks: { cell: '+t', note: 'teamai refuses agent hooks in the Cursor hook format' },
+      agentHooks: { cell: '+t', note: 'team hooks use a dispatcher and bridge; HTTP agent hooks are not installed in the Cursor hook format' },
     },
   },
 } as const satisfies Record<string, ToolDescriptor>;
