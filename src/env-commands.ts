@@ -8,7 +8,7 @@ import {
   SECRETS_LAYOUT, declaredSecretKeys, readSecretsForEdit, resolveSecretDeclarations, unknownSecretDeclarationKeys,
   writeSecretsFile, type WrittenSecretDeclaration,
 } from './resources/secrets.js';
-import { getMachineSecretsPath, getTeamSecretsPath, readSecretStore, updateSecretStore, type StoredSecret } from './secret-store.js';
+import { getMachineSecretsPath, getTeamSecretsPath, getWorkspaceEnvPath, readSecretStore, updateSecretStore, type StoredSecret } from './secret-store.js';
 import { askSecret, isInteractive, readStdin } from './utils/prompt.js';
 import { reportMissingSecrets } from './env-advisories.js';
 import { envListing } from './env-listing.js';
@@ -79,7 +79,7 @@ export async function envList(options: GlobalOptions & { reveal?: boolean }): Pr
  */
 export async function envSet(
   typed: string,
-  options: GlobalOptions & { stdin?: boolean; fromEnv?: string; global?: boolean },
+  options: GlobalOptions & { stdin?: boolean; fromEnv?: string; global?: boolean; workspace?: boolean },
 ): Promise<void> {
   // Stored under the name the scope declares, which on Windows may differ in case from the one typed.
   let key = typed;
@@ -92,6 +92,8 @@ export async function envSet(
 
   if (options.stdin && options.fromEnv !== undefined) return fail('Pass either --stdin or --from-env, not both. Nothing was changed.');
 
+  if (options.workspace && options.global) return fail('Pass either --workspace or --global, not both. Nothing was changed.');
+
   if (options.fromEnv !== undefined && !ENV_KEY_RE.test(options.fromEnv)) {
     return fail(invalidKeyMessage(options.fromEnv, '--from-env variable name'));
   }
@@ -100,6 +102,11 @@ export async function envSet(
 
   if (scope.kind === 'reported') return;
   const localConfig = scope.kind === 'scope' ? scope.localConfig : null;
+
+  if (options.workspace && localConfig?.scope !== 'project') {
+    return fail('--workspace needs a project-scope checkout. Nothing was changed.');
+  }
+
   let isVariable = false;
 
   if (localConfig) {
@@ -150,7 +157,7 @@ export async function envSet(
     }
   }
 
-  const { file, target } = valuesFile(localConfig, options.global);
+  const { file, target } = valuesFile(localConfig, options.global, options.workspace);
   // Read before asking for the value, so an unusable store fails first; the write re-reads it under the lock.
   const store = await readSecretStore(file);
 
@@ -195,14 +202,23 @@ export async function envSet(
 }
 
 /** Remove this member's value for a secret or variable, for this team repo or, with `global`, for the machine. */
-export async function envUnset(key: string, options: GlobalOptions & { global?: boolean }): Promise<void> {
+export async function envUnset(key: string, options: GlobalOptions & { global?: boolean; workspace?: boolean }): Promise<void> {
   if (!ENV_KEY_RE.test(key)) return fail(invalidKeyMessage(key));
+
+  if (options.workspace && options.global) {
+    return fail('Pass either --workspace or --global, not both. Nothing was changed.');
+  }
+
   const scope = await scopeHere(options.global, options.dryRun);
 
   if (scope.kind === 'reported') return;
   const localConfig = scope.kind === 'scope' ? scope.localConfig : null;
 
-  const { file, value } = valuesFile(localConfig, options.global);
+  if (options.workspace && localConfig?.scope !== 'project') {
+    return fail('--workspace needs a project-scope checkout. Nothing was changed.');
+  }
+
+  const { file, value } = valuesFile(localConfig, options.global, options.workspace);
   const hasNoValue = (): void => { log.info(`${key} has no ${value}. Nothing was changed.`); };
 
   if (options.dryRun) {
@@ -302,7 +318,16 @@ async function requireScope(dryRun: boolean | undefined): Promise<LocalConfig | 
 function valuesFile(
   localConfig: LocalConfig | null,
   global: boolean | undefined,
-): { file: string; target: string; value: string } {
+  workspace = false,
+) {
+  if (workspace) {
+    const file = localConfig ? getWorkspaceEnvPath(localConfig) : null;
+
+    if (!file) throw new Error('--workspace needs a project-scope checkout');
+
+    return { file, target: 'for this workspace', value: 'workspace value' };
+  }
+
   return localConfig && !global
     ? { file: getTeamSecretsPath(localConfig), target: 'for this team', value: 'value for this team' }
     : {

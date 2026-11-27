@@ -224,8 +224,10 @@ Generated: do not edit by hand. Regenerate with
     - `--stdin` — Read the value from piped stdin
     - `--from-env <var>` — Read the value from this environment variable each time it is used; no copy is stored
     - `--global` — Set a secret for every team on this machine; a value set for a team still wins
+    - `--workspace` — Set an override for this project partition; it wins for this checkout and its linked worktrees
   - `teamai env unset <key>` — Remove your value for a secret or env variable, for this directory's team, from this machine
     - `--global` — Remove the value set for every team on this machine instead
+    - `--workspace` — Remove this project partition's override instead
   - `teamai env exec <command...>` — Run a command with this directory's team env variables and secrets (put -- before the command)
 
 ## workflow

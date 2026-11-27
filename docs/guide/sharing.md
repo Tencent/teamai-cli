@@ -303,6 +303,14 @@ teamai env set GITHUB_TOKEN
 teamai env exec -- gh pr create
 ```
 
+For several checkouts of the same team on one machine, set a partition-local override in the checkout that needs a different value:
+
+```bash
+teamai env set API_ENDPOINT --workspace
+```
+
+The override is stored under the project's machine-data directory, applies to that project's linked worktrees, and wins over the member value. `teamai env list` labels it `workspace`. Only keys the team already declares can be overridden.
+
 ### Shell environment by directory
 
 A shell gets the team env of the directory it starts in, so several projects open at once each get their own. `teamai pull` adds one block to your shell profile (`.zshenv` for zsh, the bash startup files for bash). An interactive shell switches env on `cd` and puts your own values back when you leave a project.
