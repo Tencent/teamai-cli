@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
@@ -13,6 +13,7 @@ vi.mock('../config.js', async (importOriginal) => ({
 vi.mock('@teamai/shared/log', () => ({
   log: {
     dim: vi.fn(),
+    error: vi.fn(),
     info: vi.fn(),
     success: vi.fn(),
   },
@@ -56,6 +57,39 @@ describe('skill exclude commands', () => {
       lastUpdateCheck: null,
       availableUpdate: null,
     });
+  });
+
+  afterEach(() => {
+    process.exitCode = undefined;
+  });
+
+  it('refuses a blank name instead of storing it as an exclusion', async () => {
+    await excludeAdd(['  '], {});
+    await excludeRemove(['\t'], {});
+
+    expect(log.error).toHaveBeenCalledWith('Skill and MCP server names must not be empty or only whitespace.');
+    expect(saveLocalConfig).not.toHaveBeenCalled();
+    expect(saveStateForScope).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('trims the names it stores and matches', async () => {
+    await excludeAdd([' z-skill ', 'a-skill'], {});
+
+    expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({
+      excludedSkills: ['a-skill', 'z-skill'],
+    }));
+
+    // An earlier version stored a padded name and a blank entry; both stay removable.
+    vi.mocked(requireInit).mockResolvedValue({
+      localConfig: { ...userConfig, excludedSkills: [' a-skill ', 'z-skill', '   '] },
+      teamConfig: {} as never,
+    });
+    vi.mocked(saveLocalConfig).mockClear();
+
+    await excludeRemove([' z-skill '], {});
+
+    expect(saveLocalConfig).toHaveBeenCalledWith(expect.objectContaining({ excludedSkills: ['a-skill'] }));
   });
 
   it('adds sorted exclusions and invalidates the pull revision cache', async () => {
