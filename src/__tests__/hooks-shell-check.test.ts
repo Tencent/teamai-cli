@@ -132,11 +132,18 @@ describe('injectHooksToAllTools — no-shell skip (posix)', () => {
 describe('injectHooksToAllTools — workbuddy bundled PortableGit sh (win32)', () => {
   let tmp: string;
   let platformSpy: ReturnType<typeof vi.spyOn>;
+  // A data-root override names a real WorkBuddy install, so on a machine that
+  // runs these tests from inside WorkBuddy the bundled sh would be found there
+  // and the "no bundled sh" case would pass or fail for the wrong reason. The
+  // lookup also reads it ahead of the mocked home.
+  let savedConfigDir: string | undefined;
 
   beforeEach(async () => {
     _resetShellCache();
     tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'wb-sh-'));
     homeState.home = tmp;
+    savedConfigDir = process.env.WORKBUDDY_CONFIG_DIR;
+    delete process.env.WORKBUDDY_CONFIG_DIR;
     platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     vi.mocked(log.warn).mockClear();
   });
@@ -144,6 +151,8 @@ describe('injectHooksToAllTools — workbuddy bundled PortableGit sh (win32)', (
   afterEach(async () => {
     _resetShellCache();
     platformSpy.mockRestore();
+    if (savedConfigDir === undefined) delete process.env.WORKBUDDY_CONFIG_DIR;
+    else process.env.WORKBUDDY_CONFIG_DIR = savedConfigDir;
     await fse.remove(tmp);
   });
 
