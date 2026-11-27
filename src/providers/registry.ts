@@ -4,6 +4,7 @@ import { GitHubProvider } from './github/index.js';
 import { CNBProvider } from './cnb/index.js';
 import { GitLabProvider } from './gitlab/index.js';
 import { GitCodeProvider } from './gitcode/index.js';
+import { CodeupProvider } from './codeup/index.js';
 import { GenericGitProvider } from './git/index.js';
 import { getCurrentPackageName } from '../package-info.js';
 import { probeSelfHostedGitLab } from './gitlab/probe.js';
@@ -36,6 +37,7 @@ const DEFINITIONS = [
   { name: 'cnb', hosts: ['cnb.cool'], defaultEligible: true, create: () => new CNBProvider() },
   { name: 'gitlab', hosts: ['gitlab.com'], defaultEligible: true, create: () => new GitLabProvider() },
   { name: 'gitcode', hosts: ['gitcode.com'], defaultEligible: true, create: () => new GitCodeProvider() },
+  { name: 'codeup', hosts: ['codeup.aliyun.com'], defaultEligible: true, create: () => new CodeupProvider() },
   { name: 'git', hosts: [], defaultEligible: false, create: () => new GenericGitProvider() },
 ] as const satisfies readonly ProviderDefinition<string, GitProvider>[];
 

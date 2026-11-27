@@ -14,7 +14,7 @@ TeamAI keeps a team's skills, rules, agents, learnings, models, MCP, and other a
 | **Team Context** (beta) | Agents can search what the team learned and how the code is built | [Team Context](guide/knowledge.md) |
 | **Team Improvement** (beta) | Sessions feed lessons back to the team, and you see how the team uses AI | [Dashboard](guide/dashboard.md), [Usage reporting](guide/reporting.md), [Scorers](guide/scorers.md) |
 
-What each agent supports is in the README's [Product Overview](../README.md#product-overview). Git hosts: GitHub, GitLab, GitCode, CNB, TGit, and any private Git service.
+What each agent supports is in the README's [Product Overview](../README.md#product-overview). Git hosts: GitHub, GitLab, GitCode, Codeup, CNB, TGit, and any private Git service.
 
 ## How it flows
 
