@@ -125,6 +125,10 @@ describe('models commands', () => {
       { protocols: ['anthropic', 'openai-responses', 'openai-chat-completions'], models: ['glm-5.3', 'kimi-k3'] },
       { protocols: ['anthropic', 'openai-chat-completions'], models: ['deepseek-v4-flash'] },
     ]);
+    await modelsConfigure('local:mine', { name: 'Renamed' });
+    expect((await loadLocalProfiles()).profiles[0]).toEqual({ ...profile, name: 'Renamed' });
+    await modelsConfigure('local:mine', { baseUrl: 'https://other.example.test' });
+    expect((await loadLocalProfiles()).profiles[0]).toEqual({ ...profile, name: 'Renamed', base_url: 'https://other.example.test' });
   });
 
   it('leaves models.yaml unchanged when an edit is invalid or no key is configured', async () => {
