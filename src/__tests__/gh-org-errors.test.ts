@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../providers/github/gh-cli.js', () => ({
   isGhInstalled: vi.fn(),
-  getGitHubToken: vi.fn().mockReturnValue('test-token'),
   ghExec: vi.fn(),
 }));
 
@@ -34,11 +33,13 @@ describe.each(['gh', 'fetch'] as const)('GitHub repo listing errors (%s)', (tran
   beforeEach(() => {
     requests = [];
     vi.mocked(isGhInstalled).mockReturnValue(transport === 'gh');
+    vi.stubEnv('GITHUB_TOKEN', 'test-token');
   });
 
   afterEach(() => {
     vi.clearAllMocks();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it.each([401, 403, 503])('rejects HTTP %s when both endpoints fail', async (status) => {

@@ -43,7 +43,7 @@ function mockResponses(
 ): string[] {
   const seen: string[] = [];
   const request = (options: https.RequestOptions, callback: (res: IncomingMessage) => void) => {
-    const url = String(options.path);
+    const url = String(options.path).replace(/^\/api\/v3(?=\/)/, '');
     seen.push(url);
     const diff = options.headers && (options.headers as Record<string, string>).Accept.includes('.diff');
     const key = diff ? `${url}.diff` : url;
@@ -138,6 +138,26 @@ describe('GitHub PR REST fallback', () => {
     });
     expect(seen).toHaveLength(6);
     for (const [options] of vi.mocked(https.request).mock.calls) {
+      const headers = (options as https.RequestOptions).headers as Record<string, string>;
+      expect(headers.Authorization).toBe(authorization);
+    }
+  });
+
+  it.each([
+    [undefined, 'https://ghe.example.com/api/v3', 'https://github.com/team/repo/pull/42', 'ghe.example.com', '/api/v3', 'Bearer server-token'],
+    ['https://ghe.example.com', 'https://ghe.example.com/api/v3', 'https://ghe.example.com/team/repo/pull/42', 'ghe.example.com', '/api/v3', 'Bearer server-token'],
+    ['https://ghe.example.com', undefined, 'https://ghe.example.com/team/repo/pull/42', 'ghe.example.com', '/api/v3', 'Bearer server-token'],
+    ['https://ghe.example.com', 'https://ghe.example.com/api/v3', 'https://github.com/team/repo/pull/42', 'api.github.com', '', undefined],
+  ])('with GITHUB_SERVER_URL=%s and GITHUB_API_URL=%s, requests every REST path of %s from %s', async (server, api, url, hostname, prefix, authorization) => {
+    vi.stubEnv('GITHUB_SERVER_URL', server);
+    vi.stubEnv('GITHUB_API_URL', api);
+    vi.stubEnv('GITHUB_TOKEN', 'server-token');
+    mockResponses();
+    await expect(fetchGitHubPR(url)).resolves.toMatchObject({ title: 'Fix retries', url });
+    const requested = vi.mocked(https.request).mock.calls.map(([options]) => options);
+    expect(requested).toHaveLength(6);
+    for (const options of requested) {
+      expect(options).toMatchObject({ hostname, path: expect.stringMatching(new RegExp(`^${prefix}/repos/team/repo/`)) });
       const headers = (options as https.RequestOptions).headers as Record<string, string>;
       expect(headers.Authorization).toBe(authorization);
     }
@@ -248,7 +268,11 @@ describe('GitHub PR gh CLI path', () => {
     expect(rest.filter((url) => url.includes('/commits?'))).toEqual([`${PR}/commits?per_page=100&page=1`, `${PR}/commits?per_page=100&page=2`]);
   });
 
-  it('calls ghExec with argument arrays and preserves pr view metadata and diff', async () => {
+  it.each([
+    ['https://github.com/team/repo/pull/42', 'team/repo'],
+    ['https://ghe.example.com/team/repo/pull/42', 'ghe.example.com/team/repo'],
+  ])('calls ghExec with argument arrays and preserves pr view metadata and diff of %s', async (url, repoArg) => {
+    vi.stubEnv('GITHUB_SERVER_URL', 'https://ghe.example.com');
     const mockGhExec = vi.mocked(ghExec);
     mockGhExec.mockImplementation((args) => {
       if (args[0] === 'pr' && args[1] === 'view') {
@@ -281,7 +305,7 @@ describe('GitHub PR gh CLI path', () => {
       return { status: 1, stdout: '', stderr: 'unknown command' };
     });
 
-    const mr = await fetchGitHubPR('https://github.com/team/repo/pull/42', { discussions: false });
+    const mr = await fetchGitHubPR(url, { discussions: false });
     expect(mr).toEqual({
       title: 'CLI PR Title',
       description: 'CLI PR Description',
@@ -289,14 +313,14 @@ describe('GitHub PR gh CLI path', () => {
       mergedAt: '2026-10-24T00:00:00Z',
       commits: [{ hash: 'commit123', message: 'Commit headline' }],
       diff: 'diff --git a/file b/file\n+change\n',
-      url: 'https://github.com/team/repo/pull/42',
+      url,
     });
 
     expect(mockGhExec).toHaveBeenCalledWith(
-      ['pr', 'view', '42', '--repo', 'team/repo', '--json', 'title,body,author,mergedAt,commits'],
+      ['pr', 'view', '42', '--repo', repoArg, '--json', 'title,body,author,mergedAt,commits'],
     );
     expect(mockGhExec).toHaveBeenCalledWith(
-      ['pr', 'diff', '42', '--repo', 'team/repo'],
+      ['pr', 'diff', '42', '--repo', repoArg],
       { maxBuffer: 50 * 1024 * 1024 },
     );
   });

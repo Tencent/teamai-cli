@@ -6,7 +6,7 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { getTGitToken, tgitFetch } from './providers/tgit/rest-auth.js';
-import { getGitHubToken } from './providers/github/gh-cli.js';
+import { githubApiUrlFor, githubTokenFor } from './providers/github/api-url.js';
 import { log } from '@teamai/shared/log';
 import { lenientList, JsonObjectSchema } from '@teamai/shared/json';
 import { getRemoteUrl } from './utils/git.js';
@@ -303,11 +303,11 @@ async function listGitHubMergedMRsViaREST(
   repo: string,
   { since, limit }: MergedSince,
 ): Promise<MRSummary[]> {
-  const token = getGitHubToken();
+  const token = githubTokenFor('github.com');
   const baseHeaders = { 'User-Agent': 'teamai-cli', Accept: 'application/vnd.github+json' };
   const headers = token ? { ...baseHeaders, Authorization: `Bearer ${token}` } : baseHeaders;
 
-  const url = `https://api.github.com/repos/${owner}/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${limit}`;
+  const url = `${githubApiUrlFor('github.com')}/repos/${owner}/${repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${limit}`;
 
   try {
     const resp = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
