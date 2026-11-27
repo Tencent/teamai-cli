@@ -156,6 +156,61 @@ describe('local-agent: Hermes A2A Gateway control', () => {
     expect(calls[5]!.body).toMatchObject({ workspaces: [{ path: workspace, skills: [] }] });
   });
 
+  it.skipIf(process.platform === 'win32').each([
+    { name: 'the Gateway home fallback', cwd: '.', gateway: 'home', projectId: 5, ideType: 'hermes', selected: true },
+    { name: 'an unset default', projectId: 5, ideType: 'hermes', selected: true },
+    { name: 'an explicit Gateway directory', cwd: '.', gateway: 'workspace', projectId: 5, ideType: 'hermes', selected: false },
+    { name: 'an explicit profile directory', cwd: 'workspace', projectId: 5, ideType: 'hermes', selected: false },
+    { name: 'an unbound iMate directory', cwd: '.', gateway: 'home', projectId: 0, ideType: 'hermes', selected: false },
+    { name: 'a binding owned by another tool', cwd: '.', gateway: 'home', projectId: 5, ideType: 'openclaw', selected: false },
+    { name: 'a profile outside iMate', cwd: '.', gateway: 'home', projectId: 5, ideType: 'hermes', standalone: true, selected: false },
+  ])('honors the existing scope when resolving iMate Hermes with $name', async ({ cwd, gateway, projectId, ideType, standalone, selected }) => {
+    const { workspace, profile } = await setupHermesControl();
+    const imateWorkspace = '/data/projects';
+    const imateProfile = path.join(imateWorkspace, '.hermes');
+    const profileConfig = path.join(profile, 'config.yaml');
+    const yaml = cwd ? `terminal:\n  cwd: ${JSON.stringify(cwd === 'workspace' ? workspace : cwd)}\n` : '{}\n';
+    await fse.writeFile(profileConfig, yaml);
+    const configPath = path.join(tmpDir, '.teamai', 'local-agent', 'config.json');
+    const config = await fse.readJson(configPath);
+    const binding = { projectId, ideType, boundAt: '2026-01-01T00:00:00.000Z' };
+    const workspaceBindings = { [imateWorkspace]: binding };
+    await fse.writeJson(configPath, { ...config, workspaceBindings });
+    if (!standalone) {
+      vi.stubEnv('HERMES_HOME', imateProfile);
+      await fse.writeJson(ownerPath(), { endpoint, profile: imateProfile });
+    }
+    vi.stubEnv('TERMINAL_CWD', gateway === 'home' ? tmpDir : gateway === 'workspace' ? workspace : undefined);
+
+    const realpath = fs.promises.realpath;
+    const stat = fs.promises.stat;
+    const files = await import('../utils/fs.js');
+    const readFileSafe = files.readFileSafe;
+    vi.spyOn(fs.promises, 'realpath').mockImplementation((target, options) =>
+      target === imateWorkspace || target === imateProfile ? Promise.resolve(target) : realpath(target, options));
+    vi.spyOn(fs.promises, 'stat').mockImplementation((target, options) =>
+      stat(target === imateWorkspace ? workspace : target === imateProfile ? profile : target, options));
+    vi.spyOn(files, 'readFileSafe').mockImplementation((file) =>
+      readFileSafe(file === path.join(imateProfile, 'config.yaml') ? profileConfig : file));
+
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (new URL(String(input)).pathname.endsWith('/sync')) return Response.json({ ok: true });
+      const { local_agent_id } = JSON.parse(String(init?.body));
+      return Response.json({ ok: true, instance_id: `local-hermes-${String(local_agent_id).slice(-6)}` });
+    });
+    const { runHermesA2aControl } = await import('../local-agent.js');
+
+    expect(await runHermesA2aControl(true)).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const report = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body));
+    expect(report.default_workspace).toBe(selected ? imateWorkspace : gateway === 'home' ? tmpDir : workspace);
+    if (selected) {
+      expect(report.workspaces).toContainEqual(expect.objectContaining({ path: imateWorkspace, project_id: projectId, ide_type: 'hermes' }));
+    }
+    expect(await fse.readFile(profileConfig, 'utf-8')).toBe(yaml);
+    expect((await fse.readJson(configPath)).workspaceBindings).toEqual(workspaceBindings);
+  });
+
   it('refuses a task for another Hermes profile even when the workspace path matches', async () => {
     const { workspace } = await setupHermesControl();
     const binding = { id: 7, project_id: 4, workspace, runtime_profile: path.join(tmpDir, 'previous-profile') };

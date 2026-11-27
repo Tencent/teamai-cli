@@ -1845,7 +1845,7 @@ async function reconcileA2aPlugins(config: LocalAgentConfig, tag: string, reques
     const profile = await canonicalHermesA2aProfile();
 
     if (!canRunHermesA2aControl(config) || !profile || !await isHermesA2aOwner(config.endpoint, profile)) return;
-    const current = await resolveHermesA2aRuntime(profile);
+    const current = await resolveHermesA2aRuntime(profile, config.workspaceBindings);
 
     if (current?.profile !== request.hermesRuntime.profile || current.workspace !== request.hermesRuntime.workspace
       || request.instanceId !== localA2aInstanceId(tool)) return;
@@ -3074,6 +3074,8 @@ const HermesTerminalConfigSchema = z.object({
   terminal: z.object({ backend: z.string().optional(), cwd: z.string().optional() }).optional(),
 });
 
+const IMATE_HERMES_WORKSPACE = '/data/projects';
+
 async function canonicalHermesA2aProfile(home = process.env.HERMES_HOME?.trim() || toolHome('hermes')): Promise<string | undefined> {
   if (!A2aRuntimePathSchema.safeParse(home).success) return undefined;
 
@@ -3086,16 +3088,29 @@ async function canonicalHermesA2aProfile(home = process.env.HERMES_HOME?.trim() 
   }
 }
 
-async function resolveHermesA2aRuntime(profile: string, env = process.env): Promise<HermesA2aRuntime | null | undefined> {
+async function resolveHermesA2aRuntime(
+  profile: string, bindings: LocalAgentConfig['workspaceBindings'], env = process.env,
+): Promise<HermesA2aRuntime | null | undefined> {
   try {
     const raw = await readFileSafe(getHermesConfigPath(profile));
 
     if (raw === null) return undefined;
     const { terminal } = HermesTerminalConfigSchema.parse(parseYaml(raw) ?? {});
     const backend = env.TERMINAL_ENV?.trim() || terminal?.backend?.trim() || 'local';
-    const cwd = env.TERMINAL_CWD?.trim() || terminal?.cwd?.trim();
 
-    if (backend !== 'local' || !cwd || !A2aRuntimePathSchema.safeParse(cwd).success) return null;
+    if (backend !== 'local') return null;
+    const configuredCwd = terminal?.cwd?.trim();
+    const gatewayCwd = env.TERMINAL_CWD?.trim();
+    const binding = bindings[IMATE_HERMES_WORKSPACE];
+
+    // Hermes substitutes the Gateway user's home for an implicit terminal cwd.
+    const useImateWorkspace = profile === path.join(IMATE_HERMES_WORKSPACE, '.hermes')
+      && (!configuredCwd || terminal?.cwd === '.') && binding?.ideType === 'hermes' && binding.projectId > 0
+      && (!gatewayCwd || (path.isAbsolute(gatewayCwd) && await isUserHomeDir(gatewayCwd)));
+
+    const cwd = useImateWorkspace ? IMATE_HERMES_WORKSPACE : gatewayCwd || configuredCwd;
+
+    if (!cwd || !A2aRuntimePathSchema.safeParse(cwd).success) return null;
 
     const workspace = await fs.promises.realpath(cwd).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
@@ -3103,7 +3118,8 @@ async function resolveHermesA2aRuntime(profile: string, env = process.env): Prom
       throw error;
     });
 
-    if (!workspace || !(await fs.promises.stat(workspace)).isDirectory()) return null;
+    if (!workspace || (useImateWorkspace && workspace !== IMATE_HERMES_WORKSPACE)
+      || !(await fs.promises.stat(workspace)).isDirectory()) return null;
 
     return HermesA2aRuntimeSchema.safeParse({ profile, workspace }).data ?? null;
   } catch {
@@ -3178,7 +3194,7 @@ async function runA2aControl(tool: A2aTool, refreshReport: boolean): Promise<boo
       const profile = await canonicalHermesA2aProfile();
 
       if (!profile || !await isHermesA2aOwner(config.endpoint, profile)) return true;
-      resolvedHermes = await resolveHermesA2aRuntime(profile);
+      resolvedHermes = await resolveHermesA2aRuntime(profile, config.workspaceBindings);
     }
 
     if (tool === 'hermes' && !resolvedHermes) {
@@ -7216,7 +7232,7 @@ async function legacyA2aPluginRuntime(config: LocalAgentConfig, slug: string): P
 
   if (slug !== A2A_PLUGIN_PREFIX + a2aPluginScope(config.endpoint, hermesId)) return;
   const owner = await readHermesA2aOwner();
-  const hermesRuntime = owner?.endpoint === config.endpoint ? await resolveHermesA2aRuntime(owner.profile, {}) : undefined;
+  const hermesRuntime = owner?.endpoint === config.endpoint ? await resolveHermesA2aRuntime(owner.profile, config.workspaceBindings, {}) : undefined;
 
   if (!hermesRuntime) throw new Error('Could not recover the enrolled Hermes A2A profile and workspace.');
 
