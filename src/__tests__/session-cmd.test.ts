@@ -1435,9 +1435,12 @@ describe('session migrate on Windows', () => {
 });
 
 describe('session resume of a session already restored', () => {
-  it('writes nothing the second time and keeps a turn added to the restored copy', async () => {
+  it('restores into a relative workspace and reuses the copy when given its absolute path', async () => {
     const ws = fs.realpathSync.native(fs.mkdtempSync(path.join(mocks.home, 'ws-')));
+    const relative = path.basename(ws);
+    vi.spyOn(process, 'cwd').mockReturnValue(path.dirname(ws));
     mocks.remotes[ws] = 'https://github.com/org/alpha.git';
+    mocks.remotes[relative] = mocks.remotes[ws];
     const session = mkSession({ sessionId: '0b6f3c1e-5a2d-4c8e-9f10-7a1b2c3d4e5f', cwd: ws, platform: 'codex' });
     await new SyncManager(repoRoot).saveSession(
       session,
@@ -1457,9 +1460,10 @@ describe('session resume of a session already restored', () => {
     const name = (JSON.parse(fs.readFileSync(indexPath, 'utf-8')) as { sessions: Array<{ sessionName: string }> })
       .sessions[0].sessionName;
     mocks.adaptersByPlatform['claude-code'] = new ClaudeCodeAdapter('claude-code', sessionStoreDir('claude-code', { kind: 'recorded', toolRoots: undefined }));
-    const resume = () => runSession('resume', name, '--platform', 'claude-code', '--repo-root', repoRoot, '--cwd', ws);
+    const resume = (cwd: string) => runSession('resume', name, '--platform', 'claude-code', '--repo-root', repoRoot, '--cwd', cwd);
 
-    await resume();
+    await resume(relative);
+    expect(errored).toEqual([]);
     const projects = path.join(mocks.home, '.claude', 'projects');
     const transcript = (fs.readdirSync(projects, { recursive: true }) as string[]).find((f) => f.endsWith('.jsonl'))!;
     const restoredId = path.basename(transcript, '.jsonl');
@@ -1468,7 +1472,7 @@ describe('session resume of a session already restored', () => {
     const before = fs.readFileSync(path.join(projects, transcript), 'utf-8');
     out = [];
 
-    await resume();
+    await resume(ws);
 
     expect(out.join('\n')).toContain(`Session already restored as ${restoredId}, nothing written.`);
     expect(out.join('\n')).toContain(`To continue: claude --resume ${restoredId}`);
@@ -1569,15 +1573,16 @@ describe('session resume on Windows', () => {
 describe('session resume --dry-run', () => {
   it('strips terminal control sequences from the archived title', async () => {
     const title = 'pay\u001b[31mment\u001b[0m';
-    mocks.remotes['/run/dir'] = 'https://github.com/org/alpha.git';
-    const session = mkSession({ title, cwd: '/run/dir', platform: 'claude-code' });
+    const cwd = path.resolve('/run/dir');
+    mocks.remotes[cwd] = 'https://github.com/org/alpha.git';
+    const session = mkSession({ title, cwd, platform: 'claude-code' });
     await new SyncManager(repoRoot).saveSession(
       session,
       defaultSyncMeta(
         {
           platform: 'claude-code',
           author: 'tester',
-          cwd: '/run/dir',
+          cwd,
           sessionId: session.sessionId,
           repoIdentity: 'github.com/org/alpha',
           title,
@@ -1592,7 +1597,7 @@ describe('session resume --dry-run', () => {
 
     await runSession(
       'resume', index.sessions[0].sessionName,
-      '--platform', 'claude-code', '--repo-root', repoRoot, '--cwd', '/run/dir', '--dry-run',
+      '--platform', 'claude-code', '--repo-root', repoRoot, '--cwd', cwd, '--dry-run',
     );
 
     const text = out.join('\n');
