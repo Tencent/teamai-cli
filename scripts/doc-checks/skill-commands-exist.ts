@@ -72,6 +72,11 @@ function resolveCommand(program: Command, tokens: string[]) {
   let index = 0;
 
   while (index < tokens.length) {
+    if (program.options.some((option) => (option.long === tokens[index] || option.short === tokens[index]) && !option.required && !option.optional)) {
+      index += 1;
+      continue;
+    }
+
     const next = command.commands.find((c) => c.name() === tokens[index] || c.aliases().includes(tokens[index]));
 
     if (!next) break;
@@ -104,17 +109,16 @@ function validate(program: Command, invocations: Invocation[]): string[] {
 
     const { command, rest } = resolveCommand(program, tokens);
     const where = `${invocation.file}:${invocation.line}  ${invocation.text}`;
+    const next = rest[0];
 
-    if (command === program && !tokens[0].startsWith('-')) {
-      problems.push(`${where}  → unknown command "${tokens[0]}"`);
+    if (command === program && next !== undefined && !next.startsWith('-') && !/[<>[\]{}"'…]/.test(next)) {
+      problems.push(`${where}  → unknown command "${next}"`);
       continue;
     }
 
     // A group with subcommands and no argument of its own can only be followed
     // by one of them (or a flag), so any other word is a subcommand that does
     // not exist. Placeholders such as `<name>` stand for one and are skipped.
-    const next = rest[0];
-
     if (
       next !== undefined &&
       command.commands.length > 0 &&
