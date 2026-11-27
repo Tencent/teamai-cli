@@ -14,6 +14,7 @@ vi.mock('../review-store.js', async (importOriginal) => {
         loadPendingReview: vi.fn(),
         savePendingReview: vi.fn(),
         removePendingReview: vi.fn(),
+        decidePendingReview: vi.fn(),
     };
 });
 
@@ -25,6 +26,7 @@ vi.mock('../section-patcher.js', () => ({
 
 import { reviewCmd } from '../review-cmd.js';
 import {
+    decidePendingReview,
     loadPendingReview,
     removePendingReview,
     type PendingReviewItem,
@@ -65,6 +67,10 @@ describe('review-cmd', () => {
         originalCwd = process.cwd();
         process.chdir(cwd);
         vi.clearAllMocks();
+        vi.mocked(decidePendingReview).mockImplementation(async (dir, id, decide) => {
+            const item = (await loadPendingReview(dir)).find((entry) => entry.id === id);
+            return item ? decide(item) : undefined;
+        });
         consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     });
 
@@ -122,7 +128,7 @@ describe('review-cmd', () => {
 
     // ── apply 模式 ────────────────────────────────────────
 
-    it('apply 单条 codebase-section → 调 patchManagedSection + removeItem', async () => {
+    it('apply 单条 codebase-section → 写入更新后的文档', async () => {
         const item = makeItem();
         const targetFile = path.join(cwd, item.target.file!);
         await fs.ensureDir(path.dirname(targetFile));
@@ -130,18 +136,16 @@ describe('review-cmd', () => {
 
         (loadPendingReview as ReturnType<typeof vi.fn>).mockResolvedValue([item]);
         (patchManagedSection as ReturnType<typeof vi.fn>).mockReturnValue('# doc patched');
-        (removePendingReview as ReturnType<typeof vi.fn>).mockResolvedValue(true);
 
         await reviewCmd({ idArg: 'abc123def456', apply: true });
 
         expect(patchManagedSection).toHaveBeenCalledOnce();
-        expect(removePendingReview).toHaveBeenCalledWith(expect.stringContaining('teamai-review-cmd-test-'), 'abc123def456');
+        expect(await fs.readFile(targetFile, 'utf8')).toBe('# doc patched');
     });
 
     it('apply kind=domain-drift → 不调 patchManagedSection，jsonl 不变', async () => {
         const item = makeItem({ kind: 'domain-drift' });
         (loadPendingReview as ReturnType<typeof vi.fn>).mockResolvedValue([item]);
-        (removePendingReview as ReturnType<typeof vi.fn>).mockResolvedValue(false);
 
         await reviewCmd({ idArg: 'abc123def456', apply: true });
 
@@ -176,15 +180,12 @@ describe('review-cmd', () => {
 
         (loadPendingReview as ReturnType<typeof vi.fn>).mockResolvedValue([highItem, mediumItem]);
         (patchManagedSection as ReturnType<typeof vi.fn>).mockReturnValue('# doc patched');
-        (removePendingReview as ReturnType<typeof vi.fn>).mockResolvedValue(true);
 
         await reviewCmd({ allApply: true, maxRisk: 'medium' });
 
         // 只对 mediumItem 调用 patchManagedSection
         expect(patchManagedSection).toHaveBeenCalledOnce();
-        expect(removePendingReview).toHaveBeenCalledWith(expect.stringContaining('teamai-review-cmd-test-'), 'mediumitem001');
-        // highItem 不应该被移除
-        expect(removePendingReview).not.toHaveBeenCalledWith(expect.stringContaining('teamai-review-cmd-test-'), 'highriskitem1');
+        expect(await fs.readFile(targetFile, 'utf8')).toBe('# doc patched');
 
         const output = consoleSpy.mock.calls.map((c) => c.join(' ')).join('\n');
         expect(output).toContain('skipped');
@@ -198,7 +199,6 @@ describe('review-cmd', () => {
 
         (loadPendingReview as ReturnType<typeof vi.fn>).mockResolvedValue([item]);
         (patchManagedSection as ReturnType<typeof vi.fn>).mockReturnValue('# doc patched');
-        (removePendingReview as ReturnType<typeof vi.fn>).mockResolvedValue(true);
 
         await reviewCmd({ idArg: 'abc123def456', apply: true, json: true });
 
