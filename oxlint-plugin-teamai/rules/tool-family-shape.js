@@ -29,7 +29,7 @@ function exportedNames(node) {
   const { declaration } = node;
 
   if (declaration === null || declaration === undefined) {
-    return node.specifiers.map((specifier) => (specifier.exported.type === 'Identifier' ? specifier.exported.name : String(specifier.exported.value)));
+    return node.specifiers.flatMap((specifier) => specifier.exportKind === 'type' ? [] : [specifier.exported.type === 'Identifier' ? specifier.exported.name : String(specifier.exported.value)]);
   }
 
   if (declaration.type === 'VariableDeclaration') {
