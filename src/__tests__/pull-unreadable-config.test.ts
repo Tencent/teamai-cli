@@ -38,7 +38,8 @@ vi.mock('../hooks.js', () => ({
 vi.mock('../mcp-reconcile.js', () => ({
   reconcileMcpForConfig: vi.fn().mockResolvedValue({ changes: [], wrote: false }),
 }));
-vi.mock('../update.js', () => ({
+vi.mock('../update.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../update.js')>()),
   acquireLock: vi.fn().mockResolvedValue(true),
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
@@ -106,6 +107,24 @@ function pulledRepos(): string[] {
 }
 
 describe('pull in a project whose config cannot be read (#784)', () => {
+  it('fails when a refreshed team config cannot be parsed', async () => {
+    const repo = userScope();
+    const root = gitRepo('plain-workspace');
+    process.chdir(root);
+    vi.mocked(pullRepo).mockImplementationOnce(async () => {
+      fs.writeFileSync(path.join(repo, 'teamai.yaml'), 'team: [broken\n');
+      return 'updated';
+    });
+    process.exitCode = 0;
+
+    await pull({});
+
+    expect(pulledRepos()).toContain(repo);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('missing or cannot be read'));
+    expect(process.exitCode).toBe(1);
+    expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('not found'));
+  });
+
   it('syncs nothing from a legacy .teamai/ of another team behind a broken partition, and says why', async () => {
     const root = gitRepo('project-a');
     const configPath = await brokenPartition(root);
