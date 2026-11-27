@@ -15,11 +15,16 @@ vi.mock('../update.js', async (importOriginal) => ({
   withFileLock: vi.fn(async <T>(_lock: string, _wait: unknown, body: () => Promise<T>) => ({ held: true as const, value: await body() })),
 }));
 
+const PROJECT_ROOT = path.resolve('/workspace/project');
+const USER_HOME = path.resolve('/home/alice');
+
 function makeConfig(kind: 'git' | 'self'): LocalConfig {
-  const projectRoot = '/workspace/project';
+  // The roots are resolved rather than written as POSIX literals, so the expectations below hold on a Windows runner,
+  // where `path.resolve('/workspace/project')` carries the drive of the current directory.
+  const projectRoot = PROJECT_ROOT;
   const localPath = kind === 'self'
     ? path.join(projectRoot, '.teamai')
-    : '/home/alice/.teamai/team-repo';
+    : path.join(USER_HOME, '.teamai', 'team-repo');
   return {
     repo: {
       localPath,
@@ -44,14 +49,15 @@ describe('resolveMaintenancePaths', () => {
     const config = makeConfig('self');
 
     await expect(resolveMaintenancePaths(config)).resolves.toEqual({
-      repoPath: '/workspace/project/.teamai',
+      repoPath: path.join(PROJECT_ROOT, '.teamai'),
       votesDir: path.join(
-        '/workspace/project/.teamai',
+        PROJECT_ROOT,
+        '.teamai',
         REPORTS_WORKTREE_DIRNAME,
         'votes',
       ),
-      learningsWriteDir: path.join('/workspace/project/.teamai', LEARNINGS_WORKTREE_DIRNAME, 'learnings'),
-      learningsReadDirs: expect.arrayContaining(['/workspace/project/.teamai/learnings']),
+      learningsWriteDir: path.join(PROJECT_ROOT, '.teamai', LEARNINGS_WORKTREE_DIRNAME, 'learnings'),
+      learningsReadDirs: expect.arrayContaining([path.join(PROJECT_ROOT, '.teamai', 'learnings')]),
     });
     expect(refreshReportsWorktree).toHaveBeenCalledOnce();
     expect(refreshReportsWorktree).toHaveBeenCalledWith(config, { pushIfCreated: false });
@@ -61,10 +67,10 @@ describe('resolveMaintenancePaths', () => {
     const config = makeConfig('git');
 
     await expect(resolveMaintenancePaths(config)).resolves.toEqual({
-      repoPath: '/home/alice/.teamai/team-repo',
-      votesDir: path.join('/home/alice/.teamai', REPORTS_WORKTREE_DIRNAME, 'votes'),
-      learningsWriteDir: path.join('/home/alice/.teamai', LEARNINGS_WORKTREE_DIRNAME, 'learnings'),
-      learningsReadDirs: expect.arrayContaining(['/home/alice/.teamai/team-repo/learnings']),
+      repoPath: path.join(USER_HOME, '.teamai', 'team-repo'),
+      votesDir: path.join(USER_HOME, '.teamai', REPORTS_WORKTREE_DIRNAME, 'votes'),
+      learningsWriteDir: path.join(USER_HOME, '.teamai', LEARNINGS_WORKTREE_DIRNAME, 'learnings'),
+      learningsReadDirs: expect.arrayContaining([path.join(USER_HOME, '.teamai', 'team-repo', 'learnings')]),
     });
     expect(refreshReportsWorktree).toHaveBeenCalledOnce();
     expect(refreshReportsWorktree).toHaveBeenCalledWith(config, { pushIfCreated: false });
