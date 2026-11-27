@@ -43,6 +43,7 @@ import {
   declaredNamespaceFor, isAtSharedRoot, isNestedPlaceableType, isPlaceableType, NAMESPACE_AXIS, PLACEABLE_TYPES, placedResourcePath,
   resolveProjectNamespace, resolveRoleNamespace, rootSegmentsFor, skillNamespacePath, withNamespace, type PlaceableType,
 } from './push-namespaces.js';
+import { readNamespaceMergeMode } from './resource-namespaces.js';
 import { askQuestion, askSelection, isInteractive } from './utils/prompt.js';
 import { listDirs, pathExists, pruneEmptyDirs, readFileSafe, writeFile } from './utils/fs.js';
 import { gitAnswer, git as gitAt, unansweredGit } from './workflow/worktree.js';
@@ -106,6 +107,37 @@ type CandidateResolution =
  * where the shared root is the team's actual layout, so it keeps the legacy
  * fallback and the loud warning that goes with it.
  */
+/**
+ * Where a push may place a new resource when both a role and the active projects name namespaces. `union` (the default)
+ * offers both; `intersect` offers only what both declare, as pull delivers only that, and refuses when they share none,
+ * since this directory then delivers nothing a new resource could join.
+ */
+async function mergePushCandidates(
+  type: PlaceableType,
+  roleCandidates: readonly string[],
+  projectCandidates: readonly string[],
+  localConfig: LocalConfig,
+): Promise<CandidateResolution> {
+  if (await readNamespaceMergeMode(localConfig.repo.localPath) !== 'intersect' || roleCandidates.length === 0 || projectCandidates.length === 0) {
+    return { ok: true, candidates: [...new Set([...roleCandidates, ...projectCandidates])] };
+  }
+
+  const ceiling = new Set(roleCandidates);
+  const scoped = [...new Set(projectCandidates.filter((namespace) => ceiling.has(namespace)))];
+
+  if (scoped.length === 0) {
+    const axis = NAMESPACE_AXIS[type];
+
+    return {
+      ok: false,
+      message: `No ${axis} namespace is both in your role and declared by the active projects, and sharing.namespaceMerge is intersect, `
+        + 'so this directory delivers none. Pass --role <ns> to name one, or --shared for the shared root.',
+    };
+  }
+
+  return { ok: true, candidates: scoped };
+}
+
 async function namespaceCandidates(
   type: PlaceableType,
   localConfig: LocalConfig,
@@ -152,7 +184,7 @@ async function namespaceCandidates(
         };
       }
 
-      return { ok: true, candidates: [...new Set([...candidates, ...fromProjects])] };
+      return await mergePushCandidates(type, candidates, fromProjects, localConfig);
     } catch (e) {
       if (!(e instanceof RolesManifestNotFoundError)) {
         return {
