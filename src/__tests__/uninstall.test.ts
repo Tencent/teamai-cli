@@ -2113,6 +2113,36 @@ console.error('Could not remove podman image teamai-warm:fedcba9876543210: podma
     expect([await fse.pathExists(path.join(repoPath, 'delivered')), await fse.pathExists(path.join(repoPath, 'hooks', 'block-secrets', 'scan.sh'))]).toEqual([false, true]);
   });
 
+  it.each(['partitioned', 'legacy'] as const)('preserves the team docs directory in %s self mode', async (layout) => {
+    const { homeDir } = await setupFixture(tmpDir);
+    const projectRoot = path.join(tmpDir, 'business-repo');
+    const repoPath = path.join(projectRoot, '.teamai');
+    const docsDir = path.join(repoPath, 'docs');
+    vi.stubEnv('HOME', homeDir);
+    vi.stubEnv('SHELL', '/bin/zsh');
+    await fse.outputFile(path.join(docsDir, '.gitkeep'), '');
+    await fse.outputFile(path.join(docsDir, 'guide.md'), '# Guide\n');
+    commitTeamRepo(projectRoot);
+    const dataHome = layout === 'legacy' ? repoPath : path.join(homeDir, '.teamai', 'projects', 'business-repo-0123456789abcdef');
+    await fse.ensureDir(dataHome);
+    const localConfig = makeLocalConfig(homeDir, repoPath, {
+      scope: 'project',
+      projectRoot,
+      dataHome,
+      repo: { localPath: repoPath, remote: '', kind: 'self', businessRepoRoot: projectRoot },
+    });
+    const teamConfig = makeTeamConfig({ toolPaths: {} });
+    teamConfig.sharing.docs.localDir = './.teamai/docs';
+    mockAutoDetectInit.mockResolvedValue({ localConfig, teamConfig });
+
+    await uninstall({ force: true });
+
+    const output = [...vi.mocked(log.warn).mock.calls, ...vi.mocked(log.success).mock.calls];
+    if (layout === 'partitioned') expect(output.some(([line]) => String(line).includes(docsDir))).toBe(false);
+    expect(await fse.readFile(path.join(docsDir, 'guide.md'), 'utf8')).toBe('# Guide\n');
+    expect(await fse.pathExists(path.join(docsDir, '.gitkeep'))).toBe(true);
+  });
+
   it('removes the empty agents folder self mode seeds, and keeps one holding the member\'s agent', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     const projectRoot = path.join(tmpDir, 'business-repo');

@@ -68,7 +68,7 @@ import {
 import { BUILTIN_RULE_NAMES, TEAMAI_CONTEXT_RULE_NAME } from './builtin-rules.js';
 import { isLegacyCursorRuleFile, keptLegacyCopiesWarning, ruleStemFromFilename, usesMdcRules, type InstructionBlock, type LegacyRuleDir } from './resources/rule-format.js';
 import { agentStemFromFilename } from './resources/agent-format.js';
-import { resolveDocsDestination } from './resources/docs.js';
+import { isTeamDocsDirectory, resolveDocsDestination } from './resources/docs.js';
 import { DeliveredFolders } from './resources/delivered-folders.js';
 import { RuleFolders } from './resources/rule-folders.js';
 import { RESOURCE_LAYOUTS, Resources } from './resources/resolver.js';
@@ -1914,7 +1914,8 @@ async function buildRemovalPlan(
     // (f) Docs directory
     const docsDir = resolveDocsDestination(teamConfig, localConfig);
 
-    if (await pathExists(docsDir)) {
+    // When legacy data and team docs share a home, cleanup must still record kept docs before sweeping that home.
+    if (await pathExists(docsDir) && (isWithin(docsDir, teamaiHome) || !await isTeamDocsDirectory(docsDir, localConfig.repo.localPath))) {
       plan.docsDir = docsDir;
     }
 
