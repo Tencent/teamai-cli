@@ -176,18 +176,48 @@ export function parseLearningDraft(raw: string): ParsedLearningDraft {
  * @returns      Inferred repo .git URL
  */
 export function extractRepoUrlFromMrUrl(mrUrl: string): string {
-  // GitHub: https://github.com/owner/repo/pull/123 → https://github.com/owner/repo.git
-  const ghMatch = mrUrl.match(/^(https:\/\/github\.com\/[^/]+\/[^/]+)\/pull\//);
+  // Normalize the host the same way fetchMR routes it: case-insensitive and
+  // without a leading 'www.'. A regex on the raw URL silently missed
+  // https://www.github.com/... and http://github.com/..., leaving repo_url empty
+  // and the teamwiki incremental update skipped without any log.
+  let parsed: URL;
 
-  if (ghMatch) return `${ghMatch[1]}.git`;
-  // TGit: https://git.woa.com/group[/subgroup]/repo/merge_requests/123
-  const tgitMatch = mrUrl.match(/^(https:\/\/git\.woa\.com\/.+\/[^/]+)\/merge_requests\//);
+  try {
+    parsed = new URL(mrUrl);
+  } catch {
+    return '';
+  }
 
-  if (tgitMatch) return `${tgitMatch[1]}.git`;
-  // GitLab: https://<host>/group[/subgroup]/repo/-/merge_requests/123
-  const gitlabMatch = mrUrl.match(/^(https?:\/\/.+?\/.+\/[^/]+)\/-\/merge_requests\//);
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+  const pathParts = parsed.pathname.split('/').filter((part) => part.length > 0);
 
-  if (gitlabMatch) return `${gitlabMatch[1]}.git`;
+  // GitHub: /owner/repo/pull/123 → https://github.com/owner/repo.git
+  if (host === 'github.com' && pathParts[2] === 'pull' && pathParts.length >= 4) {
+    return `https://github.com/${pathParts[0]}/${pathParts[1]}.git`;
+  }
+
+  // TGit: /group[/subgroup]/repo/merge_requests/123
+  if (host === 'git.woa.com' && pathParts.at(-2) === 'merge_requests' && pathParts.length >= 3) {
+    return `https://git.woa.com/${pathParts.slice(0, -2).join('/')}.git`;
+  }
+
+  // GitCode: /owner/repo/(pull|pulls|merge_requests)/123. fetchMR() routes
+  // gitcode.com here, so an empty repo URL would skip the teamwiki update for
+  // every GitCode PR. Keep the canonical host; www. and case fold like fetchMR.
+  if (host === 'gitcode.com' && pathParts.length >= 4
+    && ['pull', 'pulls', 'merge_requests'].includes(pathParts[2])) {
+    return `https://gitcode.com/${pathParts[0]}/${pathParts[1]}.git`;
+  }
+
+  // GitLab: /group[/subgroup]/repo/-/merge_requests/123 (any self-hosted host).
+  // Preserve the original protocol, host and port: a self-hosted instance may
+  // use http, `www.` and a non-standard port, and rewriting them points the
+  // teamwiki record at a repo that does not exist.
+  const dashIndex = pathParts.indexOf('-');
+
+  if (pathParts[dashIndex + 1] === 'merge_requests' && dashIndex >= 2) {
+    return `${parsed.protocol}//${parsed.host}/${pathParts.slice(0, dashIndex).join('/')}.git`;
+  }
 
   // Cannot reliably extract; return empty string so caller skips incremental update
   return '';
