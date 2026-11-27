@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
@@ -61,6 +62,15 @@ describe('dashboard distribution routes (offline)', () => {
     expect((await fetch(`${base}/api/distribution/roles?workspace=user`, foreign)).status).toBe(403);
     expect((await fetch(`${base}/api/any-later-write-route`, foreign)).status).toBe(403);
     expect((await fetch(`${base}/api/distribution/roles?workspace=user`, { method: 'OPTIONS', headers: { Origin: 'https://evil.example' } })).status).toBe(403);
+
+    // Reads carry prompts and paths: no other origin may read them, and a DNS-rebound Host is refused.
+    const sessions = await fetch(`${base}/api/sessions`, { headers: { Origin: 'https://evil.example' } });
+    expect(sessions.status).toBe(200);
+    expect(sessions.headers.get('access-control-allow-origin')).toBeNull();
+    const rebound = await new Promise<number>((resolve, reject) => {
+      http.get(`${base}/api/sessions`, { headers: { Host: `evil.example:${new URL(base).port}` } }, (res) => { res.resume(); resolve(res.statusCode ?? 0); }).on('error', reject);
+    });
+    expect(rebound).toBe(403);
 
     // No user config yet: the user workspace is unconfigured.
     expect(await (await fetch(`${base}/api/distribution?workspace=user`)).json()).toEqual({ configured: false });

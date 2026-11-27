@@ -19,7 +19,7 @@ import type { JsonValue } from '@teamai/shared/json';
 import { getDashboardHtml } from './dashboard-html.js';
 import type { VizSummary } from './viz.js';
 import { aggregateDailySessions, computeDailyStatsDelta, summarizeTrendWindow, summarizeSessionCosts } from './session-trends.js';
-import { HttpError, isLocalWrite, readJsonBody } from './dashboard/http.js';
+import { HttpError, isLocalHost, isLocalWrite, readJsonBody } from './dashboard/http.js';
 import { SessionOutcomes } from './session-outcomes.js';
 import { summarizeTokenCosts } from './dashboard/token-costs.js';
 import type { ReportedHistory } from './dashboard/workflow-runs.js';
@@ -495,13 +495,18 @@ export async function startDashboard(port?: number): Promise<void> {
   const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url ?? '/', `http://localhost:${serverPort}`);
 
-    // CORS headers for local development
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    // The page fetches same-origin, so no CORS header: another site the member
+    // has open must not read prompts and paths. A DNS-rebound name is refused too.
+    if (!isLocalHost(req, serverPort)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Requests must address the local dashboard.' }));
 
-    // Any origin may read (CORS *), so every other method is a write and must
-    // come from this dashboard's own page, whichever route it is for (#1124).
-    // A browser's preflight (OPTIONS) is refused here too, so a cross-site
-    // write is never sent.
+      return;
+    }
+
+    // Every other method is a write and must come from this dashboard's own
+    // page, whichever route it is for (#1124). A browser's preflight (OPTIONS)
+    // is refused here too, so a cross-site write is never sent.
     if (req.method !== 'GET' && req.method !== 'HEAD' && !isLocalWrite(req, serverPort)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Write requests must come from the local dashboard.' }));
