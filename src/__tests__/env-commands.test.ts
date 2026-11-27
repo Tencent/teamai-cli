@@ -901,6 +901,18 @@ scope: 'user',
       expect(log.success).not.toHaveBeenCalled();
     });
 
+    it('warns when an active namespace still declares the key a root remove drops', async () => {
+      localConfig.projects = ['svc-a'];
+      vi.mocked(requireInit).mockResolvedValue({ localConfig, teamConfig });
+      await fse.outputFile(path.join(repoPath, 'manifest', 'projects.yaml'), 'version: 1\nprojects:\n  - id: svc-a\n    resources:\n      env: [svc-a]\n');
+      await fse.outputFile(path.join(repoPath, 'env', 'svc-a', 'env.yaml'), 'variables:\n  - key: KEY\n    value: ns\n');
+      await fse.outputFile(path.join(repoPath, 'env', 'env.yaml'), 'variables:\n  - key: KEY\n    value: root\n');
+
+      await envRemove('KEY', {});
+
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('still declares KEY in svc-a'));
+    });
+
     it('should add a new variable locally and show push hint', async () => {
       await envAdd('NEW_VAR', 'new_value', {});
 
