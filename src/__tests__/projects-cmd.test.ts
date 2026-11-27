@@ -186,12 +186,15 @@ describe('projects add / update / remove (#756)', () => {
       }));
     });
 
-    it('updates name and description only', async () => {
+    it.each([
+      { skills: ['common', 'alpha'] },
+      { mcp: ['tools'] },
+    ])('updates name and description only for %j', async (resources) => {
+      await writeManifest([{ id: 'alpha', name: 'Alpha', resources }]);
       await projectsUpdate('alpha', { name: 'Alpha Team', description: 'Core' });
 
       const alpha = (await readManifest()).projects[0];
-      expect(alpha).toMatchObject({ name: 'Alpha Team', description: 'Core' });
-      expect(alpha.resources.skills).toEqual(['common', 'alpha']);
+      expect(alpha).toMatchObject({ name: 'Alpha Team', description: 'Core', resources });
     });
 
     it('refuses to remove every namespace', async () => {
