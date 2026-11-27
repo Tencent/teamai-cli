@@ -525,8 +525,10 @@ async function runHookDispatch(
     // Dynamic imports and handlers may resolve paths through process.cwd().
     // A removed worktree has no usable process cwd. Preserve a supplied payload
     // cwd; recover an omitted one from session history before using a live directory.
+    let inheritedCwd: string | undefined;
+
     try {
-      process.cwd();
+      inheritedCwd = process.cwd();
     } catch {
       process.chdir(os.tmpdir());
 
@@ -560,12 +562,13 @@ async function runHookDispatch(
     // whether the machine syncs over HTTP (hook-fast-path.ts runLoginDeferredHook).
     if (process.platform !== 'win32' && channelsOf(tool).hooks.loginDeferrable) recordLoginEnrolment(raw, process.env);
 
-    // The workspace the session recorded is the directory the handlers work in,
-    // so the payload's own is replaced when it named no scope.
-    if (scopeDir && scopeDir !== resolveHookCwd(stdin)) stdin.cwd = scopeDir;
-    const cwd = scopeDir ?? resolveHookCwd(stdin);
+    // The detached pull needs the same directory as the capture, even when SessionStart omitted cwd.
+    const sessionStartCwd = event === 'session-start' && localConfig ? inheritedCwd : undefined;
+    const cwd = scopeDir ?? resolveHookCwd(stdin) ?? sessionStartCwd;
 
     if (cwd) {
+      stdin.cwd = cwd;
+
       try {
         process.chdir(cwd);
       } catch (e) {
