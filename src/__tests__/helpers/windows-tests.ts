@@ -10,6 +10,7 @@ export const WINDOWS_TESTS = [
   'src/__tests__/benchmark-trials.test.ts',
   'src/__tests__/buddy-windows-cwd.test.ts',
   'src/__tests__/builtin-hooks.test.ts',
+  'src/__tests__/cli-path.test.ts',
   'src/__tests__/codex-hook-rules.test.ts',
   'src/__tests__/codex-team-hooks.test.ts',
   'src/__tests__/command-shell.test.ts',
