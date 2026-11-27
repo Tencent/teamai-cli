@@ -1529,24 +1529,24 @@ console.error('Could not remove podman image teamai-warm:fedcba9876543210: podma
     });
 
     // Unreadable is not empty: nothing tells which projects the registry still routes.
-    it.skipIf(process.getuid?.() === 0).each([
+    it.each([
       { uninstalling: 'the user scope', detects: 'user' },
       { uninstalling: 'with no valid configuration', detects: '' },
     ])('keeps the loader, the registry and every project partition when the registry cannot be read, after uninstalling $uninstalling', async ({ detects }) => {
       const { homeDir, teamaiHome, teamConfig, userConfig, projectConfig } = await setupUserAndProject();
       const registry = path.join(teamaiHome, 'env-scopes');
       const before = await fse.readFile(registry, 'utf-8');
+      const saved = path.join(registry, 'saved-registry');
+
+      // Reading a directory as a file fails on Windows too, where chmod cannot revoke read access.
+      await fse.remove(registry);
+      await fse.outputFile(saved, before);
       if (detects) mockAutoDetectInit.mockResolvedValue({ localConfig: userConfig, teamConfig });
       else mockAutoDetectInit.mockRejectedValue(new Error('no configuration'));
-      await fse.chmod(registry, 0o000);
 
-      try {
-        await uninstall({ force: true });
-      } finally {
-        await fse.chmod(registry, 0o644);
-      }
+      await uninstall({ force: true });
 
-      expect(await fse.readFile(registry, 'utf-8')).toBe(before);
+      expect(await fse.readFile(saved, 'utf-8')).toBe(before);
       expect(await fse.pathExists(path.join(teamaiHome, 'env-loader.sh'))).toBe(true);
       expect(await fse.pathExists(path.join(projectConfig.dataHome!, 'config.yaml'))).toBe(true);
       expect(await fse.pathExists(path.join(projectConfig.dataHome!, 'env.sh'))).toBe(true);
