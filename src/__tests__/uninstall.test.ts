@@ -2174,7 +2174,9 @@ console.error('Could not remove podman image teamai-warm:fedcba9876543210: podma
     git(projectRoot, 'commit', '-q', '--allow-empty', '-m', 'init');
     const dataHome = path.join(homeDir, '.teamai', 'projects', 'business-repo-0123456789abcdef');
     const worktree = path.join(dataHome, 'side-branches', 'learnings-wt');
-    git(projectRoot, 'worktree', 'add', '-q', '--orphan', '-b', 'teamai-learnings', worktree);
+    // `worktree add --orphan` needs git 2.42+: check out the orphan branch in a detached worktree instead.
+    git(projectRoot, 'worktree', 'add', '-q', '--detach', worktree);
+    git(worktree, 'checkout', '-q', '--orphan', 'teamai-learnings');
     git(worktree, 'commit', '-q', '--allow-empty', '-m', '[teamai] Initialize learnings branch');
     for (const message of unpushed) git(worktree, 'commit', '-q', '--allow-empty', '-m', message);
 
