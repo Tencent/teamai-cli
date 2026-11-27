@@ -64,6 +64,7 @@ export const ADAPTER_REGISTRY: AdapterRegistry = {
   codebuddy: stored(BUILT_IN_TOOLS.codebuddy.platforms.codebuddy),
   'codebuddy-ide': () => BUILT_IN_TOOLS.codebuddy.platforms['codebuddy-ide'].adapter(),
   workbuddy: stored(BUILT_IN_TOOLS.codebuddy.platforms.workbuddy),
+  workbuddypro: stored(BUILT_IN_TOOLS.codebuddy.platforms.workbuddypro),
   cursor: stored(BUILT_IN_TOOLS.cursor.platforms.cursor),
   opencode: stored(BUILT_IN_TOOLS.opencode.platforms.opencode),
   agy: stored(BUILT_IN_TOOLS.agy.platforms.agy),
