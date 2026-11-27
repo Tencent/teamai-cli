@@ -2269,6 +2269,12 @@ export async function init(options: GlobalOptions & {
   // Step 3: Clone or link repo
   const defaultLocalPath = path.join(teamaiHome, 'team-repo');
   const localPath = expandHome(defaultLocalPath);
+  // Recorded before the clone: a refusal removes this folder only when the clone created it (#1881).
+  const dataHomeExisted = await pathExists(teamaiHome);
+  // ~/.teamai/projects appears as the parent of a new partition. A refusal
+  // removes it only when this run created it and nothing else is left in it.
+  const projectsDir = path.join(getUserHome(), '.teamai', 'projects');
+  const projectsDirExisted = path.resolve(path.dirname(teamaiHome)) !== path.resolve(projectsDir) || await pathExists(projectsDir);
   // The clone init uses is another install's than the config beside it, whether
   // it clones it now or reuses one an earlier init left: settle that install
   // now, as the config save below would, instead of leaving its config to run
@@ -2563,17 +2569,39 @@ export async function init(options: GlobalOptions & {
     }
   }
 
-  // Refuse to initialize a team in self mode as a standalone team repo (#1500).
-  if (await isSelfModeTeam(localPath)) {
+  // A refusal undoes the clone this run made, then an empty data folder the clone created.
+  // One that was already there, or that still holds anything, stays (#1881).
+  const refuseInit = async (message: string): Promise<void> => {
     if (clonedThisRun) {
       await remove(localPath);
     }
 
-    log.error(
+    if (!dataHomeExisted && await pathExists(teamaiHome)) {
+      const entries = await fs.promises.readdir(teamaiHome).catch(() => null);
+
+      if (entries?.length === 0) {
+        await remove(teamaiHome);
+      }
+    }
+
+    if (!projectsDirExisted && await pathExists(projectsDir)) {
+      const left = await fs.promises.readdir(projectsDir).catch(() => null);
+
+      if (left?.length === 0) {
+        await remove(projectsDir);
+      }
+    }
+
+    log.error(message);
+    process.exit(1);
+  };
+
+  // Refuse to initialize a team in self mode as a standalone team repo (#1500).
+  if (await isSelfModeTeam(localPath)) {
+    await refuseInit(
       `${repoInput} is a repo in self mode: its config is .teamai/teamai.yaml. ` +
         'Clone the repository and run `teamai init --self` in it.',
     );
-    process.exit(1);
 
     return;
   }
@@ -2586,6 +2614,21 @@ export async function init(options: GlobalOptions & {
   // Remote teamai.yaml.scope (if present) is ignored — local install location
   // is decided only by --scope / default (issue #250).
   const teamConfig = await loadTeamConfig(localPath, null);
+
+  // loadTeamConfig returns null for a missing file, an empty one, one it cannot
+  // open, and one the schema refuses. Only the last has content. Replacing that
+  // one would publish the skeleton over the team's settings (#1881). An empty
+  // or unreadable file is still missing: init writes the skeleton, as before.
+  const teamYaml = await readFileSafe(path.join(localPath, 'teamai.yaml'));
+
+  if (!teamConfig && teamYaml?.trim()) {
+    await refuseInit(
+      `${repoInput} has a teamai.yaml that does not validate, so init stops instead of replacing it. ` +
+        'Fix teamai.yaml in the team repo as the error above says, then run init again.',
+    );
+
+    return;
+  }
 
   if (!validateGitInitAgentIds(requestedAgents, await teamToolIds(localPath, teamConfig))) {
     process.exit(1);
