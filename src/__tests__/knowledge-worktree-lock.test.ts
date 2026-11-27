@@ -106,6 +106,52 @@ describe('withKnowledgeWorktree holds a dedicated lock', () => {
     expect(state.held).toBe(false);
   });
 
+  it('keeps the active checkout intact during real lock contention and allows a later retry', async () => {
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => { entered = resolve; });
+    let resume!: () => void;
+    const pending = new Promise<void>((resolve) => { resume = resolve; });
+    let marker = '';
+    const first = withKnowledgeWorktree(config, async (worktreeConfig) => {
+      marker = path.join(worktreeConfig.repo.localPath, 'pending.md');
+      fs.writeFileSync(marker, 'uncommitted knowledge\n');
+      entered();
+      await pending;
+      expect(fs.readFileSync(marker, 'utf8')).toBe('uncommitted knowledge\n');
+    });
+
+    try {
+      await Promise.race([ready, first]);
+      const competing = vi.fn(async () => 'never');
+      await expect(withKnowledgeWorktree(config, competing)).rejects.toBeInstanceOf(CheckoutRefusedError);
+      expect(competing).not.toHaveBeenCalled();
+      expect(fs.readFileSync(marker, 'utf8')).toBe('uncommitted knowledge\n');
+    } finally {
+      resume();
+      await first;
+    }
+
+    await expect(withKnowledgeWorktree(config, async () => 'retried')).resolves.toBe('retried');
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it('releases the lock after a required fetch fails so the command can retry', async () => {
+    const git = simpleGit(config.repo.localPath);
+    await git.remote(['set-url', 'origin', path.join(tmp, 'missing-origin.git')]);
+    const body = vi.fn(async () => 'ok');
+
+    try {
+      await expect(withKnowledgeWorktree(config, body, { requireFreshBase: true })).rejects.toThrow();
+      expect(body).not.toHaveBeenCalled();
+      expect(fs.existsSync(state.acquired[0])).toBe(false);
+    } finally {
+      await git.remote(['set-url', 'origin', config.repo.remote]);
+    }
+
+    await expect(withKnowledgeWorktree(config, body, { requireFreshBase: true })).resolves.toBe('ok');
+    expect(body).toHaveBeenCalledTimes(1);
+  });
+
   it('releases the lock even when the callback throws', async () => {
     await expect(withKnowledgeWorktree(config, async () => {
       throw new Error('boom');
