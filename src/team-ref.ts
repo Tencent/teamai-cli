@@ -19,8 +19,12 @@ export type TeamRefBlock = 'no_workspace' | 'user_scope' | 'self' | 'http';
 export function teamRefBlocker(project: LocalConfig | null, user: LocalConfig | null): { block: TeamRefBlock; message: string } | null {
   if (!project) return { block: 'no_workspace', message: '--team-ref needs a teamai workspace here. Run teamai init --scope workspace here first.' };
 
-  if (project.inheritUserScope || (user && remotesMatch(project.repo.remote, user.repo.remote))) {
-    return { block: 'user_scope', message: '--team-ref pins one workspace, but this team also reaches it through user scope, where every workspace shares one copy. Remove the user-scope install, or turn off inheritUserScope, to pin a workspace.' };
+  if (user && remotesMatch(project.repo.remote, user.repo.remote)) {
+    return { block: 'user_scope', message: '--team-ref cannot pin this workspace because user scope uses the same team repository. Use an isolated workspace install without that user-scope install or user-scope inheritance.' };
+  }
+
+  if (project.inheritUserScope) {
+    return { block: 'user_scope', message: '--team-ref cannot pin a workspace that inherits user scope. Turn off inheritUserScope in this workspace before retrying.' };
   }
 
   if (project.repo.kind === 'self') return { block: 'self', message: "--team-ref does not apply in self mode: the project's own commit decides which team resources it has." };

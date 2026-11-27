@@ -228,7 +228,7 @@ describe('workspace team ref (#1183)', () => {
     fs.rmSync(m.copy('trial'));
     const r = m.run(['pull']);
     expect(r.code, r.output).toBe(1);
-    expect(r.output).toContain('--team-ref pins one workspace, but this team also reaches it through user scope, where every workspace shares one copy. Remove the user-scope install, or turn off inheritUserScope, to pin a workspace.');
+    expect(r.output).toContain('--team-ref cannot pin this workspace because user scope uses the same team repository. Use an isolated workspace install without that user-scope install or user-scope inheritance.');
     expect(m.config().repo.ref).toBe('trial');
     expect(fs.existsSync(m.copy('trial'))).toBe(false);
   });
