@@ -151,12 +151,14 @@ async function applyOne(
     }
 
     const filePath = path.isAbsolute(file) ? file : path.join(cwd, file);
+    const exists = await fs.pathExists(filePath);
+    const initialContent = z.string().safeParse(item.payload['initialContent']).data;
 
-    if (!await fs.pathExists(filePath)) {
+    if (!exists && initialContent === undefined) {
         return { ok: false, reason: `target file not found: ${filePath}` };
     }
 
-    const oldMd = await readRegularFile(filePath, 'utf8');
+    const oldMd = exists ? await readRegularFile(filePath, 'utf8') : initialContent!;
     const body = String(item.payload['content'] ?? '');
 
     if (!body) {
@@ -169,7 +171,10 @@ async function applyOne(
             syncedAt: new Date().toISOString(),
         });
 
-        if (!dryRun) await fs.writeFile(filePath, newMd, 'utf8');
+        if (!dryRun) {
+            if (!exists) await fs.ensureDir(path.dirname(filePath));
+            await fs.writeFile(filePath, newMd, { encoding: 'utf8', flag: exists ? 'w' : 'wx' });
+        }
 
         return { ok: true };
     } catch (err) {

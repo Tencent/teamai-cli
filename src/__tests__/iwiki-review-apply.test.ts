@@ -118,6 +118,51 @@ describe('iwiki review apply 闭环 e2e', () => {
         expect(item?.payload['content']).toContain('外部知识');
     });
 
+    it('creates the first reviewed import only on approval and keeps unapproved sections out (#2081)', async () => {
+        const doc = path.join(cwd, 'docs', 'team-codebase', 'external-knowledge.md');
+        await queueSections(cwd);
+        expect(await fs.pathExists(doc)).toBe(false);
+        const items = await loadPendingReview(cwd);
+        const first = items.find((item) => item.target.section === 'business-api')!;
+        const rejected = items.find((item) => item.target.section === 'glossary')!;
+
+        await reviewCmd({ idArg: first.id, apply: true, dryRun: true });
+        expect(await fs.pathExists(path.dirname(doc))).toBe(false);
+        expect(await loadPendingReview(cwd)).toHaveLength(3);
+
+        await reviewCmd({ idArg: rejected.id, reject: true });
+        expect(await fs.pathExists(doc)).toBe(false);
+        await reviewCmd({ idArg: first.id, apply: true });
+        expect(await fs.pathExists(doc)).toBe(true);
+        const created = await fs.readFile(doc, 'utf8');
+        expect(created).toContain('已更新的业务接口内容');
+        expect(created).not.toContain('已更新的外部知识内容');
+        expect(created).not.toContain('alpha');
+
+        await fs.appendFile(doc, '\nMember note\n');
+        await reviewCmd({ allApply: true, maxRisk: 'high' });
+        const completed = await fs.readFile(doc, 'utf8');
+        expect(completed).toContain('已更新的业务接口内容');
+        expect(completed).toContain('已更新的外部知识内容');
+        expect(completed).toContain('Member note');
+        expect(completed).not.toContain('alpha');
+        expect(await loadPendingReview(cwd)).toEqual([]);
+    });
+
+    it('does not overwrite a destination created while approval is preparing its directory', async () => {
+        const doc = path.join(cwd, 'docs', 'team-codebase', 'external-knowledge.md');
+        await queueSections(cwd);
+        const item = (await loadPendingReview(cwd))[0];
+        vi.spyOn(fs, 'ensureDir').mockImplementation(async (directory) => {
+            await fs.mkdir(directory, { recursive: true });
+            if (directory === path.dirname(doc)) await fs.writeFile(doc, 'Created by a member');
+        });
+
+        await reviewCmd({ idArg: item.id, apply: true });
+        expect(await fs.readFile(doc, 'utf8')).toBe('Created by a member');
+        expect(await loadPendingReview(cwd)).toHaveLength(3);
+    });
+
     it('reviewCmd(apply:true) 成功 patch --from-iwiki 锚点并写入 body', async () => {
         // 1. 准备带 --from-iwiki 锚点的 external-knowledge.md
         const ekDir = path.join(cwd, 'docs', 'team-codebase');
