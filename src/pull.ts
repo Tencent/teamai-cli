@@ -2023,7 +2023,8 @@ async function pullForScope(
   if (!freshConfig) {
     if (result) { result.resourceSyncFailed = true; result.delivery = 'failed'; }
 
-    log.warn(`[${scopeLabel}] Team config (teamai.yaml) not found. Skipping.`);
+    log.error(`[${scopeLabel}] Team config (teamai.yaml) is missing or cannot be read. Fix it in the team repo and retry.`);
+    process.exitCode = 1;
 
     return;
   }
