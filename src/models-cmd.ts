@@ -517,8 +517,10 @@ export async function modelsConfigure(reference: string, options: ConfigureOptio
 
     // New models join the first group's protocols; new protocols apply to
     // every model unless --model narrows them.
-    for (const protocol of protocols.length ? protocols : ref.profile.model_groups[0].protocols) {
-      groups = addModelProtocol(groups, models.length ? models : profileModels(ref.profile), protocol);
+    if (options.protocol || options.model) {
+      for (const protocol of protocols.length ? protocols : ref.profile.model_groups[0].protocols) {
+        groups = addModelProtocol(groups, models.length ? models : profileModels(ref.profile), protocol);
+      }
     }
 
     const candidate: ProfileRef['profile'] = { ...ref.profile, model_groups: groups };
