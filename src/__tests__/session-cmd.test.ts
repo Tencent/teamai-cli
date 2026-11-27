@@ -484,6 +484,17 @@ describe('session push --all', () => {
     );
   }
 
+  it.each(['2junk', '0', '9007199254740992'])('rejects an invalid push limit %s before reading sessions', async (limit) => {
+    const adapter = fakeAdapter(manySessions(2));
+
+    await runSession('push', '--source', 'fakeplat', '--repo-root', repoRoot, '--limit', limit);
+
+    expect(process.exitCode).toBe(1);
+    expect(errored.join(' ')).toContain('--limit must be a positive safe integer');
+    expect(adapter.listConversations).not.toHaveBeenCalled();
+    expect(adapter.readSession).not.toHaveBeenCalled();
+  });
+
   it('ignores --limit and pushes every workspace session', async () => {
     const adapter = fakeAdapter(manySessions(8));
     mocks.remotes['/proj/beta'] = 'https://gitlab.com/team/beta.git';

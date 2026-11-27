@@ -427,6 +427,16 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         }
       }
 
+      const limitInput = String(opts.limit).trim();
+      const limit = /^[+]?\d+$/.test(limitInput) ? Number(limitInput) : NaN;
+
+      if (!opts.all && (!Number.isSafeInteger(limit) || limit < 1)) {
+        console.error('Error: --limit must be a positive safe integer.');
+        process.exitCode = 1;
+
+        return;
+      }
+
       const workCwd = opts.cwd ?? process.cwd();
       const archive = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun() });
       const { root: repoRoot, reports, legacy } = archive;
@@ -436,9 +446,6 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
       const metas = await listPushSource(source, workCwd, Boolean(opts.all));
 
       if (!metas) return;
-      const limitRaw = parseInt(opts.limit, 10);
-      // Non-numeric / 0 / negative all fall back to the default. slice(0, -1)'s negative semantics would quietly drop one result
-      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 5;
       const sorted = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
       const selected = opts.all ? sorted : sorted.slice(0, limit);
 
