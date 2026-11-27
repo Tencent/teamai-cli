@@ -89,6 +89,21 @@ describe('the team hooks a bridge runs', () => {
     });
   });
 
+  it('Cursor reads a UserPromptSubmit block as continue false for the prompt', async () => {
+    install('cursor', { UserPromptSubmit: [
+      entry('echo "Remove the secret before submitting" >&2; exit 2', '*', 'no-secrets'),
+      entry('echo "Sprint 42 ends Friday."', '*', 'sprint'),
+    ] });
+    const reply = await runBridgedTeamHooks('cursor', 'UserPromptSubmit', JSON.stringify({
+      cwd: project, prompt: 'deploy with token=secret',
+    }));
+    expect(reply).toEqual({
+      code: 0,
+      stdout: JSON.stringify({ continue: false, user_message: 'Remove the secret before submitting' }),
+      stderr: '',
+    });
+  });
+
   it('Cursor gets PostToolUse context and updated input in its top-level fields', async () => {
     const context = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'Lint is still running.' } });
     const rewrite = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: { file_path: 'src/fixed.ts' } } });

@@ -452,7 +452,7 @@ hook 能做什么取决于事件。下表是每个运行该事件的工具都做
       runs in: claude, cursor, omp, opencode
 ```
 
-Cursor 的团队 hook 也由 teamai 的 bridge 来跑：`~/.cursor/hooks.json` 每个事件只有一条 dispatcher，teamai 会把 Cursor 的 `Shell`、`StrReplace` 和 `ApplyPatch` 映射到 Claude 的 matcher。OpenCode、Oh My Pi、Pi、OpenClaw、Kiro、Hermes 和 Antigravity 没有 Claude Code 那样的 hook 文件，它们的 hook 也由 teamai 来跑，payload 和工具名都按 Claude Code 的（`matcher: Bash` 能匹配 OpenCode 的 `bash` 和 Hermes 的 `terminal`）。在这些工具里：
+Cursor 的团队 hook 也由 teamai 的 bridge 来跑：`~/.cursor/hooks.json` 每个事件只有一条 dispatcher，teamai 会把 Cursor 的 `Shell`、`StrReplace` 和 `ApplyPatch` 映射到 Claude 的 matcher。`UserPromptSubmit` hook 拦下输入时，teamai 会返回 Cursor 的 `continue: false`，继续拒绝这次输入。OpenCode、Oh My Pi、Pi、OpenClaw、Kiro、Hermes 和 Antigravity 没有 Claude Code 那样的 hook 文件，它们的 hook 也由 teamai 来跑，payload 和工具名都按 Claude Code 的（`matcher: Bash` 能匹配 OpenCode 的 `bash` 和 Hermes 的 `terminal`）。在这些工具里：
 
 - 只跑 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse` 和 `Stop`。其他事件上的团队 hook，pull 会警告。
 - `UserPromptSubmit` 能加上下文，但拦不下这次输入。

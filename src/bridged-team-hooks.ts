@@ -31,7 +31,7 @@ type ReplyFormat =
   | 'kiro'
   /** Hermes's shell-hook contract: `{"decision":"block","reason"}` or `{"context": text}` on stdout. */
   | 'hermes'
-  /** Cursor's hook contract: `permission: "deny"`, `additional_context`, or `updated_input`. */
+  /** Cursor's hook contract: `permission: "deny"`, `continue: false`, `additional_context`, or `updated_input`. */
   | 'cursor';
 
 interface Bridge {
@@ -296,12 +296,18 @@ function jsonDecisionOf(json: HookOutput, id: string): Decision {
   return updatedInput.success ? { kind: 'rewrite', input: updatedInput.data } : { kind: 'none' };
 }
 
-/** The decisions merged for `event`: the first block of a PreToolUse, the contexts of a SessionStart or UserPromptSubmit. */
-function merge(event: string, decisions: readonly Decision[], contextEvents: ReadonlySet<string>): Decision {
+/** The decisions merged for `event`: blocks where the host supports them, and prompt/session contexts. */
+function merge(format: ReplyFormat, event: string, decisions: readonly Decision[], contextEvents: ReadonlySet<string>): Decision {
   if (event === 'PreToolUse') {
     return decisions.find((d) => d.kind === 'block')
       ?? decisions.find((d) => d.kind === 'rewrite')
       ?? { kind: 'none' };
+  }
+
+  if (format === 'cursor' && event === 'UserPromptSubmit') {
+    const block = decisions.find((d) => d.kind === 'block');
+
+    if (block) return block;
   }
 
   if (!contextEvents.has(event)) return { kind: 'none' };
@@ -317,7 +323,7 @@ export interface BridgeReply {
   stderr: string;
 }
 
-function render(format: ReplyFormat, decision: Decision, stderr: string): BridgeReply {
+function render(format: ReplyFormat, event: string, decision: Decision, stderr: string): BridgeReply {
   // Hermes shows a hook's stderr only for a nonzero exit. It still reads stdout
   // after exit 1, which blocks nothing on the fail-open entries teamai writes.
   const code = format === 'hermes' && stderr.trim() ? 1 : 0;
@@ -330,6 +336,14 @@ function render(format: ReplyFormat, decision: Decision, stderr: string): Bridge
         case 'kiro': return { code: 2, stdout: '', stderr: `${stderr}${decision.reason}\n` };
         case 'hermes': return { code, stdout: JSON.stringify({ decision: 'block', reason: decision.reason }), stderr };
         case 'cursor': {
+          if (event === 'UserPromptSubmit') {
+            return {
+              code: 0,
+              stdout: JSON.stringify({ continue: false, user_message: decision.reason }),
+              stderr,
+            };
+          }
+
           return {
             code: 0,
             stdout: JSON.stringify({
@@ -396,7 +410,7 @@ async function runEvent(tool: string, event: string, teamHooks: TeamHooks, host:
   })));
 
   const decided = runs.map(({ hook, run }) => ({ hook, run, decision: decisionOf(event, run, hook.id, contextEvents) }));
-  const decision = merge(event, decided.map((d) => d.decision), contextEvents);
+  const decision = merge(bridge.reply, event, decided.map((d) => d.decision), contextEvents);
   let stderr = '';
 
   for (const d of decided) {
@@ -422,7 +436,7 @@ export async function runBridgedTeamHooks(tool: string, event: string, raw: stri
   if (!bridge) throw new Error(`${tool} does not run team hooks through teamai's bridge`);
   const read = await readTeamHooks(tool);
 
-  if (read.kind === 'invalid') return render(bridge.reply, { kind: 'none' }, `${invalidFileMessage(tool, read.error)}\n`);
+  if (read.kind === 'invalid') return render(bridge.reply, event, { kind: 'none' }, `${invalidFileMessage(tool, read.error)}\n`);
   // Hermes runs SessionStart's context on the first turn's pre_llm_call: its on_session_start ignores output.
   let host: HookStdin = {};
 
@@ -446,5 +460,5 @@ export async function runBridgedTeamHooks(tool: string, event: string, raw: stri
     stderr += ran.stderr;
   }
 
-  return render(bridge.reply, merge(event, decisions, bridge.contextEvents ?? CONTEXT_EVENTS), stderr);
+  return render(bridge.reply, event, merge(bridge.reply, event, decisions, bridge.contextEvents ?? CONTEXT_EVENTS), stderr);
 }

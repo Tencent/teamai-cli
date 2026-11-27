@@ -461,7 +461,7 @@ What a hook can do depends on its event. Every tool that runs the event does thi
       runs in: claude, cursor, omp, opencode
 ```
 
-Cursor team hooks run through teamai's bridge too: `~/.cursor/hooks.json` gets one dispatcher entry per event, and teamai maps Cursor's `Shell`, `StrReplace`, and `ApplyPatch` names to the Claude matchers. OpenCode, Oh My Pi, Pi, OpenClaw, Kiro, Hermes, and Antigravity have no Claude Code hook file. Their hooks also run through teamai, with Claude Code's payload and tool names (`matcher: Bash` matches OpenCode's `bash` and Hermes's `terminal`). There:
+Cursor team hooks run through teamai's bridge too: `~/.cursor/hooks.json` gets one dispatcher entry per event, and teamai maps Cursor's `Shell`, `StrReplace`, and `ApplyPatch` names to the Claude matchers. A `UserPromptSubmit` hook that blocks is returned as Cursor's `continue: false` response, so the prompt stays rejected. OpenCode, Oh My Pi, Pi, OpenClaw, Kiro, Hermes, and Antigravity have no Claude Code hook file. Their hooks also run through teamai, with Claude Code's payload and tool names (`matcher: Bash` matches OpenCode's `bash` and Hermes's `terminal`). For those tools:
 
 - Only `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, and `Stop` run. Pull warns about a team hook on any other event.
 - `UserPromptSubmit` adds context but cannot block the prompt.

@@ -823,6 +823,18 @@ export type ManagedHookRecord = {
 /** ~/.teamai/managed-hooks.json — team hooks injected per tool. */
 export type ManagedHooksManifest = Record<string, ManagedHookRecord[]>;
 
+/** Remove the records owned by `tool`'s Claude-format bridge, and the manifest once nothing else needs it. */
+export async function forgetBridgedTeamHookManifest(manifestPath: string, tool: string): Promise<void> {
+  const manifest = await readManifest(manifestPath);
+  const manifestKey = tool === 'cursor' ? `${tool}:bridge` : tool;
+
+  if (!Object.hasOwn(manifest, manifestKey)) return;
+  delete manifest[manifestKey];
+
+  if (Object.keys(manifest).length === 0) await rm(expandHome(manifestPath), { force: true });
+  else await writeJson(expandHome(manifestPath), manifest);
+}
+
 /**
  * Install the built-in hooks alone, for a team set that did not resolve:
  * `with-overrides` in each tool missing one of them, applying the given
