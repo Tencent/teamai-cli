@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { ResourceHandler, type ScanForPushOptions } from './base.js';
 import { RESOURCE_LAYOUTS, Resources, type ResourceDiagnostic, type TeamItem } from './resolver.js';
 import { TeamSkillSource } from './team-skill-source.js';
+import { declaredDirectories } from '../namespace-resolver.js';
 import type { CopyOrigin, PendingPush, ResourceItem, ResourceItemStatus, DeliveryTarget, TeamaiConfig, LocalConfig } from '../types.js';
 import { getPushignorePath, resolveBaseDir, scopedToolPaths, SELF_KNOWLEDGE_SCAN_KEY } from '../types.js';
 import { isDraft, listDirs, listFilesRecursive, pathExists, copyDir, remove, pruneEmptyDirs, dirContentEqual, fileContentEqual, fileHash, getDirLatestMtime, readFileSafe, writeFile } from '../utils/fs.js';
@@ -943,21 +944,40 @@ export async function readTeamSkillIndex(repoPath: string, scopedNamespaces: str
     // A namespace skill replaces the root skill of its name, as pull delivers
     // it (#707), so an edit goes back to the namespace; the first namespace
     // keeps a name.
+    //
+    // Ownership comes from the whole directory listing, one directory per
+    // declaration and the exact spelling first, exactly as pull resolves it. Per
+    // declaration rather than per skill, so a directory that holds no skill this
+    // member would receive still owns its name and does not hand it to a folded
+    // sibling: a locally authored skill of the stem must not resolve to the
+    // sibling's team copy and overwrite it.
+    const skillDirs = await listDirs(path.join(repoPath, 'skills'));
+    // Every directory some declaration owns, for the inactive pass below: a
+    // folded sibling that lost its declaration is INACTIVE, not absent. Keeping
+    // it in `allTeamSkills` and `blockedSkills` is what lets an edit of a copy
+    // delivered before the exact directory appeared still resolve its origin.
+    const ownedDirs = declaredDirectories(scopedNamespaces, skillDirs);
+
     for (const namespace of scopedNamespaces) {
+      const owned = declaredDirectories([namespace], skillDirs);
+
       for (const skill of skills) {
-        if (skill.namespace !== namespace) continue;
-        const copy = { dir: skill.source, namespace };
+        if (skill.namespace === undefined || !owned.has(skill.namespace)) continue;
+        // The directory the file is actually in, not the declared spelling: a
+        // declaration `Frontend` served by `skills/frontend/` must push back to
+        // `skills/frontend/`, or the edit creates a second directory beside it.
+        const copy = { dir: skill.source, namespace: skill.namespace };
         addTeamSkill(skill.name, copy);
 
         if (!teamSkills.get(skill.name)?.namespace) teamSkills.set(skill.name, copy);
       }
     }
 
-    // A shared-root or active skill of the name does not decide alone: the copy may have come from here (#1020).
+    // A shared-root or owned skill of the name does not decide alone: the copy may have come from here (#1020).
     for (const skill of skills) {
       const { namespace } = skill;
 
-      if (namespace === undefined || scopedNamespaces.includes(namespace)) continue;
+      if (namespace === undefined || ownedDirs.has(namespace)) continue;
       const copy = { dir: skill.source, namespace };
       addTeamSkill(skill.name, copy);
       blockedSkills.set(skill.name, [...blockedSkills.get(skill.name) ?? [], copy]);

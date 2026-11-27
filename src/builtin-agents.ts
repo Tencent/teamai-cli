@@ -64,7 +64,7 @@ export async function builtinAgentsReplacedByTeam(
   localConfig: LocalConfig,
 ): Promise<ReadonlyMap<string, ReadonlySet<string>>> {
   // Lazy: resources/agents.ts imports this module.
-  const [{ buildRolePullContext, resolveTeamAgents }, { getHandler }, { selectAgentsForDirectory }, { loadStateForScope }] = await Promise.all([
+  const [{ buildRolePullContext, resolveTeamAgents }, { getHandler }, { ownedAgentDirectories, selectAgentsForDirectory }, { loadStateForScope }] = await Promise.all([
     import('./resources/desired.js'), import('./resources/index.js'), import('./resources/agents.js'), import('./config.js'),
   ]);
 
@@ -72,12 +72,14 @@ export async function builtinAgentsReplacedByTeam(
   const desired = await resolveTeamAgents(teamConfig, localConfig, roleContext);
   const handler = getHandler('agents');
   const held = desired.kind === 'conflict';
+  const agentNs = roleContext?.activeNamespaces.agents ?? null;
 
   const items = held
     ? selectAgentsForDirectory(
       await handler.scanTeamForPull(teamConfig, localConfig),
-      roleContext?.activeNamespaces.agents ?? null,
+      agentNs,
       (await loadStateForScope(localConfig)).placedAgents,
+      await ownedAgentDirectories(localConfig, agentNs),
     )
     : desired.items;
 

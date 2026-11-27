@@ -13,6 +13,89 @@
  */
 
 import type { ResourceItem } from './types.js';
+import { caseFoldKey } from './manifest-schema.js';
+
+/**
+ * Whether `namespace` is one of the `active` namespaces.
+ *
+ * A declared namespace names its directory case-folded (see
+ * `namespaced-entries.namespaceDir`), so `env: [Checkout]` is served by
+ * `env/Checkout/` on every filesystem, not only the case-insensitive ones. The
+ * same rule holds for every resource type, so a manifest that declares
+ * `Frontend` must reach a `skills/frontend/` directory on Linux too. Matching
+ * exactly would drop those resources silently, and only on a case-sensitive
+ * filesystem, which is why it survives local testing on Windows and macOS.
+ *
+ * An exact match wins over a case-folded one, mirroring `namespaceDir`: with
+ * both `Checkout/` and `checkout/` present, the declared spelling names its own
+ * directory.
+ */
+export function isActiveNamespace(active: readonly string[], namespace: string): boolean {
+  if (active.includes(namespace)) return true;
+
+  const folded = caseFoldKey(namespace);
+
+  return active.some((candidate) => caseFoldKey(candidate) === folded);
+}
+
+/**
+ * The position of `namespace` in `active`, 1-based, or 0 when it is not active.
+ * The root has no namespace and ranks 0.
+ *
+ * An exact match wins over a case-folded one, so a declared spelling keeps its
+ * place in `active` order.
+ */
+export function activeNamespaceRank(active: readonly string[], namespace: string | null): number {
+  if (namespace === null) return 0;
+
+  const exact = active.indexOf(namespace);
+
+  if (exact >= 0) return exact + 1;
+
+  const folded = caseFoldKey(namespace);
+  const index = active.findIndex((candidate) => caseFoldKey(candidate) === folded);
+
+  return index < 0 ? 0 : index + 1;
+}
+
+/**
+ * The directory each active declaration actually owns among `directories`.
+ *
+ * `isActiveNamespace` answers whether a directory may be delivered at all; this
+ * answers which one directory a declaration names. The distinction matters when
+ * two directories differ only by case: `isActiveNamespace` accepts both, which
+ * would make them compete for one declaration and turn a delivery that used to
+ * succeed into a `two-namespaces` conflict. The exact spelling wins, as it does
+ * in `namespaced-entries.namespaceDir`, and the folded sibling is left out.
+ *
+ * A declaration no directory answers owns none, which is what `pull` already
+ * reports when it lists the namespace and finds nothing.
+ */
+export function declaredDirectories(
+  active: readonly string[],
+  directories: readonly string[],
+): Set<string> {
+  const present = new Set(directories);
+  // Sorted so which folded sibling a declaration claims cannot depend on the
+  // order the filesystem happened to list them in.
+  const sorted = [...present].sort(compareStrings);
+  const owned = new Set<string>();
+
+  for (const declared of active) {
+    if (present.has(declared)) {
+      owned.add(declared);
+
+      continue;
+    }
+
+    const folded = caseFoldKey(declared);
+    const match = sorted.find((directory) => caseFoldKey(directory) === folded);
+
+    if (match !== undefined) owned.add(match);
+  }
+
+  return owned;
+}
 
 /** One named item read from the team repo. `namespace: null` is the root. */
 export interface NamespaceCandidate<T> {
@@ -64,7 +147,7 @@ export function resolveNamespacedItems<T>(
   candidates: readonly NamespaceCandidate<T>[],
   active: readonly string[],
 ): NamespaceResolution<T> {
-  const rank = (namespace: string | null): number => (namespace === null ? 0 : active.indexOf(namespace) + 1);
+  const rank = (namespace: string | null): number => activeNamespaceRank(active, namespace);
 
   const byPlace = (a: NamespaceCandidate<T>, b: NamespaceCandidate<T>): number => (
     rank(a.namespace) - rank(b.namespace) || compareStrings(a.source, b.source)
@@ -72,8 +155,16 @@ export function resolveNamespacedItems<T>(
 
   const byName = new Map<string, NamespaceCandidate<T>[]>();
 
+  // One directory per declaration, exact spelling first: two directories that
+  // differ only by case must not both answer for one declaration, or the item
+  // they share would be reported as a `two-namespaces` conflict instead of
+  // delivering the exact copy, which is what happened before folding matched.
+  const owned = declaredDirectories(active, candidates.flatMap((candidate) => (
+    candidate.namespace === null ? [] : [candidate.namespace]
+  )));
+
   for (const candidate of candidates) {
-    if (candidate.namespace !== null && !active.includes(candidate.namespace)) continue;
+    if (candidate.namespace !== null && !owned.has(candidate.namespace)) continue;
     const group = byName.get(candidate.name);
 
     if (group) group.push(candidate);
@@ -116,7 +207,7 @@ export function resolveNamespacedItems<T>(
  * first a reader walking root, then `active` in order, would meet; then by name.
  */
 export function firstConflict<T>(conflicts: readonly NamespaceConflict<T>[], active: readonly string[]): NamespaceConflict<T> | undefined {
-  const rank = (namespace: string | null): number => (namespace === null ? 0 : active.indexOf(namespace) + 1);
+  const rank = (namespace: string | null): number => activeNamespaceRank(active, namespace);
 
   return [...conflicts].sort((a, b) => rank(a.second.namespace) - rank(b.second.namespace) || compareStrings(a.name, b.name))[0];
 }
@@ -143,8 +234,14 @@ export function resolveRootOverrides<T>(
     candidate.namespace === null ? [[candidate.name, candidate.source] as const] : []
   )));
 
+  // One directory per declaration here too: a folded sibling is not delivered,
+  // so it must not report itself as replacing a root item.
+  const owned = declaredDirectories(active, candidates.flatMap((candidate) => (
+    candidate.namespace === null ? [] : [candidate.namespace]
+  )));
+
   return candidates.flatMap((candidate) => {
-    const root = candidate.namespace !== null && active.includes(candidate.namespace)
+    const root = candidate.namespace !== null && owned.has(candidate.namespace)
       ? roots.get(candidate.name)
       : undefined;
 

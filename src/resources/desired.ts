@@ -8,10 +8,11 @@
 import path from 'node:path';
 import { loadStateForScope, loadTeamConfig } from '../config.js';
 import {
-  itemCandidate, resolveNamespacedItems, resolveRootOverrides,
+  itemCandidate, declaredDirectories, isActiveNamespace, resolveNamespacedItems, resolveRootOverrides,
   type NamespaceCandidate, type NamespaceConflict, type NamespaceOverride,
 } from '../namespace-resolver.js';
 import { placedResourcePath } from '../push-namespaces.js';
+import { namespaceDir } from '../namespaced-entries.js';
 import { resolveResourceNamespaces, usesMemberFilters } from '../resource-namespaces.js';
 import { activeRoleIds, loadRolesManifestIfPresent, type ResourceNamespaces } from '../roles.js';
 import { existingSharedInstructionDirs } from '../shared-instruction-source.js';
@@ -22,7 +23,7 @@ import { filterByTags, loadTagsConfig } from '../utils/tags.js';
 import { warnOnce } from '../utils/warn-once.js';
 import { deliveredMembers, unionMemberItems } from '../workspace-children.js';
 import { RECALL_AGENT } from '../builtin-agents.js';
-import { resolveAgentsForDirectory } from './agents.js';
+import { ownedAgentDirectories, resolveAgentsForDirectory } from './agents.js';
 import { resolveDocsForDirectory } from './docs.js';
 import { getHandler } from './index.js';
 import { readTeamSkills, teamSkillItem } from './skills.js';
@@ -48,22 +49,38 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
 
   if (!resolved) return null;
   const { activeNamespaces, allSkillNamespaces, inactiveDocsNamespaces } = resolved;
-  const inactiveSkillNamespaces = [...allSkillNamespaces].filter((namespace) => !activeNamespaces.skills.includes(namespace));
+  const inactiveSkillNamespaces = [...allSkillNamespaces].filter((namespace) => !isActiveNamespace(activeNamespaces.skills, namespace));
   const activeSkillNames = new Set<string>();
   const inactiveSkillNames = new Set<string>();
   const inactiveSkillSources = new Map<string, string>();
   const { skills } = await readTeamSkills(localConfig.repo.localPath);
 
-  // A declared namespace that is a file cannot be read: listing it throws, and pull stops instead of delivering it as empty.
-  for (const namespace of [...activeNamespaces.skills, ...inactiveSkillNamespaces]) await listDirs(path.join(localConfig.repo.localPath, 'skills', namespace));
+  // The directories on disk, so a declaration that names its directory
+  // case-folded (`Frontend` for `skills/frontend/`) finds the directory it
+  // actually has. Listing a directory that does not exist throws, and pull
+  // stops instead of delivering the namespace as empty.
+  const skillDirs = await listDirs(path.join(localConfig.repo.localPath, 'skills'));
 
-  for (const namespace of activeNamespaces.skills) {
-    for (const skill of skills) if (skill.namespace === namespace) activeSkillNames.add(skill.name);
+  for (const namespace of [...activeNamespaces.skills, ...inactiveSkillNamespaces]) {
+    await listDirs(path.join(localConfig.repo.localPath, 'skills', namespaceDir(skillDirs, namespace)));
+  }
+
+  // The directory each active declaration owns, exact spelling first: with both
+  // `skills/Frontend/` and `skills/frontend/` present, `Frontend` owns the
+  // former and the folded sibling is neither delivered nor counted as active.
+  const activeSkillDirs = new Set(
+    activeNamespaces.skills.map((namespace) => namespaceDir(skillDirs, namespace)),
+  );
+
+  for (const skill of skills) {
+    if (skill.namespace !== undefined && activeSkillDirs.has(skill.namespace)) activeSkillNames.add(skill.name);
   }
 
   for (const namespace of inactiveSkillNamespaces) {
+    const directory = namespaceDir(skillDirs, namespace);
+
     for (const skill of skills) {
-      if (skill.namespace !== namespace) continue;
+      if (skill.namespace !== directory) continue;
       inactiveSkillNames.add(skill.name);
 
       // Record the source so cleanup can verify the deployed copy is
@@ -81,16 +98,25 @@ export async function buildRolePullContext(localConfig: LocalConfig): Promise<Ro
  * Filter rules by the user's active knowledge namespaces.
  *
  * Rules whose name starts with a namespace path (e.g. "common/coding-style")
- * are filtered: only those in activeKnowledgeNamespaces pass through.
+ * are filtered: only those in a directory the namespace owns pass through.
  * Root-level rules (no "/" in name) are always included.
+ *
+ * `directories` is the rule directories on disk, read by the caller. Ownership
+ * is resolved from it rather than from the rules alone, because a
+ * `rules/Frontend/` holding no rule still owns the declaration: deriving the set
+ * from the rules found would let `rules/frontend/` deliver its instructions in
+ * its place.
  *
  * When knowledgeNamespaces is null (no role configured), all rules pass through.
  */
 export function filterRulesByKnowledgeNamespaces(
   rules: ResourceItem[],
   knowledgeNamespaces: string[] | null,
+  directories: readonly string[],
 ): ResourceItem[] {
   if (!knowledgeNamespaces) return rules;
+
+  const owned = declaredDirectories(knowledgeNamespaces, directories);
 
   return rules.filter((rule) => {
     const slashIndex = rule.name.indexOf('/');
@@ -98,7 +124,7 @@ export function filterRulesByKnowledgeNamespaces(
     if (slashIndex === -1) return true; // root-level rule, always include
     const namespace = rule.name.slice(0, slashIndex);
 
-    return knowledgeNamespaces.includes(namespace);
+    return owned.has(namespace);
   });
 }
 
@@ -157,6 +183,7 @@ export function filterAgentsByNamespaces(
   agents: ResourceItem[],
   agentNamespaces: string[] | null,
   placedAgents?: Record<string, string>,
+  owned?: ReadonlySet<string>,
 ): DesiredItems {
   if (agentNamespaces === null) {
     // Every agent ships, so each namespace counts as active here, ranked in
@@ -178,7 +205,7 @@ export function filterAgentsByNamespaces(
     return { kind: 'resolved', items: agents, overrides: [] };
   }
 
-  const resolution = resolveAgentsForDirectory(agents, agentNamespaces, placedAgents);
+  const resolution = resolveAgentsForDirectory(agents, agentNamespaces, placedAgents, owned);
 
   if (resolution.kind === 'conflict') return { kind: 'conflict', type: 'agent', conflict: resolution };
   const delivered = new Set(resolution.items.map((item) => item.value));
@@ -215,7 +242,21 @@ export async function scanRoleAwareSkills(
   candidates?: readonly ResourceItem[],
 ): Promise<{ kind: 'resolved'; items: ResourceItem[] } | DeliveryConflict> {
   const skills = candidates ?? await teamSkills(localConfig);
-  const items = namespaces.skills.flatMap((namespace) => skills.filter((item) => item.namespace === namespace));
+  // A declared namespace names its directory case-folded, so `skills: [Frontend]`
+  // reaches a `skills/frontend/` directory on a case-sensitive filesystem too.
+  // The exact spelling still wins when both exist, so the folded sibling is left
+  // out rather than competing with it for the one declaration.
+  //
+  // Ownership is read from the directory listing, not only from the skills found
+  // in it: a `skills/Frontend/` holding no deliverable SKILL.md still owns the
+  // `Frontend` declaration, and must not hand it to the folded sibling that does
+  // have one. The skills themselves are added too, for a candidate list supplied
+  // without a listing.
+  const listed = await listDirs(path.join(localConfig.repo.localPath, 'skills'));
+  const named = skills.flatMap((item) => (item.namespace === undefined ? [] : [item.namespace]));
+  const directories = [...new Set([...listed, ...named])];
+  const owned = declaredDirectories(namespaces.skills, directories);
+  const items = skills.filter((item) => item.namespace !== undefined && owned.has(item.namespace));
   const resolution = resolveNamespacedItems(items.map(itemCandidate), namespaces.skills);
 
   if (resolution.kind === 'conflict') return { kind: 'conflict', type: 'skill', conflict: resolution };
@@ -292,7 +333,7 @@ async function sharedFirst(repoPath: string, items: readonly ResourceItem[]): Pr
     skipped: item.relativePath,
     kept: winner.relativePath,
     receivingRoles: roles
-      .filter(({ resources: { skills } }) => namespacesOf(item.name).every((namespace) => skills.includes(namespace) === (namespace === item.namespace)))
+      .filter(({ resources: { skills } }) => namespacesOf(item.name).every((namespace) => isActiveNamespace(skills, namespace) === (namespace === item.namespace)))
       .map((role) => role.id),
   }));
 
@@ -309,8 +350,18 @@ async function roleAllowedSkills(teamConfig: TeamaiConfig, localConfig: LocalCon
   const allowed = new Set(roles.length === ids.length ? roles.flatMap((role) => role.resources.skills) : []);
   const skipped = new Set<string>();
 
+  // Ownership, not folding: `required` and `allowed` are declarations while
+  // `item.namespace` is a directory read from disk. A folded sibling no
+  // declaration owns must not count as required (the skill would be skipped) nor
+  // as allowed (it would be kept) on another namespace's behalf.
+  const skillDirs = await listDirs(path.join(localConfig.repo.localPath, 'skills'));
+  const requiredOwned = declaredDirectories([...required], skillDirs);
+  const allowedOwned = declaredDirectories([...allowed], skillDirs);
+
   const eligible = items.filter((item) => {
-    if (!item.namespace || !required.has(item.namespace) || allowed.has(item.namespace)) return true;
+    if (!item.namespace
+      || !requiredOwned.has(item.namespace)
+      || allowedOwned.has(item.namespace)) return true;
     skipped.add(item.namespace);
 
     return false;
@@ -608,9 +659,10 @@ export async function resolveDesiredRules(
 
   // The tag channel first: only a namespace rule this member receives
   // replaces the root rule of its name.
-  const { included, skipped } = filterByTags(
-    filterRulesByKnowledgeNamespaces(allItems, knowledgeNs), tagsConfig, usesMemberFilters(localConfig) ? localConfig.subscribedTags : undefined, 'rules',
-  );
+  const ruleDirs = knowledgeNs ? await listDirs(path.join(localConfig.repo.localPath, 'rules')) : [];
+  const namespaced = filterRulesByKnowledgeNamespaces(allItems, knowledgeNs, ruleDirs);
+  const subscribed = usesMemberFilters(localConfig) ? localConfig.subscribedTags : undefined;
+  const { included, skipped } = filterByTags(namespaced, tagsConfig, subscribed, 'rules');
 
   if (!knowledgeNs) return { items: included, overrides: [], replaced: [], skippedByTags: skipped.length };
 
@@ -724,11 +776,13 @@ export async function resolveTeamAgents(
   if (members) return resolveWorkspaceAgents(teamConfig, members);
   const items = await getHandler('agents').scanTeamForPull(teamConfig, localConfig);
   const { placedAgents } = await loadStateForScope(localConfig);
+  const agentNs = roleContext ? roleContext.activeNamespaces.agents : null;
 
   return filterAgentsByNamespaces(
     items,
-    roleContext ? roleContext.activeNamespaces.agents : null,
+    agentNs,
     placedAgents,
+    await ownedAgentDirectories(localConfig, agentNs),
   );
 }
 
