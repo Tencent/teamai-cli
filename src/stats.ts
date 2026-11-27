@@ -2,9 +2,9 @@ import { readSessionOwnerState, type SessionOwnerState } from './session-owners.
 import path from 'node:path';
 import { readUsageEvents } from './usage-tracker.js';
 import { readFileSafe } from './utils/fs.js';
-import { resolveConfigForDir } from './config.js';
+import { resolveConfigForDir, hasUserScopeInstall, throwMissingOrInvalid, BROKEN_CONFIG_ADVICE } from './config.js';
 import { readEvents, aggregateSessionMetrics, memberEvents } from './dashboard-collector.js';
-import { parseUserStats } from './types.js';
+import { getUserConfigPath, parseUserStats } from './types.js';
 import { totalTokens, addTokenUsage, emptyTokenUsage } from '@teamai/tool-core/tokens';
 import { attributeByRepo, timeAnalytics, renderHourSparkline } from './session-analytics.js';
 import { formatTokenCount } from './digest.js';
@@ -255,7 +255,13 @@ export async function showStats(options: ShowStatsOptions = {}): Promise<void> {
   // a directory without teamai has no usage of its own (#748).
   const dryRun = !!options.dryRun;
   // A read: loaded as `status` and `list` load it, never migrated (#972).
-  const config = await resolveConfigForDir(undefined, undefined, { dryRun: true, suppressMigrationNotice: !dryRun });
+  let scopeProblem: string | undefined;
+  const config = await resolveConfigForDir(undefined, (file, error) => { scopeProblem = `${file}: ${error}`; }, { dryRun: true, suppressMigrationNotice: !dryRun });
+
+  if (scopeProblem) throw new Error(`${scopeProblem}. ${BROKEN_CONFIG_ADVICE}`);
+
+  if (!config && await hasUserScopeInstall()) await throwMissingOrInvalid(getUserConfigPath());
+
   const events = config ? await readUsageEvents(config) : [];
   const localStats = aggregateUsage(events);
   const reported = await loadReportedStats(dryRun);
