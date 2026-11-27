@@ -270,6 +270,16 @@ describe('tags list', () => {
     writeFileSync(path.join(dir, 'SKILL.md'), '# skill');
   }
 
+  it('warns when a subscribed tag names nothing the team tags today', async () => {
+    writeFileSync(path.join(repoPath, 'tags.yaml'), 'skills:\n  a: [frontend]\nrules: {}\n');
+    useConfig({});
+
+    await tagsSubscribe(['frontend', 'nope'], {});
+
+    expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('No resource has "nope" yet'));
+    expect(log.warn).not.toHaveBeenCalledWith(expect.stringContaining('"frontend" yet'));
+  });
+
   it('counts untagged skills in both the flat and the namespace layout', async () => {
     addSkill('solo');
     addSkill('hai', 'a');
