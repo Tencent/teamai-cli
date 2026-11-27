@@ -3218,7 +3218,13 @@ async function runA2aControl(tool: A2aTool, refreshReport: boolean): Promise<boo
     if (tool === 'hermes' && !resolvedHermes) {
       if (resolvedHermes === undefined) return false;
 
-      if (refreshReport) await reportA2aWorkspace(config, tag, context, '', instanceId);
+      try {
+        if (refreshReport) await reportA2aWorkspace(config, tag, context, '', instanceId);
+      } finally {
+        const slug = A2A_PLUGIN_PREFIX + a2aPluginScope(config.endpoint, instanceId);
+
+        await removeA2aPluginsBeforeHandoff(config, slug);
+      }
 
       return true;
     }

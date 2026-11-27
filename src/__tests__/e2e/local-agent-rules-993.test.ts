@@ -165,6 +165,7 @@ describe('local-agent rules (#993)', () => {
   it.skipIf(process.platform === 'win32').each([
     { change: 'recorded', name: 'retries removal with recorded runtime and the original credential' },
     { change: 'legacy', name: 'retries removal with legacy runtime and the original credential' },
+    { change: 'backend', name: 'retries cleanup when Hermes switches to a non-local terminal' },
     { change: 'workspace', name: 'uninstalls in the old workspace before installing in a new one at the same revision' },
     { change: 'endpoint', name: 'rejects a failed endpoint replacement and retries teardown with the original source' },
     { change: 'primary', name: 'keeps HTTP init config and key on failed endpoint replacement' },
@@ -255,6 +256,32 @@ describe('local-agent rules (#993)', () => {
       const plugins = JSON.parse(installedState);
       expect(plugins[slug]?.ready).toBe(true);
       expect(installedState).not.toContain(token);
+
+      if (change === 'backend') {
+        const remoteEnv = { ...cliEnv, TERMINAL_ENV: 'docker', TERMINAL_CWD: home };
+        const stopped = await runCLI(control, remoteEnv, home);
+
+        expect(stopped.code, stopped.output).toBe(1);
+        expect(fs.readFileSync(marker, 'utf8')).toBe('attempt\n');
+        expect(JSON.parse(fs.readFileSync(pluginState, 'utf8'))).toHaveProperty(slug);
+
+        fs.writeFileSync(allowTeardown, '');
+        const retried = await runCLI(control.slice(0, -1), remoteEnv, home);
+
+        expect(retried.code, retried.output).toBe(0);
+        expect(fs.readFileSync(marker, 'utf8')).toBe('attempt\nattempt\n');
+        expect(fs.readFileSync(lifecycle, 'utf8')).toBe(`install ${workspace}\nuninstall ${workspace}\n`);
+        expect(JSON.parse(fs.readFileSync(pluginState, 'utf8'))).not.toHaveProperty(slug);
+        expect(fs.existsSync(pullState)).toBe(false);
+
+        const resumed = await runCLI(control, cliEnv, home);
+
+        expect(resumed.code, resumed.output).toBe(0);
+        await expect.poll(() => fs.readFileSync(lifecycle, 'utf8'), { timeout: 6000 })
+          .toBe(`install ${workspace}\nuninstall ${workspace}\ninstall ${workspace}\n`);
+
+        return;
+      }
 
       if (change === 'workspace') {
         const nextWorkspace = path.join(sandbox, 'next-workspace');
