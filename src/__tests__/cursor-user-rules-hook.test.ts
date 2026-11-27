@@ -12,12 +12,13 @@ describe('Cursor gets the user-scope rules from its session-start hook in a work
   let userRepo: string;
   let userConfig: LocalConfig;
 
-  const context = async (cwd: string, tool = 'cursor', config: LocalConfig | null = userConfig): Promise<string | null> => {
-    const registration = buildHandlerRegistry().find((r) => r.event === 'session-start' && r.handler.name === 'cursor-user-rules');
-    const output = await registration!.handler.execute({ hook_event_name: 'SessionStart', cwd }, tool, config);
+  const context = async (cwd: string, tool = 'cursor', config: LocalConfig | null = userConfig, event = 'session-start'): Promise<string | null> => {
+    const registration = buildHandlerRegistry().find((r) => r.event === event && r.handler.name === 'cursor-user-rules');
+    const hookEvent = event === 'prompt-submit' ? 'beforeSubmitPrompt' : 'SessionStart';
+    const output = await registration!.handler.execute({ hook_event_name: hookEvent, cwd }, tool, config);
     if (output === null) return null;
     const parsed = JSON.parse(String(output)) as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
-    expect(parsed.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    expect(parsed.hookSpecificOutput.hookEventName).toBe(event === 'prompt-submit' ? 'UserPromptSubmit' : 'SessionStart');
     return parsed.hookSpecificOutput.additionalContext;
   };
 
@@ -57,6 +58,13 @@ describe('Cursor gets the user-scope rules from its session-start hook in a work
     expect(text).toContain('The team codeword is PELICAN-42.');
     expect(text).toContain('Applies to files matching: src/**\nPrefer named exports.');
     expect(text).not.toContain('paths:');
+  });
+
+  it('also adds the user rules on prompt-submit, which Cursor waits for (#1994)', async () => {
+    const workspace = path.join(tmpDir, 'work', 'project');
+    await fse.ensureDir(workspace);
+
+    expect(await context(workspace, 'cursor', userConfig, 'prompt-submit')).toContain('PELICAN-42');
   });
 
   it('adds the user-scope culture and shared instructions, which ~/.cursor/rules also holds', async () => {

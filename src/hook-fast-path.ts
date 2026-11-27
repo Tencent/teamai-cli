@@ -106,6 +106,9 @@ export function argvVerdict(argv: readonly string[], env: NodeJS.ProcessEnv, pla
   // `--matcher TodoWrite` is the entry an earlier release installed, until the next pull removes it.
   if (env[ATTEMPT_ENV] || FULL_DISPATCH_TOOLS.has(tool) || matcher === 'TodoWrite') return { kind: 'full' };
 
+  // Cursor may need user-scope rules before its first prompt.
+  if (fastEvent === 'prompt-submit' && tool === 'cursor') return { kind: 'full' };
+
   // A Claude-format hook may belong to Cursor or Copilot CLI, which the full dispatch tells apart (claude-hook-host.ts).
   if (tool === 'claude' && (env.CURSOR_VERSION?.trim() || env.COPILOT_PROJECT_DIR?.trim())) return { kind: 'full' };
 

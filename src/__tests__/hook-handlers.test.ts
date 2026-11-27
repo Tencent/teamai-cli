@@ -304,18 +304,19 @@ describe('hook-handlers registry', () => {
 
   // What a prompt's foreground runs is what hook-fast-path.ts `promptAnswersInForeground` predicts
   // the output of: a package hint, an MR hint, a contribute hint, the HTTP local agent's notices (#1788).
+  // Cursor bypasses that fast path to deliver user rules.
   it.each([
-    ['darwin', ['pending-hint', 'package-pending-hint', 'mr-hint-pending', 'local-agent-sync']],
-    ['linux', ['pending-hint', 'package-pending-hint', 'mr-hint-pending', 'local-agent-sync']],
+    ['darwin', ['cursor-user-rules', 'pending-hint', 'package-pending-hint', 'mr-hint-pending', 'local-agent-sync']],
+    ['linux', ['cursor-user-rules', 'pending-hint', 'package-pending-hint', 'mr-hint-pending', 'local-agent-sync']],
     // No detached child is added on Windows, where one is a WMI spawn.
-    ['win32', ['pending-hint', 'package-pending-hint', 'mr-hint-pending', 'skill-mention', 'dashboard-report', 'local-agent-sync']],
+    ['win32', ['cursor-user-rules', 'pending-hint', 'package-pending-hint', 'mr-hint-pending', 'skill-mention', 'dashboard-report', 'local-agent-sync']],
   ])('prompt-submit on %s answers in the foreground with only %j', (platform, foreground) => {
     const platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue(platform as NodeJS.Platform);
     const handlers = buildHandlerRegistry().filter((r) => r.event === 'prompt-submit');
     platformSpy.mockRestore();
 
     expect(handlers.filter((r) => !r.background).map((r) => r.handler.name)).toEqual(foreground);
-    expect(handlers.map((r) => r.handler.name)).toEqual(['pending-hint', 'package-pending-hint', 'mr-hint-pending', 'skill-mention', 'dashboard-report', 'local-agent-sync']);
+    expect(handlers.map((r) => r.handler.name)).toEqual(['cursor-user-rules', 'pending-hint', 'package-pending-hint', 'mr-hint-pending', 'skill-mention', 'dashboard-report', 'local-agent-sync']);
   });
 
   it('session-end records the final dashboard snapshot, dispatches the webhook and pushes votes in the background, and credits votes in the foreground', () => {
