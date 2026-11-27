@@ -10,6 +10,7 @@ import {
   listProjectIds,
   unknownProjectMessage,
   PROJECT_RESOURCE_TYPES,
+  ALL_PROJECT_RESOURCE_TYPES,
   resolveActiveLearningsNamespaces,
 } from './projects.js';
 import type { ProjectsManifest, TeamProject } from './projects.js';
@@ -417,7 +418,7 @@ export async function projectsUpdate(
       return next;
     });
 
-    if (PROJECT_RESOURCE_TYPES.every((type) => resources[type].length === 0)) {
+    if (ALL_PROJECT_RESOURCE_TYPES.every((type) => (resources[type] ?? []).length === 0)) {
       log.error(`Cannot remove every namespace from project "${projectId}". Use \`teamai projects remove ${projectId}\` to delete it.`);
       process.exitCode = 1;
 
