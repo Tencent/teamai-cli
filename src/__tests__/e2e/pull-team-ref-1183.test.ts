@@ -459,7 +459,7 @@ describe('team ref reconciliation and safe transitions', () => {
     const r = m.run(['pull', '--silent']);
     expect(r.code).toBe(1);
     expect(r.output).toBe('');
-    expect(read(path.join(m.home, '.teamai/debug.log'))).toContain('--team-ref pins one workspace');
+    expect(read(path.join(m.home, '.teamai/debug.log'))).toContain('--team-ref cannot pin a workspace that inherits user scope. Turn off inheritUserScope in this workspace before retrying.');
   });
 });
 
