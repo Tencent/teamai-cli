@@ -34,6 +34,7 @@ import {
   supportsEnvExpansion,
   renderJsonEntry,
   renderCodexBlock,
+  hasPlaceholder,
   resolvePlaceholders,
   referencedVars,
   entryHash,
@@ -278,16 +279,20 @@ function hostAllowed(url: string, allowedHosts: string[]): boolean {
   let host: string;
 
   try {
-    host = new URL(url).hostname;
+    host = new URL(url).hostname.toLowerCase();
   } catch {
     return false;
   }
 
-  return allowedHosts.some((pattern) =>
-    pattern.startsWith('*.')
+  if (!host) return false;
+
+  return allowedHosts.some((rawPattern) => {
+    const pattern = rawPattern.toLowerCase();
+
+    return pattern.startsWith('*.')
       ? host === pattern.slice(2) || host.endsWith(pattern.slice(1))
-      : host === pattern,
-  );
+      : host === pattern;
+  });
 }
 
 /** Reject a server that the team's security policy disallows. Returns a reason, or null when OK. */
@@ -305,9 +310,46 @@ function policyViolation(def: McpServerDef, sharing: ReturnType<typeof getMcpSha
   return null;
 }
 
+/** True when a URL's scheme or authority (userinfo/host/port) contains a `${VAR}` placeholder. */
+function urlHasDynamicAuthority(url: string): boolean {
+  const sep = url.indexOf('://');
+
+  if (sep === -1) return hasPlaceholder(url);
+  const scheme = url.slice(0, sep);
+  const rest = url.slice(sep + 3);
+  const authorityEnd = rest.search(/[/?#]/);
+  const authority = authorityEnd === -1 ? rest : rest.slice(0, authorityEnd);
+
+  return hasPlaceholder(scheme) || hasPlaceholder(authority);
+}
+
+/** True when the policy-governed field (`command` for stdio, URL scheme/authority for HTTP/SSE) contains `${VAR}`. */
+function hasDynamicPolicyField(def: McpServerDef): boolean {
+  return def.transport === 'stdio'
+    ? hasPlaceholder(def.command)
+    : Boolean(def.url && urlHasDynamicAuthority(def.url));
+}
+
+/** True when `sharing` enforces a non-empty allowlist for `def`'s transport. */
+function hasActivePolicy(def: McpServerDef, sharing: ReturnType<typeof getMcpSharing>): boolean {
+  return def.transport === 'stdio' ? sharing.allowedCommands.length > 0 : sharing.allowedHosts.length > 0;
+}
+
+/**
+ * Policy check before `${VAR}` expansion. Defers only when the policy-governed
+ * portion (`command` for stdio, URL scheme/authority for HTTP/SSE) contains a
+ * placeholder; placeholders solely in a URL path/query/fragment do not prevent
+ * rejecting a forbidden host statically.
+ */
+function staticPolicyViolation(def: McpServerDef, sharing: ReturnType<typeof getMcpSharing>): string | null {
+  if (hasDynamicPolicyField(def)) return null;
+
+  return policyViolation(def, sharing);
+}
+
 /** Why the team's security policy keeps `resolved` out of every tool, or null when it lets it through. */
 export function teamMcpRefusal(localConfig: LocalConfig, teamConfig: TeamaiConfig, resolved: ResolvedEntry<TeamMcpDefinition>): string | null {
-  return policyViolation(teamMcpDef(localConfig, resolved), getMcpSharing(teamConfig));
+  return staticPolicyViolation(teamMcpDef(localConfig, resolved), getMcpSharing(teamConfig));
 }
 
 /** True when every executable in `requires` is on PATH. Returns a reason, or null when OK. */
@@ -1427,7 +1469,7 @@ export function desiredMcpForTarget(
       continue;
     }
 
-    const violation = policyViolation(raw, ctx.sharing);
+    const violation = staticPolicyViolation(raw, ctx.sharing);
 
     if (violation) {
       skipped.push({ tool: target.tool, server: raw.name, action: 'skipped', reason: violation });
@@ -1452,7 +1494,18 @@ export function desiredMcpForTarget(
         reason: `unresolved variable(s): ${missing.join(', ')}`,
       });
 
-      if (missing.every((key) => declared?.has(key) ?? true)) kept.add(raw.name);
+      // Never keep an installed entry whose policy-governed field was deferred
+      // and cannot be verified against an active allowlist.
+      const unverifiedUnderPolicy = hasDynamicPolicyField(raw) && hasActivePolicy(raw, ctx.sharing);
+
+      if (!unverifiedUnderPolicy && missing.every((key) => declared?.has(key) ?? true)) kept.add(raw.name);
+      continue;
+    }
+
+    const resolvedViolation = policyViolation(rendered.def, ctx.sharing);
+
+    if (resolvedViolation) {
+      skipped.push({ tool: target.tool, server: raw.name, action: 'skipped', reason: resolvedViolation });
       continue;
     }
 
@@ -1479,7 +1532,7 @@ function renderMcpEntry(
   target: McpTarget,
   raw: McpServerDef,
   vars: Record<string, string>,
-): { entry: DesiredMcpEntry; passthrough: boolean } | { missing: string[] } {
+): { entry: DesiredMcpEntry; passthrough: boolean; def: McpServerDef } | { missing: string[] } {
   const passthrough = supportsEnvExpansion(target.format, target.projectScope, raw);
   let def = raw;
 
@@ -1495,12 +1548,12 @@ function renderMcpEntry(
   if (target.format === 'codex') {
     const block = renderCodexBlock(def);
 
-    return { entry: { entry: block, hash: entryHash(block), block, resolvedValue }, passthrough };
+    return { entry: { entry: block, hash: entryHash(block), block, resolvedValue }, passthrough, def };
   }
 
   const entry = renderJsonEntry(target.format, def);
 
-  return { entry: { entry, hash: entryHash(entry), resolvedValue }, passthrough };
+  return { entry: { entry, hash: entryHash(entry), resolvedValue }, passthrough, def };
 }
 
 /** Every revision of the team repo's MCP files (#993), or null when unreadable or an HTTP-mode team. */

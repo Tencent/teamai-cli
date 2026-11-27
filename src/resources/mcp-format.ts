@@ -181,7 +181,13 @@ export function planCodexHeaders(headers: Record<string, string> = {}): CodexHea
 
 // ─── Placeholder resolution ──────────────────────────────────
 
+const PLACEHOLDER_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/;
 const PLACEHOLDER_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
+/** True when `value` contains at least one `${VAR}` placeholder. */
+export function hasPlaceholder(value: string | undefined): boolean {
+  return value !== undefined && PLACEHOLDER_PATTERN.test(value);
+}
 
 /** Every ${VAR} referenced anywhere in a def. */
 export function referencedVars(def: McpServerDef): string[] {
