@@ -348,7 +348,8 @@ export function patchManagedSection(
     if (meta.syncedAt) metaParts.push(`syncedAt: ${meta.syncedAt}`);
     const newOpen = `<!-- ${metaParts.join(', ')} -->`;
     const newClose = `<!-- /managed-by: ${slug} -->`;
-    const newInner = `\n## ${title}\n${newBody}\n`;
+    const heading = title ? `## ${title}\n` : '';
+    const newInner = `\n${heading}${newBody}\n`;
 
     return md.slice(0, openStart) + newOpen + newInner + newClose + md.slice(closeEnd);
 }
