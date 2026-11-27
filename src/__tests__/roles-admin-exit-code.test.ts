@@ -215,6 +215,22 @@ describe('roles admin — the exit code of a refusal', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it.each([{ skills: ['common'] }, { skills: [] }])('update: preserves resource selections on a description-only edit ($skills)', async ({ skills }) => {
+    const resources = { knowledge: ['reference'], skills, agents: ['review'], env: ['dev'] };
+    await fse.ensureDir(path.dirname(manifestPath()));
+    await fse.writeFile(manifestPath(), YAML.stringify({
+      version: 1,
+      roles: [{ id: 'hai', description: 'Old description', resources }],
+    }));
+
+    await rolesUpdate('hai', { description: 'New description' });
+
+    const updated = YAML.parse(await fse.readFile(manifestPath(), 'utf8'));
+    expect(updated.roles[0].description).toBe('New description');
+    expect(updated.roles[0].resources).toEqual(resources);
+    expect(process.exitCode).toBe(0);
+  });
+
   it('stays 0 when the change goes through', async () => {
     await writeManifest(['hai']);
 

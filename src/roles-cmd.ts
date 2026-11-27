@@ -542,7 +542,7 @@ export async function rolesUpdate(
             updatedNamespaces = updatedNamespaces.filter((ns) => !toRemove.has(ns));
         }
 
-        if (updatedNamespaces.length === 0) {
+        if ((hasAddNs || hasRemoveNs) && updatedNamespaces.length === 0) {
             log.error('Cannot remove all namespaces. A role must have at least one namespace.');
             process.exitCode = 1;
 
@@ -552,13 +552,13 @@ export async function rolesUpdate(
         const updatedRole: TeamRole = {
             ...existingRole,
             description: hasDesc ? options.description! : existingRole.description,
-            resources: {
+            resources: hasAddNs || hasRemoveNs ? {
                 // Keeps the hand-declared types (env, hooks, mcp, models, docs).
                 ...existingRole.resources,
                 knowledge: updatedNamespaces,
                 skills: updatedNamespaces,
                 agents: updatedNamespaces,
-            },
+            } : existingRole.resources,
         };
 
         const updatedManifest: RolesManifest = {
