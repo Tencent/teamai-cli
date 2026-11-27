@@ -182,4 +182,30 @@ describe('readRecallQuality', () => {
         const result = readRecallQuality(sessionId);
         expect(result).toBeNull();
     });
+
+    // A cache whose timestamp is missing or unparseable must not be kept alive
+    // forever by `NaN > TTL` staying false (#2129).
+    it.each([
+        ['a non-string updatedAt', 123],
+        ['a malformed ISO updatedAt', 'not-a-date'],
+        ['a missing updatedAt', undefined],
+    ])('returns null for a cache with %s', (_label, updatedAt) => {
+        const sessionId = 'invalid-timestamp-session';
+        const sessionsDir = path.join(tmpDir, '.teamai', 'sessions');
+        fs.mkdirSync(sessionsDir, { recursive: true });
+        fs.writeFileSync(
+            path.join(sessionsDir, `${sessionId}-recall-cache.json`),
+            JSON.stringify({
+                queries: ['q1'],
+                count: 1,
+                ...(updatedAt === undefined ? {} : { updatedAt }),
+                topScore: 9.0,
+                hitCount: 1,
+                missCount: 0,
+            }),
+            'utf-8',
+        );
+
+        expect(readRecallQuality(sessionId)).toBeNull();
+    });
 });

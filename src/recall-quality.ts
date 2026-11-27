@@ -68,11 +68,18 @@ function readCache(sessionId: string): RecallCache | null {
         if (!cache.success) return null;
         const parsed = cache.data;
 
-        const age = Date.now() - new Date(parsed.updatedAt ?? '').getTime();
+        // A cache without a valid timestamp cannot be shown to be fresh. Treat
+        // a missing or unparseable updatedAt as expired instead of letting
+        // `NaN > TTL` stay false forever and keep a stale signal alive (#2129).
+        const updatedAtMs = parsed.updatedAt === undefined ? NaN : new Date(parsed.updatedAt).getTime();
+
+        if (!Number.isFinite(updatedAtMs)) return null;
+
+        const age = Date.now() - updatedAtMs;
 
         if (age > CACHE_TTL_MS) return null;
 
-        return { ...parsed, updatedAt: parsed.updatedAt ?? new Date().toISOString() };
+        return { ...parsed, updatedAt: parsed.updatedAt! };
     } catch {
         return null;
     }
