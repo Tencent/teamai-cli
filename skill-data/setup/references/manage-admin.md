@@ -35,7 +35,7 @@ teamai mcp remove --dry-run # preview removal without changing tool configs or m
 teamai mcp remove      # remove teamai-managed MCP servers
 ```
 
-`mcp inject` and `mcp remove` return exit code 1 if a tool config cannot be read or parsed, including in a dry run. Other tools may still change. Fix the config named in the warning and rerun the command; the unreadable config and its ownership records are kept for that retry.
+`mcp inject` and `mcp remove` return exit code 1 if a tool config cannot be read or parsed, or if a proposed Codex edit would produce invalid TOML. This also applies in a dry run. Other tools may still change. Fix the config named in the warning and rerun the command. The affected config and its ownership records are kept for that retry.
 
 MCP definitions travel with the team repo like skills/rules — edit, then the
 members pick them up on sync.
