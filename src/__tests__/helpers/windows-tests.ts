@@ -18,6 +18,7 @@ export const WINDOWS_TESTS = [
   'src/__tests__/default-folders.test.ts',
   'src/__tests__/delivered-folders.test.ts',
   'src/__tests__/dsh-hooks.test.ts',
+  'src/__tests__/enrich-import-path.test.ts',
   'src/__tests__/fleet-fence.test.ts',
   'src/__tests__/git-process-tree.test.ts',
   'src/__tests__/hermes-config.test.ts',
