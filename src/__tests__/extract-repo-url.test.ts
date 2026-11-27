@@ -32,6 +32,34 @@ describe('extractRepoUrlFromMrUrl', () => {
     expect(extractRepoUrlFromMrUrl('https://gitlab.example.com/acme/repo/-/merge_requests/12')).toBe('https://gitlab.example.com/acme/repo.git');
   });
 
+  it('preserves a self-hosted GitLab protocol, host and port', () => {
+    expect(extractRepoUrlFromMrUrl('http://gitlab.example.com:8443/acme/repo/-/merge_requests/12'))
+      .toBe('http://gitlab.example.com:8443/acme/repo.git');
+  });
+
+  it('preserves www. on a self-hosted GitLab host', () => {
+    expect(extractRepoUrlFromMrUrl('https://www.gitlab.example.com/acme/repo/-/merge_requests/12'))
+      .toBe('https://www.gitlab.example.com/acme/repo.git');
+  });
+
+  it('extracts a GitCode PR repo URL', () => {
+    expect(extractRepoUrlFromMrUrl('https://gitcode.com/owner/repo/pull/42')).toBe('https://gitcode.com/owner/repo.git');
+  });
+
+  it('extracts a GitCode PR over the pulls and merge_requests routes', () => {
+    expect(extractRepoUrlFromMrUrl('https://gitcode.com/owner/repo/pulls/42')).toBe('https://gitcode.com/owner/repo.git');
+    expect(extractRepoUrlFromMrUrl('https://gitcode.com/owner/repo/merge_requests/42')).toBe('https://gitcode.com/owner/repo.git');
+  });
+
+  it('extracts a GitCode PR with www. and mixed-case host', () => {
+    expect(extractRepoUrlFromMrUrl('https://www.GitCode.com/owner/repo/pull/42')).toBe('https://gitcode.com/owner/repo.git');
+  });
+
+  it('does not treat a GitLab URL mentioning gitcode.com as a GitCode PR', () => {
+    expect(extractRepoUrlFromMrUrl('https://gitlab.example.com/gitcode.com/repo/-/merge_requests/3'))
+      .toBe('https://gitlab.example.com/gitcode.com/repo.git');
+  });
+
   it('returns empty for an unrecognized URL', () => {
     expect(extractRepoUrlFromMrUrl('https://example.com/foo')).toBe('');
   });

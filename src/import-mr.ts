@@ -201,11 +201,22 @@ export function extractRepoUrlFromMrUrl(mrUrl: string): string {
     return `https://git.woa.com/${pathParts.slice(0, -2).join('/')}.git`;
   }
 
-  // GitLab: /group[/subgroup]/repo/-/merge_requests/123 (any self-hosted host)
+  // GitCode: /owner/repo/(pull|pulls|merge_requests)/123. fetchMR() routes
+  // gitcode.com here, so an empty repo URL would skip the teamwiki update for
+  // every GitCode PR. Keep the canonical host; www. and case fold like fetchMR.
+  if (host === 'gitcode.com' && pathParts.length >= 4
+    && ['pull', 'pulls', 'merge_requests'].includes(pathParts[2])) {
+    return `https://gitcode.com/${pathParts[0]}/${pathParts[1]}.git`;
+  }
+
+  // GitLab: /group[/subgroup]/repo/-/merge_requests/123 (any self-hosted host).
+  // Preserve the original protocol, host and port: a self-hosted instance may
+  // use http, `www.` and a non-standard port, and rewriting them points the
+  // teamwiki record at a repo that does not exist.
   const dashIndex = pathParts.indexOf('-');
 
   if (pathParts[dashIndex + 1] === 'merge_requests' && dashIndex >= 2) {
-    return `${parsed.protocol}//${parsed.hostname}/${pathParts.slice(0, dashIndex).join('/')}.git`;
+    return `${parsed.protocol}//${parsed.host}/${pathParts.slice(0, dashIndex).join('/')}.git`;
   }
 
   // Cannot reliably extract; return empty string so caller skips incremental update
