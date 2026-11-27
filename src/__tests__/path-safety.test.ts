@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { assertSafePath, assertSafeResourceName, defaultAllowedRoots } from '../utils/path-safety.js';
+import { assertSafePath, assertSafeResourceName, assertWithinRoot, defaultAllowedRoots } from '../utils/path-safety.js';
 import { trySymlink } from './helpers/symlink.js';
 
 describe('assertSafePath', () => {
@@ -67,6 +67,38 @@ describe('assertSafePath with a symlinked root', () => {
     expect(() => assertSafePath(path.join(real, 'out-link', 'file.mjs'), [real])).toThrow(
       'Path traversal detected',
     );
+  });
+});
+
+describe('containment guards across host path semantics', () => {
+  it('allows the same file spelled with a differently cased drive letter', () => {
+    if (process.platform !== 'win32') return;
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-path-case-'));
+    try {
+      const child = path.join(base, 'note.md');
+      fs.writeFileSync(child, 'note');
+      const otherCasing = child.replace(/^[A-Z]:/, (drive) => drive.toLowerCase());
+
+      expect(() => assertSafePath(otherCasing, [base])).not.toThrow();
+      expect(() => assertWithinRoot(base, otherCasing)).not.toThrow();
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('allows anything under the filesystem root', () => {
+    // `path.sep` appended to `C:\` or `/` would match no child at all.
+    const root = path.parse(process.cwd()).root;
+    const child = path.join(root, 'teamai-path-safety-probe');
+
+    expect(() => assertSafePath(child, [root])).not.toThrow();
+    expect(() => assertWithinRoot(root, child)).not.toThrow();
+  });
+
+  it('still rejects a sibling that only shares the root as a string prefix', () => {
+    const base = path.join(os.tmpdir(), 'teamai-path-prefix');
+    expect(() => assertWithinRoot(base, `${base}-other/file.md`)).toThrow('path traversal detected');
+    expect(() => assertSafePath(`${base}-other/file.md`, [base])).toThrow('Path traversal detected');
   });
 });
 

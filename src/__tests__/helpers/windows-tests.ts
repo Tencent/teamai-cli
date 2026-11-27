@@ -41,6 +41,7 @@ export const WINDOWS_TESTS = [
   'src/__tests__/locate-workbuddy.test.ts',
   'src/__tests__/locate.test.ts',
   'src/__tests__/mcp-folders.test.ts',
+  'src/__tests__/path-safety.test.ts',
   'src/__tests__/pi-adapter.test.ts',
   'src/__tests__/pull-user-record-key.test.ts',
   'src/__tests__/push-team-config.test.ts',
