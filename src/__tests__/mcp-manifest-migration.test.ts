@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { managedMcpManifestPath, managedMcpWorkspaceId } from '../types.js';
+import { managedMcpManifestKey, managedMcpManifestPath, managedMcpWorkspaceId } from '../types.js';
 import { loadProjectMcpManifest } from '../utils/mcp-manifest.js';
 import { writeJsonAtomic } from '../utils/fs.js';
 
@@ -70,6 +70,37 @@ describe('project MCP manifest migration', () => {
     expect((await loadProjectMcpManifest(f.home, f.workspace, { dryRun: true })).manifest).toEqual(f.expected);
     expect(await Promise.all([fs.readFile(f.partition, 'utf8'), fs.readFile(f.local, 'utf8')])).toEqual(before);
     expect(writeJsonAtomic).not.toHaveBeenCalled();
+  });
+
+  it('migrates an aliased tool under the key readers actually use', async () => {
+    // trae and trae-cn share one ownership record (MCP_MANIFEST_KEY_ALIAS), so
+    // every reader looks it up with managedMcpManifestKey() === 'trae:project'.
+    // A pre-alias install wrote 'trae-cn:project'; migration must normalize it.
+    const aliasKey = managedMcpManifestKey('trae-cn', true);
+    expect(aliasKey).toBe('trae:project');
+
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'teamai-mcp-migration-alias-'));
+    const workspace = path.join(root, 'app');
+    const home = path.join(root, 'partition');
+    const partition = path.join(home, 'managed-mcp.json');
+    const local = path.join(workspace, '.teamai', 'managed-mcp.json');
+    await fs.mkdir(home, { recursive: true });
+    await fs.mkdir(path.dirname(local), { recursive: true });
+    const cnServer = { name: 'trae-cn-server', hash: 'cn' };
+    const traeServer = { name: 'trae-server', hash: 'intl' };
+    await fs.writeFile(partition, JSON.stringify({
+      [`trae-cn:project:${managedMcpWorkspaceId(workspace)}`]: [cnServer],
+    }));
+    await fs.writeFile(local, JSON.stringify({ 'trae:project': [traeServer] }));
+
+    const { manifest } = await loadProjectMcpManifest(home, workspace);
+
+    // Both legacy spellings collapse into the single aliased key, merged by name.
+    expect(Object.keys(manifest)).toEqual([aliasKey]);
+    expect([...manifest[aliasKey]].sort((a, b) => a.name.localeCompare(b.name)))
+      .toEqual([cnServer, traeServer].sort((a, b) => a.name.localeCompare(b.name)));
+    // What every mcp-reconcile reader looks up is exactly this key.
+    expect(manifest[managedMcpManifestKey('trae', true)]).toBe(manifest[aliasKey]);
   });
 
   it('already holds both sources when legacy cleanup fails', async () => {
