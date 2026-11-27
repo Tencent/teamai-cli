@@ -53,10 +53,11 @@ export function redactGitCredentials(text: string, secrets: readonly string[] = 
 }
 
 /**
- * Env var names that mark a value as likely-secret. `PAT` must be a whole
- * `_`-separated segment, or every `*_PATH` variable would match.
+ * Env var names that mark a value as likely-secret. `PAT` and `KEY` must be whole
+ * `_`-separated segments, or every `*_PATH` variable would match, and `MONKEY`,
+ * `KEYBOARD_LAYOUT` or `KEYNOTE_TITLE` would have their values masked as secrets.
  */
-const SECRET_NAME_PATTERN = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|(?:^|_)PAT(?:_|$)/;
+const SECRET_NAME_PATTERN = /TOKEN|SECRET|(?:^|_)KEY(?:_|$)|PASSWORD|PASSWD|CREDENTIAL|(?:^|_)PAT(?:_|$)/;
 
 /** Minimum length before an env value is worth masking (avoids masking `KEY=1`). */
 export const MIN_ENV_VALUE_LENGTH = 8;

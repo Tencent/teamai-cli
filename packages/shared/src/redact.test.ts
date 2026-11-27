@@ -214,6 +214,21 @@ describe('redactWithEnv on path-valued env vars', () => {
   });
 });
 
+describe('collectEnvSecrets name matching', () => {
+  it.each([
+    ['API_KEY', true],
+    ['SIGNING_KEY_FILE', true],
+    ['AWS_SECRET_ACCESS_KEY', true],
+    ['MONKEY', false],
+    ['KEYBOARD_LAYOUT', false],
+    ['KEYNOTE_TITLE', false],
+    ['HOTKEY_PROFILE', false],
+  ])('%s is collected as a secret: %s', (name, secret) => {
+    const collected = collectEnvSecrets({ [name]: 'value-1234567' } as unknown as NodeJS.ProcessEnv);
+    expect(name in collected).toBe(secret);
+  });
+});
+
 describe('redactWithEnv', () => {
   it('composes env collection with pattern redaction', () => {
     const out = redactWithEnv('token=abcdefghij and ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345', {
