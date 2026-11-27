@@ -222,6 +222,23 @@ afterEach(() => {
 });
 
 describe('showStats scope and idempotency', () => {
+  it('refuses an unreadable workspace config instead of displaying unscoped stats', async () => {
+    await seedUserScopeWithProject();
+    const anchors = await resolveAnchors(workspace);
+    if (!anchors) throw new Error('missing anchors');
+    const partition = await resolvePartitionDir(anchors.repoAnchor);
+    await writeFile(path.join(partition, 'config.yaml'), 'repo: [broken\n');
+    await expect(showStatsFromProject()).rejects.toThrow();
+    expect(statsOutput()).not.toContain('No usage data yet.');
+  });
+
+  it('refuses an unreadable user config instead of displaying unscoped stats', async () => {
+    await ensureDir(path.join(tmpDir, '.teamai'));
+    await writeFile(path.join(tmpDir, '.teamai', 'config.yaml'), 'repo: [broken\n');
+    await expect(showStatsFromPlainDir(DIRS.other)).rejects.toThrow();
+    expect(statsOutput()).not.toContain('No usage data yet.');
+  });
+
   it('counts a reported session once, not twice', async () => {
     await seedProjectConfig();
     await appendEvents(session('sess-1', DIRS.project));
