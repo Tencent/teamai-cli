@@ -5820,6 +5820,27 @@ console.error('Could not remove podman image teamai-warm:fedcba9876543210: podma
     expect(warnings).toContainEqual(expect.stringContaining(`Kept ${edited}:`));
   });
 
+  it.each(['clean', 'extra file', 'edited'] as const)('cleans up a legacy-named workflow stub (%s)', async (state) => {
+    const { homeDir, repoPath } = await setupFixture(tmpDir);
+    vi.stubEnv('HOME', homeDir);
+    const name = 'teamai-share-learnings';
+    const dir = path.join(homeDir, '.claude', 'skills', name);
+    const stub = path.join(dir, 'SKILL.md');
+    const notes = path.join(dir, 'notes.md');
+    const generated = renderWorkflowSkill({ name, description: 'Share learnings', invoke: 'ask', source: 'default', skill: name }, 'claude');
+    const content = state === 'edited' ? `${generated}\nMy own instructions.\n` : generated;
+    await fse.outputFile(stub, content);
+    if (state === 'extra file') await fse.outputFile(notes, 'My own notes.');
+    mockAutoDetectInit.mockResolvedValue({ localConfig: makeLocalConfig(homeDir, repoPath), teamConfig: makeTeamConfig() });
+
+    await uninstall({ force: true });
+
+    if (state === 'edited') expect(await fse.readFile(stub, 'utf8')).toBe(content);
+    else expect(await fse.pathExists(stub)).toBe(false);
+    if (state === 'extra file') expect(await fse.readFile(notes, 'utf8')).toBe('My own notes.');
+    if (state === 'clean') expect(await fse.pathExists(dir)).toBe(false);
+  });
+
   it('names a packaged file the repository started tracking after the plan once, as tracked, not as a file TeamAI did not put there', async () => {
     const { homeDir, repoPath } = await setupFixture(tmpDir);
     vi.stubEnv('HOME', homeDir);

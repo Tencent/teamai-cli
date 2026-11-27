@@ -2172,10 +2172,9 @@ function printSummary(plan: RemovalPlan, agentFilter?: string): void {
     console.log(`   Skills (${plan.skillDirs.length} directories):`);
 
     for (const { dir: skillDir } of plan.skillDirs) {
-      // A CLI-owned directory loses the files TeamAI packaged, not whatever the
-      // member added beside them, so the prompt must not promise the directory.
+      // A CLI-owned directory can still hold files the member added or edited.
       const suffix = isCliOwnedSkillName(path.basename(skillDir))
-        ? '   (TeamAI-packaged files only; anything you added stays)'
+        ? '   (TeamAI files only; your additions and edits stay)'
         : '';
 
       console.log(`     ${skillDir}${suffix}`);
@@ -3183,7 +3182,8 @@ async function executeRemoval(
       const name = path.basename(skillDir);
 
       if (isCliOwnedSkillName(name)) {
-        const result = await removeOwnedFiles(skillDir, await ownedSkillFiles(name), baseDir);
+        const generatedStub = mayBeGeneratedSkill(name) ? name : undefined;
+        const result = await removeOwnedFiles(skillDir, await ownedSkillFiles(name), baseDir, { generatedStub });
 
         if (prunedWhole(result)) removedSkillDirs++;
         else if (result.skippedSymlink) linkedSkillDirs.push(skillDir);
@@ -3212,7 +3212,7 @@ async function executeRemoval(
   }
 
   for (const skillDir of keptSkillDirs) {
-    log.warn(`Kept ${skillDir}: it holds files TeamAI did not put there. The packaged files were removed; delete the rest yourself once you have saved what you need.`);
+    log.warn(`Kept ${skillDir}: it holds files you added or edited. Save those files before removing them yourself.`);
   }
 
   // A different reason, so a different sentence: nothing here was touched, and

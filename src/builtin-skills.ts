@@ -143,7 +143,7 @@ export async function pruneLegacyBuiltinSkills(
 
       try {
         const backupDir = skillBackupDir(guardBase, tool, path.relative(guardBase, root), legacyName);
-        const result = await removeOwnedFiles(dir, await ownedSkillFiles(legacyName), guardBase, backupDir);
+        const result = await removeOwnedFiles(dir, await ownedSkillFiles(legacyName), guardBase, { backupDir });
         const saved = result.backedUp > 0 ? `; a copy is in ${backupDir}` : '';
 
         if (prunedWhole(result)) {
@@ -189,7 +189,7 @@ async function retireOtherCodexCopy(
     if (await fs.promises.realpath(other).catch(() => other) === await fs.promises.realpath(deployedDir).catch(() => deployedDir)
       || !await pathExists(other)) continue;
     const backupDir = skillBackupDir(guardBase, tool, path.relative(guardBase, path.dirname(other)), skillName);
-    const result = await removeOwnedFiles(other, await ownedSkillFiles(skillName), guardBase, backupDir);
+    const result = await removeOwnedFiles(other, await ownedSkillFiles(skillName), guardBase, { backupDir });
 
     if (prunedWhole(result)) {
       log.debug(`Removed the second Codex copy of ${skillName} at ${other}; the stub is at ${deployedDir}`);
@@ -359,7 +359,7 @@ export async function deployBuiltinSkills(
         const shippedNow = new Set(await walkFiles(srcDir));
         const retired = (PACKAGED_SKILL_FILES.get(skillName) ?? []).filter((p) => !shippedNow.has(p));
         const backupDir = skillBackupDir(baseDir, tool, path.relative(baseDir, path.dirname(destDir)), skillName);
-        const result = await removeOwnedFiles(destDir, await ownedSkillFiles(skillName, retired), baseDir, backupDir);
+        const result = await removeOwnedFiles(destDir, await ownedSkillFiles(skillName, retired), baseDir, { backupDir });
 
         if (result.unbackedUp.length > 0) {
           log.warn(`Kept ${result.unbackedUp.length} file(s) under ${destDir}: their backup could not be written, so they were not removed. First: ${result.unbackedUp[0].file} — ${result.unbackedUp[0].error}`);
