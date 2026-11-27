@@ -10,6 +10,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
+import { remotesMatch } from '../utils/git.js';
 import { loadLocalConfigForScope } from '../config.js';
 import { teamRefBlocker, type TeamRefBlock } from '../team-ref.js';
 import { isSelfMode, type LocalConfig } from '../types.js';
@@ -110,7 +111,7 @@ const SELF_MODE = "Benchmarks do not run in self mode: the project's own commit 
 /** Why a benchmark cannot run here, for each reason `teamai pull --team-ref` cannot pin a workspace. */
 const BLOCKED: Record<TeamRefBlock, string> = {
   no_workspace: 'A benchmark gives each trial the team revision it plans, and that needs a teamai workspace here. Run teamai init --scope workspace here, run teamai pull, and run the benchmark again.',
-  user_scope: 'A benchmark gives each trial the team revision it plans, but this team also reaches this checkout through user scope, where every workspace shares one copy, so a trial could read team resources that revision does not have. Remove the user-scope install, or turn off inheritUserScope in this workspace, and run the benchmark again.',
+  user_scope: 'A benchmark cannot pin a trial when user scope uses the same team repository. Run it in an isolated workspace without that user-scope install or user-scope inheritance.',
   self: SELF_MODE,
   http: "A benchmark installs each trial's team resources from a commit of the team repo, and this team is served over HTTP, which has no commits to install from. Run the benchmark from a workspace whose team is a git repo.",
 };
@@ -122,7 +123,12 @@ const BLOCKED: Record<TeamRefBlock, string> = {
  */
 export async function trialBlocker(config: LocalConfig): Promise<string | undefined> {
   if (isSelfMode(config)) return SELF_MODE;
-  const blocked = teamRefBlocker(config, await loadLocalConfigForScope('user', undefined, { dryRun: true }));
+  const user = await loadLocalConfigForScope('user', undefined, { dryRun: true });
+  const blocked = teamRefBlocker(config, user);
+
+  if (blocked?.block === 'user_scope' && config.inheritUserScope && (!user || !remotesMatch(config.repo.remote, user.repo.remote))) {
+    return 'A benchmark cannot pin a trial in a workspace that inherits user scope. Turn off inheritUserScope in this workspace before retrying.';
+  }
 
   return blocked ? BLOCKED[blocked.block] : undefined;
 }
