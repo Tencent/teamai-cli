@@ -10,6 +10,7 @@ import {
   type GitExcludeOwner,
   encodeOwnerSegment,
   ensure,
+  chunkPaths,
   GitContext,
   gitUntracked,
   remove,
@@ -940,6 +941,23 @@ describe('git exclude blocks (#915)', () => {
       await fse.writeFile(inRepo('.git', 'HEAD'), 'not a ref\n');
 
       expect(await gitUntracked(inRepo('tracked.md'))).toBe(false);
+    });
+  });
+
+  describe('chunkPaths', () => {
+    it('keeps every git command line under the Windows limit (spawn ENAMETOOLONG, #1977)', () => {
+      const rels = Array.from({ length: 1000 }, (_, i) => `.claude/skills/some-long-skill-name-${String(i).padStart(4, '0')}/SKILL.md`);
+      const chunks = chunkPaths(rels);
+
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.flat()).toEqual(rels);
+
+      for (const chunk of chunks) expect(chunk.join(' ').length + 100).toBeLessThan(32_767);
+    });
+
+    it('is one run for a few paths and none for no paths', () => {
+      expect(chunkPaths(['a', 'b'])).toEqual([['a', 'b']]);
+      expect(chunkPaths([])).toEqual([]);
     });
   });
 });

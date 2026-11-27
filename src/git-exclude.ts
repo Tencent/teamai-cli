@@ -216,6 +216,50 @@ function runGit(args: string[], cwd: string): Promise<ExecResult> {
     .catch((cause: unknown) => ({ code: -1, stdout: '', stderr: cause instanceof Error ? cause.message : String(cause) }));
 }
 
+/** What one git command line may spend on paths: Windows refuses (`spawn ENAMETOOLONG`) a command line past 32767 characters. */
+const COMMAND_LINE_BUDGET = 28_000;
+
+/** `rels` split in runs whose command-line length (each path plus its separator and quotes) stays under the budget; a longer path goes alone. */
+export function chunkPaths(rels: string[], budget = COMMAND_LINE_BUDGET): string[][] {
+  const chunks: string[][] = [];
+  let current: string[] = [];
+  let size = 0;
+
+  for (const rel of rels) {
+    const cost = rel.length + 3;
+
+    if (current.length > 0 && size + cost > budget) {
+      chunks.push(current);
+      current = [];
+      size = 0;
+    }
+
+    current.push(rel);
+    size += cost;
+  }
+
+  if (current.length > 0) chunks.push(current);
+
+  return chunks;
+}
+
+/** `ls-files -z` for `rels`, asked in command-line sized runs and joined; the first failed run is the answer. */
+export async function lsFilesBatched(head: string[], rels: string[], run: (args: string[]) => Promise<ExecResult>): Promise<ExecResult> {
+  const chunks = chunkPaths(rels);
+
+  if (chunks.length <= 1) return run([...head, ...rels]);
+  let stdout = '';
+
+  for (const chunk of chunks) {
+    const listed = await run([...head, ...chunk]);
+
+    if (listed.code !== 0) return listed;
+    stdout += listed.stdout;
+  }
+
+  return { code: 0, stdout, stderr: '' };
+}
+
 /**
  * The `info/exclude` git reads for `dir`'s checkout (worktrees and submodules
  * included), the checkout's root, and `dir`'s path from it; or git's error.
@@ -719,7 +763,7 @@ export class GitContext {
 
     if (!found) {
       const scope = kind === 'tracked' ? ['--'] : ['--others', '--exclude-standard', '--'];
-      found = runGit(['--literal-pathspecs', 'ls-files', '-z', ...scope, ...rels], root).then((listed) => {
+      found = lsFilesBatched(['--literal-pathspecs', 'ls-files', '-z', ...scope], rels, (args) => runGit(args, root)).then((listed) => {
         if (listed.code !== 0) listing.delete(key);
 
         return listed;
