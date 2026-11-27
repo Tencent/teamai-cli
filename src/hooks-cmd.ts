@@ -340,6 +340,7 @@ export async function hooksList(_options: GlobalOptions): Promise<void> {
     console.log('');
 
     if (teamHooks.kind === 'failed') {
+        process.exitCode = 1;
         console.log('Team hooks (B) — hooks/:');
         console.log(`  ${describeEntryFailure(teamHooks.failure)}`);
     } else {

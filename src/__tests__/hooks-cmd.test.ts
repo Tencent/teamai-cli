@@ -53,6 +53,7 @@ import { resolveTeamHookEntries } from '../resources/hooks.js';
 import { log } from '@teamai/shared/log';
 import { hooksInject, hooksRemove, hooksList } from '../hooks-cmd.js';
 import { resetWarnOnce } from '../utils/warn-once.js';
+import { RESOURCE_LAYOUTS } from '../resources/resolver.js';
 import { TeamaiConfigSchema } from '../types.js';
 
 const mockedAutoDetectInit = autoDetectInit as Mock;
@@ -663,6 +664,37 @@ describe('hooksList', () => {
         expect(text).toContain('  copilot:');
         expect(text).toContain('SessionEnd');
         expect(text).toContain('hook-dispatch session-end');
+    });
+
+    it('fails when the team hook definitions cannot be resolved', async () => {
+        mockedAutoDetectInit.mockResolvedValue({
+            localConfig: mockLocalConfig,
+            teamConfig: { toolPaths: {} },
+        });
+        mockedParseTeamHooks.mockResolvedValue({
+            resolution: {
+                kind: 'failed',
+                failure: {
+                    kind: 'broken-file', type: 'hooks', source: 'hooks/hooks.yaml',
+                    reason: 'hooks/hooks.yaml does not parse', layout: RESOURCE_LAYOUTS.hooks,
+                },
+                notices: [],
+            },
+            builtin: { known: false },
+        });
+        const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+        const previousExitCode = process.exitCode;
+        process.exitCode = undefined;
+
+        try {
+            await hooksList({});
+
+            expect(consoleLog).toHaveBeenCalledWith(expect.stringContaining('hooks/hooks.yaml does not parse'));
+            expect(process.exitCode).toBe(1);
+        } finally {
+            consoleLog.mockRestore();
+            process.exitCode = previousExitCode;
+        }
     });
 
     it('hides a built-in hook the team disabled in hooks.yaml', async () => {
