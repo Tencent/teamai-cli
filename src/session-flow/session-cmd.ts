@@ -893,9 +893,9 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         return;
       }
 
-      const workCwd = opts.cwd ?? process.cwd();
+      const resumeCwd = path.resolve(opts.cwd ?? '.');
       const archives = await resolveRepoRoot(opts.repoRoot, { dryRun: isDryRun(), read: true });
-      const repoIdentity = resolveRepoIdentity(workCwd);
+      const repoIdentity = resolveRepoIdentity(resumeCwd);
 
       // A session teamai-reports does not hold is read from the archive the team kept on its default branch before.
       const held = archivedSessions(archives, () => [repoIdentity], opts.author)
@@ -917,7 +917,6 @@ export function registerSessionFlowCommands(sessionCmd: Command): void {
         process.exit(1);
       }
 
-      const resumeCwd = opts.cwd ?? process.cwd();
       const resumeAdapter = await safeGetAdapter(opts.platform, resumeCwd);
       session.cwd = resumeCwd;
 
