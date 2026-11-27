@@ -9,7 +9,7 @@
  * Example:
  *   npx tsx scripts/backfill-contributors.ts ~/.teamai/repo
  */
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -49,9 +49,9 @@ for (const entry of entries) {
   // Use git log to find authors who committed files under this skill directory.
   // %an = author name. We look at the initial add (--diff-filter=A) and all modifications.
   try {
-    const raw = execSync(
-      `git log --format='%an' -- 'skills/${skillName}/'`,
-      { cwd: repoPath, encoding: 'utf-8' },
+    const raw = execFileSync(
+      'git', ['--literal-pathspecs', 'log', '--format=%an', '--', `skills/${skillName}/`],
+      { cwd: repoPath, encoding: 'utf-8', windowsHide: true },
     ).trim();
 
     if (!raw) {
