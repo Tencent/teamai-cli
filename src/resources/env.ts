@@ -320,7 +320,9 @@ function parseEnvYamlDocument(raw: JsonValue | undefined, label: string): EnvYam
   const parsed = EnvYamlSchema.safeParse(raw);
 
   if (!parsed.success) {
-    return { ok: false, reason: `${label} does not match the env.yaml schema: ${parsed.error.message}` };
+    const issues = parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`).join('; ');
+
+    return { ok: false, reason: `${label} does not match the env.yaml schema: ${issues}` };
   }
 
   return { ok: true, variables: parsed.data.variables };
