@@ -666,6 +666,11 @@ describe('findAncestorWorkspaces', () => {
 });
 
 describe('syncWorkspaceInstructionExcludes', () => {
+  // The excludes name files on this machine, so the sync builds them with
+  // path.join and they carry the platform's separator. Assertions build the
+  // same spelling instead of insisting on '/' as they once did.
+  const underWs = (...parts: string[]) => path.join(ws, ...parts);
+
   it('excludes the workspace instructions in a child, keeps the member\'s own excludes, and takes its own back', async () => {
     const child = path.join(ws, 'svc-a');
     repoChild(child);
@@ -675,7 +680,7 @@ describe('syncWorkspaceInstructionExcludes', () => {
 
     const written = await syncWorkspaceInstructionExcludes({ projectRoot: child, folders: ['.claude'], previous: {} });
 
-    const ours = [`${ws}/CLAUDE.md`, `${ws}/.claude/CLAUDE.md`, `${ws}/AGENTS.md`, `${ws}/.claude/rules/**`];
+    const ours = [underWs('CLAUDE.md'), underWs('.claude', 'CLAUDE.md'), underWs('AGENTS.md'), underWs('.claude', 'rules', '**')];
     expect(written).toEqual({ '.claude': ours });
     expect(JSON.parse(fs.readFileSync(settings, 'utf8'))).toEqual({
       permissions: { allow: ['Bash(ls)'] },
@@ -692,7 +697,7 @@ describe('syncWorkspaceInstructionExcludes', () => {
     repoChild(child);
     const settings = path.join(child, '.claude', 'settings.local.json');
     fs.mkdirSync(path.dirname(settings));
-    const owned = { '.claude': [`${ws}/CLAUDE.md`, `${ws}/AGENTS.md`] };
+    const owned = { '.claude': [underWs('CLAUDE.md'), underWs('AGENTS.md')] };
     fs.writeFileSync(settings, JSON.stringify({ claudeMdExcludes: ['/elsewhere/CLAUDE.md', ...owned['.claude']] }));
 
     expect(await syncWorkspaceInstructionExcludes({ projectRoot: child, folders: ['.claude'], previous: owned, withdraw: true })).toEqual({});
@@ -707,14 +712,14 @@ describe('syncWorkspaceInstructionExcludes', () => {
     repoChild(child);
     const settings = path.join(child, '.claude', 'settings.local.json');
     fs.mkdirSync(path.dirname(settings));
-    fs.writeFileSync(settings, JSON.stringify({ claudeMdExcludes: [`${ws}/CLAUDE.md`] }));
+    fs.writeFileSync(settings, JSON.stringify({ claudeMdExcludes: [underWs('CLAUDE.md')] }));
 
     const owned = await syncWorkspaceInstructionExcludes({ projectRoot: child, folders: ['.claude'], previous: {} });
 
-    expect(owned).toEqual({ '.claude': [`${ws}/.claude/CLAUDE.md`, `${ws}/AGENTS.md`, `${ws}/.claude/rules/**`] });
+    expect(owned).toEqual({ '.claude': [underWs('.claude', 'CLAUDE.md'), underWs('AGENTS.md'), underWs('.claude', 'rules', '**')] });
     expect(await syncWorkspaceInstructionExcludes({ projectRoot: child, folders: ['.claude'], previous: owned })).toEqual(owned);
     await syncWorkspaceInstructionExcludes({ projectRoot: child, folders: ['.claude'], previous: owned, withdraw: true });
-    expect(JSON.parse(fs.readFileSync(settings, 'utf8')).claudeMdExcludes).toEqual([`${ws}/CLAUDE.md`]);
+    expect(JSON.parse(fs.readFileSync(settings, 'utf8')).claudeMdExcludes).toEqual([underWs('CLAUDE.md')]);
   });
 
   it('excludes them from each Claude-format tool, a Claude instance by the folder of its own settings', async () => {
@@ -725,7 +730,7 @@ describe('syncWorkspaceInstructionExcludes', () => {
 
     const owned = await syncWorkspaceInstructionExcludes({ projectRoot: child, folders, previous: {} });
 
-    const ofFolder = (dir: string) => [`${ws}/CLAUDE.md`, `${ws}/${dir}/CLAUDE.md`, `${ws}/AGENTS.md`, `${ws}/${dir}/rules/**`];
+    const ofFolder = (dir: string) => [underWs('CLAUDE.md'), underWs(dir, 'CLAUDE.md'), underWs('AGENTS.md'), underWs(dir, 'rules', '**')];
     expect(files.map((file) => JSON.parse(fs.readFileSync(file, 'utf8')).claudeMdExcludes)).toEqual([ofFolder('.claude'), ofFolder('.acme-claude')]);
     expect(owned).toEqual({ '.claude': ofFolder('.claude'), '.acme-claude': ofFolder('.acme-claude') });
 
@@ -752,12 +757,12 @@ describe('syncWorkspaceInstructionExcludes', () => {
     repoChild(child);
     const claude = path.join(child, '.claude', 'settings.local.json');
     fs.mkdirSync(path.dirname(claude), { recursive: true });
-    fs.writeFileSync(claude, JSON.stringify({ claudeMdExcludes: [`${ws}/AGENTS.md`] }));
+    fs.writeFileSync(claude, JSON.stringify({ claudeMdExcludes: [underWs('AGENTS.md')] }));
 
     const owned = await syncWorkspaceInstructionExcludes({ projectRoot: child, folders: ['.claude', '.acme-claude'], previous: {} });
     await syncWorkspaceInstructionExcludes({ projectRoot: child, folders: Object.keys(owned), previous: owned, withdraw: true });
 
-    expect(JSON.parse(fs.readFileSync(claude, 'utf8')).claudeMdExcludes).toEqual([`${ws}/AGENTS.md`]);
+    expect(JSON.parse(fs.readFileSync(claude, 'utf8')).claudeMdExcludes).toEqual([underWs('AGENTS.md')]);
   });
 
   it('writes nothing in a repo that is not inside a workspace', async () => {
