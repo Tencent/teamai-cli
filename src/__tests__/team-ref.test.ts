@@ -157,13 +157,32 @@ it('returns an explicit clone transition without mutating the config', async () 
   expect(await teamRef.transitionTeamRepo(local, { teamRef: 'main' })).toMatchObject({ transition: 'unpinned' });
 });
 
-it('previews the current clone without switching or mutating its config', async () => {
+it('previews the current clone without pulling, fetching, switching or mutating its config', async () => {
   const local = config();
   const before = structuredClone(local);
-  expect(await teamRef.transitionTeamRepo(local, { teamRef: 'trial', dryRun: true })).toMatchObject({ transition: 'none' });
-  expect(local).toEqual(before);
-  expect((await createGit(clone).revparse(['HEAD'])).trim()).toBe(commit);
-  expect((await createGit(clone).raw(['symbolic-ref', '-q', 'HEAD'])).trim()).toBe('refs/heads/main');
+  const seed = path.join(root, 'seed');
+  const seedGit = createGit(seed);
+  const fetchHead = path.join(clone, '.git', 'FETCH_HEAD');
+  await fs.rm(fetchHead, { force: true });
+  const originRefBefore = (await createGit(clone).revparse(['refs/remotes/origin/main'])).trim();
+
+  await fs.writeFile(path.join(seed, 'dry-run-probe.txt'), 'remote ahead\n');
+  await seedGit.add('dry-run-probe.txt');
+  await seedGit.commit('remote ahead for dry-run check');
+  const remoteAhead = (await seedGit.revparse(['HEAD'])).trim();
+
+  try {
+    expect(await teamRef.transitionTeamRepo(local, { dryRun: true })).toMatchObject({ transition: 'none' });
+    expect(await teamRef.transitionTeamRepo(local, { teamRef: 'trial', dryRun: true })).toMatchObject({ transition: 'none' });
+    expect(local).toEqual(before);
+    expect((await createGit(clone).revparse(['HEAD'])).trim()).toBe(commit);
+    expect((await createGit(clone).raw(['symbolic-ref', '-q', 'HEAD'])).trim()).toBe('refs/heads/main');
+    expect((await createGit(clone).revparse(['refs/remotes/origin/main'])).trim()).toBe(originRefBefore);
+    expect(remoteAhead).not.toBe(commit);
+    await expect(fs.access(fetchHead)).rejects.toThrow();
+  } finally {
+    await seedGit.reset(['--hard', commit]);
+  }
 });
 
 describe('team clone switches that would lose local work', () => {

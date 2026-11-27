@@ -167,9 +167,9 @@ async function teamFetchedWithinTtl(localConfig: LocalConfig, ttl = SOURCE_PULL_
  * tree on disk: the caller must then NOT take that same fast path *this* run,
  * because the parent rev alone cannot see the change (issue #525).
  *
- * `options.dryRun` marks a preview. The refresh still reads the tree, but the
- * self-mode `.gitignore` self-heal is skipped: it rewrites a tracked file in the
- * member's checkout, and a preview writes nothing (#866).
+ * `options.dryRun` marks a preview. The refresh reads the current on-disk tree
+ * without mutating it (no self-mode `.gitignore` self-heal, git pull/fetch,
+ * submodule update, or fetch stamp write), matching the unlocked preview path (#866).
  */
 async function refreshTeamRepo(
   localConfig: LocalConfig,
@@ -284,6 +284,10 @@ async function refreshTeamRepo(
     // Can't resolve a rev → skip the incremental fast-path and do a full sync.
     log.debug('Rev check failed, proceeding with full sync');
     version = null;
+  }
+
+  if (options.dryRun) {
+    return { label: transition.label, version, submodulesFailed: false, submodulesChanged: false };
   }
 
   // Skills distributed as git submodules are not populated by clone/fetch.

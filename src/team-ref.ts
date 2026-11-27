@@ -99,6 +99,8 @@ export async function transitionTeamRepo(
   const localPath = config.repo.localPath;
   const ref = options.teamRef ?? config.repo.ref;
 
+  if (options.dryRun) return { label: ref ? `team ref "${ref}"` : 'current team revision', transition: 'none' };
+
   if (ref === undefined) {
     try { return { label: await pullRepo(localPath, signal), transition: 'none' }; }
     catch (error) { if (!(error instanceof DetachedTeamRepoError)) throw error; }
@@ -107,8 +109,6 @@ export async function transitionTeamRepo(
   try {
     const git = createGit(localPath, signal);
     await createGitWithBlockTimeout(localPath, signal).fetch(['--progress', '--prune', 'origin', '+refs/heads/*:refs/remotes/origin/*', '+refs/tags/*:refs/tags/*']);
-
-    if (options.dryRun) return { label: ref ? `team ref "${ref}"` : 'current team revision', transition: 'none' };
     const defaultBranch = await getDefaultBranch(localPath);
     const symbolic = (await git.raw(['symbolic-ref', '-q', 'HEAD'])).trim();
     const branch = symbolic ? symbolic.replace(/^refs\/heads\//, '') : 'HEAD';
