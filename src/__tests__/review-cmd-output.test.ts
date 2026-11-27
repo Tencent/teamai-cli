@@ -77,7 +77,7 @@ describe('review-cmd English output (#836)', () => {
     const origCwd = process.cwd();
     process.chdir(tmpDir);
     try {
-      await reviewCmd({ idArg: 'no-section', apply: true });
+      expect(await reviewCmd({ idArg: 'no-section', apply: true })).toBe(1);
     } finally {
       process.chdir(origCwd);
     }
@@ -86,6 +86,42 @@ describe('review-cmd English output (#836)', () => {
     expect(output).toContain('apply failed');
     expect(output).toContain('target.section is missing');
     expect(output).not.toMatch(CJK);
+  });
+
+  it('returns exit status 1 when single or batch approvals fail and undefined when empty or skipped-only (#2082)', async () => {
+    const origCwd = process.cwd();
+    process.chdir(tmpDir);
+    try {
+      // Empty batch still succeeds.
+      expect(await reviewCmd({ allApply: true })).toBeUndefined();
+      expect(await reviewCmd({ allApply: true, json: true })).toBeUndefined();
+
+      // Missing ID in --apply text and JSON modes returns 1; read-only show stays undefined.
+      expect(await reviewCmd({ idArg: 'missing', apply: true })).toBe(1);
+      expect(await reviewCmd({ idArg: 'missing', apply: true, json: true })).toBe(1);
+      expect(await reviewCmd({ idArg: 'missing' })).toBeUndefined();
+
+      // Skipped-only batch (risk above maxRisk) still succeeds.
+      seedReviewItem({
+        id: 'high-risk-item',
+        ts: new Date().toISOString(),
+        kind: 'codebase-section',
+        source: 'test',
+        target: { file: 'missing.md', section: 'glossary' },
+        payload: { content: 'body' },
+        risk: 'high',
+      });
+      expect(await reviewCmd({ allApply: true, maxRisk: 'medium' })).toBeUndefined();
+      expect(await reviewCmd({ allApply: true, maxRisk: 'medium', json: true })).toBeUndefined();
+
+      // Failing single and batch apply in text and JSON modes return 1.
+      expect(await reviewCmd({ idArg: 'high-risk-item', apply: true })).toBe(1);
+      expect(await reviewCmd({ idArg: 'high-risk-item', apply: true, json: true })).toBe(1);
+      expect(await reviewCmd({ allApply: true, maxRisk: 'high' })).toBe(1);
+      expect(await reviewCmd({ allApply: true, maxRisk: 'high', json: true })).toBe(1);
+    } finally {
+      process.chdir(origCwd);
+    }
   });
 
   it('apply-failure reason is English when payload.content is empty', async () => {

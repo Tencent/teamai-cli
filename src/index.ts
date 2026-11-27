@@ -2160,7 +2160,9 @@ program
         }
 
         const { reviewCmd } = await import('./review-cmd.js');
-        await reviewCmd({ ...globalOpts, ...cmdOpts, idArg });
+        const exitCode = await reviewCmd({ ...globalOpts, ...cmdOpts, idArg });
+
+        if (exitCode !== undefined) process.exitCode = exitCode;
     });
 
 // ─── Unified hook dispatch (replaces individual hook subcommands) ────
