@@ -472,6 +472,8 @@ export async function envAdd(
   const target = await envFileFromFlags(repoPath, options);
 
   if (!target) return;
+
+  if (target.namespace === null) await warnNamespaceOverridesRoot(localConfig, key);
   const { filePath: envYamlPath, relativePath, where } = target;
 
   // The target env.yaml, or a new one when it does not exist.
@@ -557,6 +559,23 @@ export async function envAdd(
  * Declare a secret in env/secrets.yaml or env/<ns>/secrets.yaml, or update
  * the description and url of one already declared there.
  */
+/**
+ * Warn when an active namespace already declares `key`: its value replaces a root one here (the resolver's
+ * `overrides root`), so a root add changes nothing in this directory until `--role`/`--project` names that namespace.
+ */
+async function warnNamespaceOverridesRoot(localConfig: LocalConfig, key: string): Promise<void> {
+  const resolution = await resolveEntriesFor(envEntryReader, localConfig);
+
+  if (resolution.kind !== 'resolved') return;
+  const namespaceEntry = resolution.entries.find((entry) => entry.namespace !== null && sameEntryKey(entry.name, key));
+
+  if (namespaceEntry === undefined) return;
+  log.warn(
+    `${namespaceEntry.source} declares ${key} in ${namespaceEntry.namespace}, which is active in this directory, and its value `
+      + `replaces a root one here. Run \`teamai env add ${key} <value> --role ${namespaceEntry.namespace}\` (or --project) to change that one.`,
+  );
+}
+
 async function declareSecret(
   repoPath: string,
   key: string,

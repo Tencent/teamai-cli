@@ -901,6 +901,17 @@ scope: 'user',
       expect(log.success).not.toHaveBeenCalled();
     });
 
+    it('warns when an active namespace declares the key a root add is overridden by', async () => {
+      localConfig.projects = ['svc-a'];
+      vi.mocked(requireInit).mockResolvedValue({ localConfig, teamConfig });
+      await fse.outputFile(path.join(repoPath, 'manifest', 'projects.yaml'), 'version: 1\nprojects:\n  - id: svc-a\n    resources:\n      env: [svc-a]\n');
+      await fse.outputFile(path.join(repoPath, 'env', 'svc-a', 'env.yaml'), 'variables:\n  - key: KEY\n    value: ns\n');
+
+      await envAdd('KEY', 'root', {});
+
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('replaces a root one here'));
+    });
+
     it('should add a new variable locally and show push hint', async () => {
       await envAdd('NEW_VAR', 'new_value', {});
 
