@@ -43,6 +43,7 @@ vi.mock('@teamai/shared/log', () => ({
 
 import { getMemberConfig, listMembers, memberReadRoots, mergeMemberConfig, readMemberConfig } from '../members.js';
 import { requireInit } from '../config.js';
+import { pullRepo } from '../utils/git.js';
 import { log } from '@teamai/shared/log';
 
 function mockRequireInit(tmpDir: string, username = 'alice') {
@@ -216,6 +217,25 @@ describe('listMembers', () => {
     expect(allOutput).toContain('Team members (1)');
     // Listing is read-only: it reads through the helper that never publishes the reports branch.
     expect(reportsMocks.readableReportsWorktree).toHaveBeenCalledOnce();
+  });
+
+  it('lists members from an HTTP cache that is not a Git repository', async () => {
+    mockRequireInit(cloneDir);
+    const config = await requireInit();
+    config.localConfig.repo.kind = 'http';
+    await fse.writeFile(path.join(cloneDir, 'members', 'alice.yaml'), YAML.stringify({
+      username: 'alice', displayName: 'Alice', registeredAt: '2025-01-01T00:00:00.000Z',
+    }));
+    vi.mocked(pullRepo).mockRejectedValue(new Error('fatal: not a git repository'));
+
+    try {
+      await listMembers({});
+      const output = consoleSpy.mock.calls.map((call) => call[0]).join('\n');
+      expect(output).toContain('Team members (1)');
+      expect(output).toContain('alice — Alice (you)');
+    } finally {
+      vi.mocked(pullRepo).mockReset().mockResolvedValue('Already up to date.');
+    }
   });
 
   it('should display members without role tags', async () => {
