@@ -74,6 +74,13 @@ describe('review-cmd', () => {
         consoleSpy.mockRestore();
     });
 
+    it('refuses an invalid risk ceiling before reading or applying the queue', async () => {
+        (loadPendingReview as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+        await expect(reviewCmd({ allApply: true, maxRisk: 'invalid' })).rejects.toThrow('--max-risk must be high, medium, or low');
+        expect(loadPendingReview).not.toHaveBeenCalled();
+        expect(removePendingReview).not.toHaveBeenCalled();
+    });
+
     // ── list 模式 ─────────────────────────────────────────
 
     it('无 args → list 调用 loadPendingReview', async () => {

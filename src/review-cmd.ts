@@ -32,7 +32,7 @@ export interface ReviewCmdOptions extends GlobalOptions {
     reason?: string;
     allApply?: boolean;
     /** --all-apply 时按风险过滤；默认 medium */
-    maxRisk?: Risk;
+    maxRisk?: string;
     json?: boolean;
 }
 
@@ -186,6 +186,10 @@ export async function reviewCmd(opts: ReviewCmdOptions): Promise<void> {
 
     // ── all-apply 模式 ────────────────────────────────────
     if (allApply) {
+        if (maxRisk !== 'high' && maxRisk !== 'medium' && maxRisk !== 'low') {
+            throw new Error('--max-risk must be high, medium, or low');
+        }
+
         const items = await loadPendingReview(cwd);
 
         const candidates = items.filter(
