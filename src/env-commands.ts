@@ -666,7 +666,7 @@ export async function envRemove(
     return;
   }
 
-  envConfig.variables.splice(idx, 1);
+  envConfig.variables = envConfig.variables.filter(v => !sameEntryKey(v.key, key));
   await envHandler.writeEnvYaml(envYamlPath, envConfig);
 
   log.success(`Removed env variable${where}: ${key}`);
