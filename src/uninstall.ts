@@ -17,6 +17,7 @@ import { parseJsonAs } from './utils/json.js';
 import { isWithin } from './utils/agent-path.js';
 import { bridgedTeamHookDir, bridgedTeamHookFile, isBridgedTeamHookTool } from './bridged-team-hooks.js';
 import {
+  removeOpenClawA2aControl,
   removeOpenClawHookEntry,
   removeOpenClawTeamHooks,
   OPENCLAW_HOOK_DIR,
@@ -3109,6 +3110,7 @@ async function executeRemoval(
   if (plan.openclawHookDirs.some(({ tool, takesConfig }) => tool === 'openclaw' && takesConfig)) {
     try {
       await removeOpenClawTeamHooks();
+      await removeOpenClawA2aControl();
     } catch (e) {
       log.warn(`Failed to remove the teamai OpenClaw team hooks plugin: ${e instanceof Error ? e.message : String(e)}`);
     }

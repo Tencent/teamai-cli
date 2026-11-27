@@ -6,7 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { transformSync } from 'esbuild';
 import { parseDocument } from 'yaml';
 import {
-  removeOpenClawAgentHook, injectOpenClawHooks, removeOpenClawHookEntry, removeOpenClawHooks, OPENCLAW_HOOK_DIR,
+  removeOpenClawAgentHook, injectOpenClawHooks, refreshOpenClawA2aControl, removeOpenClawA2aControl,
+  removeOpenClawHookEntry, removeOpenClawHooks, OPENCLAW_HOOK_DIR,
 } from '../openclaw-hooks.js';
 import { injectHooksToAllTools, reconcileHooksToAllTools } from '../hooks.js';
 import { openclawWorkspaceDir } from '../locate.js';
@@ -73,6 +74,47 @@ describe('injectOpenClawHooks', () => {
       expect(success).not.toHaveBeenCalled();
     } finally {
       success.mockRestore();
+    }
+  });
+});
+
+describe('OpenClaw A2A control service', () => {
+  it('registers a Gateway service without team hooks and cleans up only its own entry', async () => {
+    const id = 'teamai-a2a-control';
+    const configPath = path.join(tmpDir, 'openclaw.json');
+    const entry = path.join(tmpDir, 'cli.mjs');
+    const output = path.join(tmpDir, 'args.json');
+    const plugin = path.join(tmpDir, id, 'index.mjs');
+    const original = { agents: { defaults: { workspace: wsDir } }, plugins: { entries: { other: { enabled: true } } } };
+    fs.writeFileSync(configPath, JSON.stringify(original));
+    fs.writeFileSync(entry, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(output)}, JSON.stringify(process.argv.slice(2)));\n`);
+    const local = await import('../local-agent.js');
+    const eligible = vi.spyOn(local, 'canRunOpenClawA2aControl').mockReturnValue(true);
+    const config = vi.spyOn(local, 'loadLocalAgentConfig').mockResolvedValue({ endpoint: 'https://example.test', workspaceBindings: {} });
+    let service: { id: string; start(): void; stop(): void } | undefined;
+
+    try {
+      await refreshOpenClawA2aControl(entry);
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).plugins).toEqual({
+        entries: { other: { enabled: true }, [id]: { enabled: true } },
+        load: { paths: [plugin] },
+      });
+      expect(JSON.parse(fs.readFileSync(path.join(tmpDir, id, 'openclaw.plugin.json'), 'utf8')).id).toBe(id);
+      const { default: installed } = await import(pathToFileURL(plugin).href);
+      installed.register({ registerService(value: typeof service) { service = value; } });
+      expect(service?.id).toBe(id);
+      service?.start();
+      service?.start();
+      await expect.poll(() => fs.existsSync(output)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(output, 'utf8'))).toEqual(['source', 'a2a-control', '--report']);
+
+      await removeOpenClawA2aControl();
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual(original);
+      expect(fs.existsSync(plugin)).toBe(false);
+    } finally {
+      service?.stop();
+      config.mockRestore();
+      eligible.mockRestore();
     }
   });
 });

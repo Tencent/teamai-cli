@@ -727,6 +727,16 @@ sourceCmd
   });
 
 sourceCmd
+  .command('a2a-control', { hidden: true })
+  .description('Poll the HTTP source for OpenClaw A2A configuration')
+  .option('--report', 'Refresh the OpenClaw default workspace inventory')
+  .action(async (options: { report?: boolean }) => {
+    const { runOpenClawA2aControl } = await import('./local-agent.js');
+
+    if (!await runOpenClawA2aControl(options.report === true)) process.exitCode = 1;
+  });
+
+sourceCmd
   .command('list')
   .description('List all configured sources')
   .action(async () => {
