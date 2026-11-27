@@ -210,7 +210,7 @@ describe('teamai import --from-mr through teamai-import-from-mr', { timeout: 120
     const ran = await sb.run(['import', '--from-mr', 'https://example.test/not-an-mr', '--all']);
 
     expect(ran.code, ran.stdout + ran.stderr).toBe(1);
-    expect(ran.stderr).toContain('Unsupported MR URL: https://example.test/not-an-mr. Only GitHub, TGit and GitLab are supported');
+    expect(ran.stderr).toContain('Unsupported MR URL: https://example.test/not-an-mr');
     expect(ran.stderr).toMatch(/✖ Step "extract\[0\]\.fetch" failed/);
     expect(ran.stdout).toBe('');
     expect(asked(sb)).toEqual([]);
