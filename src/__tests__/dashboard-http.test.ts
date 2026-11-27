@@ -1,11 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import type http from 'node:http';
 
-import { isLocalWrite } from '../dashboard/http.js';
+import { isLocalHost, isLocalWrite } from '../dashboard/http.js';
 
-/** The dashboard answers every origin for reads; a write must come from the dashboard page (#1124). */
+const request = (headers: Record<string, string>) => ({ headers } as unknown as http.IncomingMessage);
+
+/** Every request must address the dashboard itself, so a DNS-rebound page cannot read sessions. */
+describe('isLocalHost', () => {
+  it('accepts the dashboard on localhost and refuses a rebound or missing host', () => {
+    expect(isLocalHost(request({ host: 'localhost:3721' }), 3721)).toBe(true);
+    expect(isLocalHost(request({ host: '127.0.0.1:3721' }), 3721)).toBe(true);
+    expect(isLocalHost(request({ host: 'LOCALHOST:3721' }), 3721)).toBe(true);
+    expect(isLocalHost(request({ host: 'evil.example:3721' }), 3721)).toBe(false);
+    expect(isLocalHost(request({ host: 'localhost:9999' }), 3721)).toBe(false);
+    expect(isLocalHost(request({}), 3721)).toBe(false);
+  });
+});
+
+/** A write must come from the dashboard page (#1124). */
 describe('isLocalWrite', () => {
-  const request = (headers: Record<string, string>) => ({ headers } as unknown as http.IncomingMessage);
   const json = { 'content-type': 'application/json', host: 'localhost:3721' };
 
   it('accepts a JSON request from the dashboard page', () => {

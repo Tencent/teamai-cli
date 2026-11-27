@@ -1,7 +1,9 @@
 /**
- * Request helpers for the dashboard's write routes. The server answers every
- * origin for reads (CORS *), so a write has to prove it comes from the
- * dashboard page itself, and its body is read with a size limit.
+ * Request helpers for the dashboard's routes. Reads carry prompts, AI output
+ * and paths, so every request must name this dashboard as its Host (a
+ * DNS-rebound page names its own), and no CORS header lets another origin
+ * read a response. A write must also prove it comes from the dashboard page,
+ * and its body is read with a size limit.
  */
 import type http from 'node:http';
 import { z } from 'zod';
@@ -23,17 +25,24 @@ const JsonBodySchema = JsonObjectSchema;
 
 export type JsonBody = z.infer<typeof JsonBodySchema>;
 
+const localHosts = (port: number) => new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
+
+/** True when the request's Host is this dashboard on localhost, not a DNS-rebound name. */
+export function isLocalHost(req: http.IncomingMessage, port: number): boolean {
+  return localHosts(port).has((req.headers.host ?? '').toLowerCase());
+}
+
 /**
  * True for a JSON request whose Host, and Origin when sent, are this
  * dashboard on localhost. A JSON body forces a preflight the server never
  * grants, and a foreign Origin or a rebound Host is refused outright.
  */
 export function isLocalWrite(req: http.IncomingMessage, port: number): boolean {
-  const local = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
+  const local = localHosts(port);
 
   if (!(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) return false;
 
-  if (!local.has(req.headers.host ?? '')) return false;
+  if (!isLocalHost(req, port)) return false;
   const origin = req.headers.origin;
 
   if (origin === undefined) return true;
