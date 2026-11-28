@@ -142,6 +142,13 @@ async function migrateSession(sessionId: string | undefined, opts: MigrationOpti
       }
     }
 
+    const limitText = opts.all ? opts.limit?.trim() : undefined;
+    const limit = limitText === undefined ? undefined : Number(limitText);
+
+    if (limitText !== undefined && (limit === undefined || !/^\+?\d+$/.test(limitText) || !Number.isSafeInteger(limit) || limit <= 0)) {
+      return { error: { code: 'invalid_limit', message: '--limit must be a positive safe integer.' } };
+    }
+
     let source = opts.source;
     let target = opts.target;
 
@@ -225,10 +232,8 @@ async function migrateSession(sessionId: string | undefined, opts: MigrationOpti
       // --all means what it says: migrate every session, no longer silently truncated to 5.
       // Previously slice(0, 5) with no notice, so users thought everything had been migrated.
       // Use --limit when a cap is needed (same semantics as session push).
-      const limitRaw = parseInt(opts.limit ?? '', 10);
-      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 0;
       const sorted = metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-      targets = limit > 0 ? sorted.slice(0, limit) : sorted;
+      targets = limit === undefined ? sorted : sorted.slice(0, limit);
 
       // Large-batch confirmation: --all now migrates everything (no longer truncated to 5).
       // When there are many sessions, list them and require confirmation; -y skips it.

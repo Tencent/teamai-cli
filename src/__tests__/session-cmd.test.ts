@@ -762,6 +762,16 @@ describe('session push archive key (native cwd, not the run directory)', () => {
   });
 });
 
+describe('session migrate batch limit', () => {
+  it.each(['2junk', '0', '9007199254740992'])('rejects %s before listing sessions', async (limit) => {
+    const adapter = fakeAdapter([]);
+    await runSession('migrate', '-s', 'fakeplat', '-t', 'fakeplat', '--all', '--limit', limit);
+    expect(process.exitCode).toBe(1);
+    expect(errored.join('\n')).toContain('--limit must be a positive safe integer');
+    expect(adapter.listConversations).not.toHaveBeenCalled();
+  });
+});
+
 describe('session migrate interactive picker', () => {
   /**
    * 预先把答案排进 ask() 的队列。
