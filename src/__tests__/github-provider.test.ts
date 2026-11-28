@@ -146,6 +146,18 @@ describe('getGitHubToken', () => {
     delete process.env.GH_TOKEN;
     expect(getGitHubToken()).toBeNull();
   });
+
+  it('falls back to GH_TOKEN when GITHUB_TOKEN is only whitespace', () => {
+    process.env.GITHUB_TOKEN = '   ';
+    process.env.GH_TOKEN = 'ghp_bbb';
+    expect(getGitHubToken()).toBe('ghp_bbb');
+  });
+
+  it('trims a token with a trailing newline', () => {
+    process.env.GITHUB_TOKEN = 'ghp_aaa\n';
+    delete process.env.GH_TOKEN;
+    expect(getGitHubToken()).toBe('ghp_aaa');
+  });
 });
 
 // ─── ghIsAuthenticated ──────────────────────────────────

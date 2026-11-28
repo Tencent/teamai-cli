@@ -159,7 +159,16 @@ export async function ensureGhAvailable(): Promise<void> {
  * Returns null if neither is set.
  */
 export function getGitHubToken(): string | null {
-  return process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? null;
+  // Trim and treat blank as absent, like getGitLabToken(): CI often declares
+  // GITHUB_TOKEN with an unset secret, and `$(cat token)` leaves a newline that
+  // undici rejects in the Authorization header.
+  for (const raw of [process.env.GITHUB_TOKEN, process.env.GH_TOKEN]) {
+    const token = raw?.trim();
+
+    if (token) return token;
+  }
+
+  return null;
 }
 
 /**
