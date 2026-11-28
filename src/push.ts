@@ -359,7 +359,7 @@ async function resolveNamespaceForNew(
     `Choose namespace [1-${candidates.length + 1}] (default: 1 = ${candidates[0]}): `,
   );
 
-  const selection = answer ? Number.parseInt(answer, 10) : 1;
+  const selection = answer === '' ? 1 : /^\d+$/.test(answer) ? Number(answer) : NaN;
 
   if (Number.isNaN(selection) || selection < 1 || selection > candidates.length + 1) {
     return {
@@ -912,6 +912,7 @@ async function placeNewResources(args: {
         return false;
       case 'invalid-selection':
         log.error(destination.message);
+        process.exitCode = 2;
 
         return false;
       case 'shared-root':

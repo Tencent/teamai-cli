@@ -307,6 +307,23 @@ describe('push namespace routing', () => {
     expect(said).toContain('--role <ns>');
   });
 
+  it('rejects a partial namespace number instead of selecting the shared root', async () => {
+    const pushedItems: Array<Record<string, unknown>> = [];
+    mockAutoDetectInit.mockResolvedValue({
+      localConfig: makeLocalConfig(),
+      teamConfig: makeTeamConfig(),
+    });
+    mockSkillHandler(pushedItems);
+    readlineAnswer = '3junk';
+
+    await push({ all: true });
+
+    expect(pushedItems).toHaveLength(0);
+    expect(process.exitCode).toBe(2);
+    const { log: pushLog } = await import('@teamai/shared/log');
+    expect(vi.mocked(pushLog.error).mock.calls.flat().join(' ')).toContain('Invalid selection');
+  });
+
   it('allows selecting a non-default namespace', async () => {
     const pushedItems: Array<Record<string, unknown>> = [];
     mockAutoDetectInit.mockResolvedValue({
