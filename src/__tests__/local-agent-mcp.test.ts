@@ -868,6 +868,44 @@ describe('local-agent: MCP install/uninstall commands', () => {
     expect(mcpConfig.mcpServers.clawpro.url).toBe('https://new.example.com/mcp');
   });
 
+  it('rejects incomplete transport settings without changing the MCP config or ownership', async () => {
+    const install = { type: 'install_mcp', scope: 'user', slug: 'clawpro', version: '1.0.0' };
+    const acks = await runResponse({
+      cmds: [{ ...install, id: 9002, mcp_config: { transport: 'http', url: 'https://old.example.com/mcp' } }],
+    });
+    expect(acks[0].status).toBe('success');
+
+    const files = [
+      path.join(tmpDir, '.codebuddy', '.mcp.json'),
+      path.join(tmpDir, '.teamai', 'managed-mcp.json'),
+    ];
+    const before = await Promise.all(files.map((file) => fse.readFile(file, 'utf8')));
+    const invalid = [
+      { mcpConfig: { transport: 'stdio' }, field: 'command' },
+      { mcpConfig: { transport: 'stdio', command: '  ' }, field: 'command' },
+      { mcpConfig: { transport: 'stdio', command: ['node'] }, field: 'command' },
+      { mcpConfig: { transport: 'http' }, field: 'url' },
+      { mcpConfig: { transport: 'http', url: '' }, field: 'url' },
+      { mcpConfig: { transport: 'sse' }, field: 'url' },
+      { mcpConfig: { transport: 'sse', url: '  ' }, field: 'url' },
+    ];
+    const rejected = await runResponse({
+      cmds: invalid.map(({ mcpConfig }, index) => ({
+        ...install,
+        id: 9200 + index,
+        slug: index === 0 ? 'new-mcp' : install.slug,
+        version: '2.0.0',
+        mcp_config: mcpConfig,
+      })),
+    });
+
+    expect(rejected).toMatchObject(invalid.map(({ mcpConfig, field }) => ({
+      status: 'failed',
+      error: expect.stringContaining(`${mcpConfig.transport} transport requires a non-blank ${field}`),
+    })));
+    expect(await Promise.all(files.map((file) => fse.readFile(file, 'utf8')))).toEqual(before);
+  });
+
   // ─── install_mcp: 拒绝覆盖用户自有 server ─────────────────────────
   it('install_mcp refuses to overwrite a user-owned server', async () => {
     // 预先写入一个用户手动创建的 server（不在 managed-mcp 中）
