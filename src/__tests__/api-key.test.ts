@@ -45,6 +45,12 @@ describe('resolveApiKey', () => {
     expect(resolveApiKey()).toBe('legacy-key');
   });
 
+  it('falls back to TEAMAI_API_KEY when TEAMAI_API_TOKEN is only whitespace', () => {
+    process.env.TEAMAI_API_TOKEN = '   ';
+    process.env.TEAMAI_API_KEY = 'legacy-key';
+    expect(resolveApiKey()).toBe('legacy-key');
+  });
+
   it('reads the file when no env var is set', async () => {
     await saveApiKey('  on-disk-key  ');
     expect(resolveApiKey()).toBe('on-disk-key');
