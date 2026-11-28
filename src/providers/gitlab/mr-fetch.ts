@@ -93,7 +93,20 @@ function normalizeHost(host: string): string {
 function hostMatchesConfigured(urlHost: string): boolean {
   // Resolved lazily so a changed GITLAB_URL / TEAMAI_GITLAB_HOST (or a test
   // stubbing it) takes effect without re-importing this module.
-  return normalizeHost(urlHost) === normalizeHost(resolveGitLabHost());
+  const normalized = normalizeHost(urlHost);
+
+  if (normalized === normalizeHost(resolveGitLabHost())) return true;
+
+  // A bare TEAMAI_GITLAB_HOST override (e.g. `gitlab.corp`) is a documented,
+  // valid pairing with a ported GITLAB_URL (e.g. `https://gitlab.corp:8443`).
+  // gitlabBaseUrl() already asserts the two name the same host, so accepting
+  // the GITLAB_URL host here keeps the SSRF guard intact while allowing the
+  // MR URL to carry that port.
+  try {
+    return normalized === normalizeHost(new URL(gitlabBaseUrl()).host);
+  } catch {
+    return false;
+  }
 }
 
 const GitLabUserSchema = z.object({ username: z.string() });
