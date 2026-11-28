@@ -121,6 +121,16 @@ describe('readRejections API failures', () => {
     }
   });
 
+  it('reads rejections when TGit returns a string iid from the MR lookup', async () => {
+    vi.stubEnv('TGIT_TOKEN', 'test-token');
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 42, iid: '7' }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 })));
+
+    const result = await readRejections('https://git.woa.com/acme/app/merge_requests/7');
+    expect(result.allIds.size).toBe(0);
+  });
+
   it('fails when the TGit note list cannot be read', async () => {
     vi.stubEnv('TGIT_TOKEN', 'test-token');
     vi.stubGlobal('fetch', vi.fn()
