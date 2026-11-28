@@ -170,6 +170,36 @@ describe('ZCode model-I/O parser', () => {
       .toEqual(['continue', 'first', 'continue', 'second']);
   });
 
+  it.each(['full', 'delta'] as const)('preserves a new prompt after a compacted %s replacement without assistants', (kind) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), `teamai-zcode-no-assistant-${kind}-`));
+    roots.push(root);
+    const id = '00000000-0000-0000-0000-000000000000';
+    const file = path.join(root, `model-io-sess_${id}.jsonl`);
+    const record = (requestId: string, startedAt: string, messages: unknown[], response: string) => ({
+      type: 'model_io', sessionId: `sess_${id}`, turnId: requestId, requestId, attempt: 1,
+      model: { modelId: 'model', providerId: 'provider' }, startedAt,
+      completedAt: startedAt.replace('.000Z', '.500Z'),
+      request: { messagesKind: requestId === 'request-1' ? 'full' : kind, messageOffset: 0, messages },
+      response: { text: response, modelId: 'model' },
+    });
+    const lines = [
+      record('request-1', '2026-11-15T10:00:01.000Z', [
+        { role: 'user', content: 'early' }, { role: 'assistant', content: 'first' },
+        { role: 'user', content: 'middle' }, { role: 'assistant', content: 'second' },
+      ], 'third'),
+      record('request-2', '2026-11-15T10:00:02.000Z', [
+        { role: 'system', content: 'compacted summary' }, { role: 'user', content: 'late' },
+      ], 'fourth'),
+    ];
+    fs.writeFileSync(file, lines.map((line) => JSON.stringify(line)).join('\n'));
+
+    const parsed = parseZCodeFile(file)!;
+
+    expect(parsed.messages.map(({ role }) => role)).toEqual(['user', 'user', 'assistant', 'user', 'assistant']);
+    expect(parsed.messages.flatMap(({ content }) => content.flatMap((block) => block.type === 'text' ? [block.text] : [])))
+      .toEqual(['early', 'middle', 'third', 'late', 'fourth']);
+  });
+
   it('keeps every request in an agentic turn and accepts object image sources', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'teamai-zcode-agentic-'));
     roots.push(root);

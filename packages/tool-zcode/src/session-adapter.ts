@@ -161,7 +161,11 @@ function requestAdditions(record: ModelIo, previousLength: number, firstRequest:
   else {
     const lastAssistant = update.findLastIndex(({ role }) => role === 'assistant');
 
+    const replacesWindow = record.request.messagesKind === 'full' ||
+      record.request.messageOffset < previousLength;
+
     if (lastAssistant >= 0) additions = update.slice(lastAssistant + 1);
+    else if (replacesWindow) additions = update;
     else {
       const extendedBy = Math.max(record.request.messageOffset + update.length - previousLength, 0);
       additions = extendedBy ? update.slice(-extendedBy) : [];
