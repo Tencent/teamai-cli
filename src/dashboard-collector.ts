@@ -1835,7 +1835,10 @@ export function dedupeEvents(events: DashboardEvent[]): DashboardEvent[] {
 
       if (prev.tool !== e.tool && gap <= CROSS_TOOL_DEDUP_WINDOW_MS) {
         const carrier = eventPayloadScore(e) > eventPayloadScore(prev) ? e : prev; // tie -> prev (earlier)
-        result[idx] = { ...carrier, tool: preferTool(prev.tool, e.tool) };
+        // Keep the slot's timestamp: the carrier may be the later event, but
+        // replacing this slot with its timestamp would break the ascending
+        // order (a later event could then sit before an earlier one).
+        result[idx] = { ...carrier, timestamp: prev.timestamp, tool: preferTool(prev.tool, e.tool) };
         continue; // collapsed; do not push
       }
     }

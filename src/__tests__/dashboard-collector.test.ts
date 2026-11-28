@@ -3015,6 +3015,19 @@ describe('dedupeEvents', () => {
     expect(out[0].tokens?.input).toBe(100);
   });
 
+  it('keeps output timestamp-ascending when the richer carrier is a later event', () => {
+    // A later event may be the richer carrier of a collapsed pair. Its timestamp
+    // must not move the collapsed slot past events of other sessions (#2160).
+    const events: DashboardEvent[] = [
+      ev({ sessionId: 's1', type: 'tool_use', tool: 'claude', timestamp: '2026-09-18T00:00:00.000Z', toolName: 'Bash' }),
+      ev({ sessionId: 's2', type: 'tool_use', tool: 'claude', timestamp: '2026-09-18T00:00:01.000Z', toolName: 'Read' }),
+      ev({ sessionId: 's1', type: 'tool_use', tool: 'claude-code', timestamp: '2026-09-18T00:00:02.000Z', toolName: 'Bash', tokens: { input: 10, output: 5, cacheRead: 0, cacheCreation: 0 } }),
+    ];
+    const out = dedupeEvents(events);
+    const times = out.map((e) => Date.parse(e.timestamp));
+    expect(times).toEqual([...times].sort((a, b) => a - b));
+  });
+
   it('does not merge a cross-tool pair beyond the dedup window', () => {
     const events: DashboardEvent[] = [
       ev({ type: 'prompt_submit', tool: 'claude', timestamp: '2026-09-18T00:00:00.000Z', promptSummary: 'x' }),
