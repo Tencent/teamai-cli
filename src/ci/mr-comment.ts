@@ -651,7 +651,7 @@ export async function postIndividualComments(
         const { source_branch, target_branch } = mrList[0];
 
         const compareResp = await tgitRequest(
-          `/projects/${projectId}/repository/compare?from=${target_branch}&to=${source_branch}`,
+          `/projects/${projectId}/repository/compare?${tgitCompareQuery(target_branch, source_branch)}`,
           'GET',
         );
 
@@ -786,4 +786,15 @@ export async function postCodebaseGraphComment(
   }
 
   log.success('Codebase graph change comment posted');
+}
+
+/**
+ * Build the query string for a TGit repository compare request. Branch names
+ * may legally contain URL-significant characters (`&`, `#`, `+`, `%`); raw
+ * interpolation truncates the query and makes the compare target the wrong
+ * branch, so the review comment loses its file anchor. URLSearchParams encodes
+ * both values. Exported for a platform-independent regression test.
+ */
+export function tgitCompareQuery(from: string, to: string): string {
+  return new URLSearchParams({ from, to }).toString();
 }
