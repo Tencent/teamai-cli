@@ -112,6 +112,9 @@ const CodexPayloadSchema = z
     model_provider: JsonValueSchema.optional(),
     model: OptionalString,
     role: JsonValueSchema.optional(),
+    message: OptionalString,
+    turn_id: OptionalString,
+    internal_chat_message_metadata_passthrough: z.object({ turn_id: OptionalString }).optional().catch(undefined),
     content: JsonValueSchema.optional(),
     item: z.object({ type: JsonValueSchema.optional(), content: CodexItemListSchema }).optional().catch(undefined),
     name: JsonValueSchema.optional(),
@@ -699,6 +702,68 @@ export class CodexAdapter extends AgentAdapter {
 
   private buildMessages(records: CodexRecord[]): Message[] {
     const messages: Message[] = [];
+    const legacy = new Map<string, number>();
+    const completed = new Map<string, number>();
+    const scoped = new Map<string, number>();
+    const scopedKeysByText = new Map<string, string[]>();
+    const scopedResponses = new Map<string, number>();
+
+    for (const { type, payload } of records) {
+      if (type === 'response_item' && payload.type === 'message' && payload.role === 'user') {
+        const turn = payload.internal_chat_message_metadata_passthrough?.turn_id;
+
+        if (turn) {
+          const text = joinedItemText(CodexItemListSchema.parse(payload.content)).trim();
+          const key = JSON.stringify([turn, text]);
+          scopedResponses.set(key, (scopedResponses.get(key) ?? 0) + 1);
+        }
+
+        continue;
+      }
+
+      if (type !== 'event_msg') continue;
+
+      if (payload.type === 'user_message' && payload.message !== undefined) {
+        const text = payload.message.trim();
+        legacy.set(text, (legacy.get(text) ?? 0) + 1);
+      } else if (payload.type === 'item_completed' && payload.item?.type === 'UserMessage') {
+        const text = joinedItemText(payload.item.content).trim();
+        const turn = payload.turn_id;
+        const counts = turn ? scoped : completed;
+        const key = turn ? JSON.stringify([turn, text]) : text;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+
+        if (turn && !scopedKeysByText.get(text)?.includes(key)) {
+          scopedKeysByText.set(text, [...scopedKeysByText.get(text) ?? [], key]);
+        }
+      }
+    }
+
+    // A rollout can record both legacy and completed event formats for the same
+    // turn. Combine scoped and unscoped completed events before deduplicating
+    // them against legacy events, then reserve the scoped share for turn matches.
+    const remaining = new Map<string, number>();
+    const eventTexts = new Set([...legacy.keys(), ...completed.keys(), ...scopedKeysByText.keys()]);
+
+    for (const text of eventTexts) {
+      const keys = scopedKeysByText.get(text) ?? [];
+      const scopedCount = keys.reduce((count, key) => count + (scoped.get(key) ?? 0), 0);
+      const completedCount = (completed.get(text) ?? 0) + scopedCount;
+      const total = Math.max(legacy.get(text) ?? 0, completedCount);
+
+      remaining.set(text, total - scopedCount);
+    }
+
+    // Unscoped responses may fall back to a text match, but must not consume a
+    // scoped event that a later response can match exactly by turn ID.
+
+    const reservedScoped = new Map<string, number>();
+
+    for (const [key, count] of scopedResponses) {
+      reservedScoped.set(key, Math.min(count, scoped.get(key) ?? 0));
+    }
+
+    const hasPromptEvents = remaining.size > 0 || scoped.size > 0;
     // Images returned by tools go in a user message of their own after the round's tool results
     let toolImages: ContentBlock[] = [];
     let toolImagesTimestamp: string | undefined;
@@ -742,7 +807,30 @@ export class CodexAdapter extends AgentAdapter {
 
         const irRole = role === 'user' ? 'user' : 'assistant';
         const content = this.parseMessageContent(payload.content);
-        messages.push({ role: irRole, content, timestamp: parseCodexTimestamp(rec.timestamp) });
+        const message: Message = { role: irRole, content, timestamp: parseCodexTimestamp(rec.timestamp) };
+
+        if (irRole === 'user' && hasPromptEvents) {
+          const text = joinedItemText(CodexItemListSchema.parse(payload.content)).trim();
+          const turn = payload.internal_chat_message_metadata_passthrough?.turn_id;
+
+          const key = turn
+            ? JSON.stringify([turn, text])
+            : scopedKeysByText.get(text)?.find((candidate) =>
+              (scoped.get(candidate) ?? 0) > (reservedScoped.get(candidate) ?? 0));
+
+          const matches = key ? (scoped.get(key) ?? 0) : 0;
+          const count = remaining.get(text) ?? 0;
+
+          if (key && matches > 0) {
+            scoped.set(key, matches - 1);
+
+            if (turn) reservedScoped.set(key, Math.max((reservedScoped.get(key) ?? 0) - 1, 0));
+          }
+          else if (count > 0) remaining.set(text, count - 1);
+          else message.metadata = { synthetic: true };
+        }
+
+        messages.push(message);
       } else if (ptype === 'function_call' || ptype === 'custom_tool_call') {
         const name = String(payload.name ?? '');
         const irName = normalizeToolName(name);
