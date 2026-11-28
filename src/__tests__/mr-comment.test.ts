@@ -126,6 +126,21 @@ describe('postOrUpdateMrComment API failures', () => {
     }
   });
 
+  it('resolves the global id when TGit returns a string iid', async () => {
+    vi.stubEnv('TGIT_TOKEN', 'test-token');
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 42, iid: '7' }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 99 }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await postOrUpdateMrComment(
+      'https://git.woa.com/acme/app/merge_requests/7', undefined, undefined,
+    );
+
+    expect(result.created).toBe(true);
+  });
+
   it('fails without creating a duplicate TGit note when listing notes fails', async () => {
     vi.stubEnv('TGIT_TOKEN', 'test-token');
     const fetchMock = vi.fn()

@@ -250,7 +250,9 @@ type TGitNote = z.infer<typeof TGitNoteSchema>;
 
 const TGitMRInfoSchema = z.object({
   id: z.number(),
-  iid: z.number(),
+  // Some TGit instances return iid as a string; providers/tgit/mr-fetch.ts
+  // already accepts both. Keep the CI lookup equally permissive.
+  iid: z.union([z.number(), z.string()]),
 });
 
 /** The branches of an MR, which the compare API takes. */

@@ -136,7 +136,8 @@ const TGitNoteSchema = z.object({
   comments: z.array(z.object({ comment: z.number().optional().catch(undefined) })).nullish(),
 });
 
-const TGitMRInfoSchema = z.object({ id: z.number(), iid: z.number() });
+// Match providers/tgit/mr-fetch.ts: some TGit instances return a string iid.
+const TGitMRInfoSchema = z.object({ id: z.number(), iid: z.union([z.number(), z.string()]) });
 
 async function tgitRequest(path: string): Promise<Response> {
   return tgitFetch(path);
