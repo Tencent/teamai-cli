@@ -809,6 +809,115 @@ export type ManagedHookRecord = {
   codexEntry?: CodexHookMatcher;
 };
 
+/**
+ * A pull registered `localConfig.projectRoot` as a workspace and another
+ * registered workspace of the same data home is a strict ancestor of it
+ * (#2124): that ancestor's team-hook gates must leave the new root out, or
+ * both prefixes match a session's `$PWD` in the nested checkout and every
+ * team hook fires twice. Regates the ancestor's records in the manifest and
+ * swaps the commands in each tool's user-level settings file.
+ */
+export async function regateAncestorWorkspaceGates(
+  teamConfig: TeamaiConfig,
+  localConfig: LocalConfig,
+  manifestPath: string,
+): Promise<void> {
+  const dataHome = localConfig.dataHome;
+  const newRoot = localConfig.projectRoot;
+
+  if (!dataHome || !newRoot || localConfig.scope !== 'project') return;
+
+  // The registered roots the new one sits strictly inside, deepest first.
+  const workspaces = path.join(dataHome, 'workspaces');
+  let entries: Array<import('node:fs').Dirent>;
+
+  try {
+    entries = await (await import('node:fs')).promises.readdir(workspaces, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const canonicalNew = canonicalProjectRoot(newRoot);
+  const ancestors: string[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    const root = (await readFileSafe(path.join(workspaces, entry.name, 'root')) ?? '').trim();
+
+    if (!root) continue;
+
+    const canonical = canonicalProjectRoot(root);
+
+    if (canonical === canonicalNew) continue;
+
+    const relative = path.relative(canonical, canonicalNew);
+
+    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) ancestors.push(canonical);
+  }
+
+  if (ancestors.length === 0) return;
+
+  ancestors.sort((a, b) => b.length - a.length);
+  const parentRoot = ancestors[0];
+  const childRoots = [canonicalNew];
+
+  // Only tools whose team hooks live in a user-level settings file: the same
+  // set releaseRemovedCheckoutHooks addresses below, resolved the same way so
+  // a relocated tool home is honoured. A bridged tool keeps its team hooks in
+  // its own bridge file, which no gate is written into.
+  const tools = TOOL_IDS.filter((tool) => !isBridgedTeamHookTool(tool) && hookSettingsFormatOf(tool) !== null);
+
+  const manifest = await readManifest(manifestPath);
+  // Where each tool's hook pass wrote, so a team's own toolPaths are honoured.
+  const toolPaths = hookToolPathsForConfig(teamConfig, localConfig);
+  const swaps = new Map<string, string>();
+
+  for (const tool of tools) {
+    const records = manifest[tool] ?? [];
+    const regated = new Map<string, string>();
+
+    for (const record of records) {
+      // This ancestor's records only: the manifest and the settings file are
+      // shared by every project on the machine, so another project's gate is
+      // never rewritten (#2077's review raised the same sharing for Cursor).
+      if (!isGatedForProject(record.command, parentRoot)) continue;
+
+      const next = regateTeamHookCommand(record.command, parentRoot, childRoots);
+
+      if (next && next !== record.command) regated.set(record.command, next);
+    }
+
+    if (regated.size === 0) continue;
+
+    const settingsRelative = toolPaths[tool]?.settings;
+
+    if (settingsRelative === undefined) continue;
+
+    const settingsPath = hookSettingsFile(tool, getUserHome(), settingsRelative);
+
+    if (!(await pathExists(settingsPath))) continue;
+
+    const file = expandHome(settingsPath);
+    const contents = await readJsonObject(file, hookSyntaxOf(tool));
+
+    if (contents.kind !== 'ok' || !isJsonValue(contents.value)) continue;
+    const swap = (value: JsonValue): JsonValue => mapStrings(value, (command) => regated.get(command) ?? command);
+
+    await writeHookFile(file, swap(contents.value));
+
+    for (const [from, to] of regated) swaps.set(from, to);
+    manifest[tool] = records.map((record) => {
+      const next = regated.get(record.command);
+
+      // SAFETY: the spread keeps every record field; only the command string is swapped for its regated form.
+      return next ? ({ ...record, command: next } as ManagedHookRecord) : record;
+    });
+  }
+
+  if (swaps.size > 0) await writeJson(expandHome(manifestPath), manifest);
+}
+
 /** ~/.teamai/managed-hooks.json — team hooks injected per tool. */
 export type ManagedHooksManifest = Record<string, ManagedHookRecord[]>;
 
