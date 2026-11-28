@@ -374,4 +374,16 @@ describe('scopeScoring recall_adoption (#1391)', () => {
       sessions: { policies: { attended: { policy: 'ask', source: { kind: 'setting', key: 'config.yaml scoring.sessions.attended' } } } },
     });
   });
+
+  it('fills the unset attended key when TEAMAI_UPVOTE_JUDGE=1 and config sets only unattended', async () => {
+    vi.stubEnv('TEAMAI_UPVOTE_JUDGE', '1');
+
+    expect(await scopeScoring(teamRepo({}, { scoring: { sessions: { unattended: 'off' } } }))).toMatchObject({
+      ok: true,
+      sessions: { policies: {
+        attended: { policy: 'auto', source: { kind: 'setting', key: 'TEAMAI_UPVOTE_JUDGE=1 as scoring.sessions.attended' } },
+        unattended: { policy: 'off', source: { kind: 'setting', key: 'config.yaml scoring.sessions.unattended' } },
+      } },
+    });
+  });
 });

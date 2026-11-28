@@ -174,7 +174,10 @@ function sessionScoring({ config, machine, rootFile, inNamespaces, problems }: {
   inNamespaces: readonly TeamFile[];
   problems: string[];
 }): SessionScoring {
-  const member = config.scoring?.sessions ?? (isUpvoteJudgeAlias() ? { attended: 'auto' } : undefined);
+  const aliasOn = isUpvoteJudgeAlias();
+  const aliasKey = `${UPVOTE_JUDGE_ALIAS}=1 as scoring.sessions`;
+  const configSessions = config.scoring?.sessions;
+  const member = configSessions ?? (aliasOn ? { attended: 'auto' } : undefined);
   const limit = config.scoring?.daily_limit;
   // The config schema keeps an invalid daily_limit as its text, so only a number is a limit.
   const memberLimit = z.number().safeParse(limit).data;
@@ -183,7 +186,16 @@ function sessionScoring({ config, machine, rootFile, inNamespaces, problems }: {
   if (limit !== undefined && memberLimit === undefined) problems.push(`config.yaml scoring.daily_limit is ${limit}, not a whole number of 0 or more, so it is ignored`);
 
   if (machine?.daily_limit !== undefined && machineDailyLimit === undefined) problems.push(`~/.teamai/config.yaml scoring.daily_limit is ${machine.daily_limit}, not a whole number of 0 or more, so it is ignored`);
-  const fromMember = SessionPolicy.read(config.scoring?.sessions === undefined && member !== undefined ? `${UPVOTE_JUDGE_ALIAS}=1 as scoring.sessions` : 'config.yaml scoring.sessions', member ?? {}, { booleans: true });
+  const fromMember = SessionPolicy.read(configSessions === undefined && member !== undefined ? aliasKey : 'config.yaml scoring.sessions', member ?? {}, { booleans: true });
+
+  if (aliasOn && configSessions !== undefined && fromMember.set.attended === undefined) {
+    // The alias fills each key the member leaves unset. A partial config.yaml
+    // mapping (e.g. only unattended) must still get attended=auto from the alias.
+    const aliasFill = SessionPolicy.read(aliasKey, { attended: 'auto' }, { booleans: true });
+
+    fromMember.set.attended = aliasFill.set.attended;
+  }
+
   const fromMachine = SessionPolicy.read('~/.teamai/config.yaml scoring.sessions', machine?.sessions ?? {}, { booleans: true });
   problems.push(...fromMember.problems, ...fromMachine.problems);
   const defaults = { attended: 'off', unattended: 'auto' } as const;
