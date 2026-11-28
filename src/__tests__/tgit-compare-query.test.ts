@@ -20,12 +20,15 @@ describe('tgitCompareQuery', () => {
     expect(params.get('to')).toBe('feature/cache&db');
   });
 
-  it('keeps a hash inside the branch value', () => {
+  it('keeps a hash inside the branch value in a complete compare URL', () => {
     const query = tgitCompareQuery('release#1', 'bug#123');
-    const params = new URLSearchParams(query);
+    const url = new URL(
+      `https://git.example.com/api/v4/projects/42/repository/compare?${query}`,
+    );
 
-    expect(params.get('from')).toBe('release#1');
-    expect(params.get('to')).toBe('bug#123');
+    expect(url.searchParams.get('from')).toBe('release#1');
+    expect(url.searchParams.get('to')).toBe('bug#123');
+    expect(url.hash).toBe('');
   });
 
   it('round-trips plus and percent signs', () => {
