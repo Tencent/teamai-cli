@@ -5734,6 +5734,12 @@ function mcpConfigToDef(slug: string, cfg: NonNullable<LocalAgentCommand['mcp_co
     throw new Error(`install_mcp: unsupported transport "${cfg.transport}" for server "${slug}"`);
   }
 
+  const requiredField = transport === 'stdio' ? 'command' : 'url';
+
+  if (!z.string().trim().min(1).safeParse(cfg[requiredField]).success) {
+    throw new Error(`install_mcp: ${transport} transport requires a non-blank ${requiredField} for server "${slug}"`);
+  }
+
   return {
     name: slug,
     transport,
