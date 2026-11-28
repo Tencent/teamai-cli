@@ -13,6 +13,7 @@ import { PACKAGED_SKILL_DIGESTS } from './packaged-skill-digests.js';
 import { keepsTrackedCopy } from './resources/delivered-copies.js';
 import { BUILTIN_SKILL_NAMES } from './cli-skill-names.js';
 import { allowsSkillDirectory } from './skill-directory.js';
+import { readGenerated } from './workflow/discovery/generated-marker.js';
 
 /**
  * The digest PACKAGED_SKILL_DIGESTS records for a file: sha256 of its bytes.
@@ -51,13 +52,22 @@ export async function ownedSkillFiles(skillName: string, paths?: readonly string
   return owned;
 }
 
-/** True when `file` sits at an owned path with content a release shipped there. */
-export async function isOwnedFile(file: string, relative: string, owned: OwnedSkillFiles): Promise<boolean> {
+/** True when `file` sits at an owned path with content a release shipped there or it is the named workflow's unedited stub. */
+export async function isOwnedFile(file: string, relative: string, owned: OwnedSkillFiles, generatedStub?: string): Promise<boolean> {
   const digests = owned.get(relative);
 
-  if (!digests) return false;
+  const canBeStub = relative === 'SKILL.md' && generatedStub !== undefined;
 
-  return digests.has(packagedSkillDigest(await readRegularFile(file)));
+  if (!digests && !canBeStub) return false;
+  const content = await readRegularFile(file);
+
+  if (digests?.has(packagedSkillDigest(content))) return true;
+
+  if (!canBeStub) return false;
+
+  const generated = readGenerated(content.toString('utf8'));
+
+  return generated.kind === 'ours' && generated.name === generatedStub && !generated.edited;
 }
 
 /**
@@ -174,7 +184,7 @@ export async function removeOwnedFiles(
   dir: string,
   owned: OwnedSkillFiles,
   baseDir: string,
-  backupDir?: string,
+  { backupDir, generatedStub }: { backupDir?: string; generatedStub?: string } = {},
 ): Promise<PruneResult> {
   const result: PruneResult = {
     skippedSymlink: false, foreign: 0, tracked: 0, unbackedUp: [], notRemoved: [], backedUp: 0,
@@ -210,11 +220,8 @@ export async function removeOwnedFiles(
     const file = path.join(dir, relative);
 
     try {
-      // Ours only at a path a release shipped *and* with content one of them
-      // shipped there. A member's edit, or a skill of their own that uses a
-      // packaged name under a root TeamAI never managed, fails the second test
-      // and stays, with its directory. No release shipped a symlink.
-      if (!(await fs.promises.lstat(file)).isSymbolicLink() && await isOwnedFile(file, relative, owned)) proven.add(relative);
+      // A link cannot prove ownership of the bytes read through it.
+      if (!(await fs.promises.lstat(file)).isSymbolicLink() && await isOwnedFile(file, relative, owned, generatedStub)) proven.add(relative);
     } catch (e) {
       // Unreadable, so unprovable: kept, and said so.
       result.notRemoved.push({ file, error: e instanceof Error ? e.message : String(e) });

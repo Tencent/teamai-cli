@@ -231,6 +231,24 @@ describe('parseSections — 接受 --from-iwiki 锚点', () => {
         expect(sections[1].slug).toBe('glossary');
     });
 
+    it('keeps an iWiki heading outside the managed block without adding an empty heading', () => {
+        const md = [
+            '## Glossary',
+            '',
+            '<!-- managed-by: import --from-iwiki, section: glossary -->',
+            'Old glossary',
+            '<!-- /managed-by: glossary -->',
+        ].join('\n');
+
+        expect(patchManagedSection(md, 'glossary', 'New glossary', {})).toBe([
+            '## Glossary',
+            '',
+            '<!-- managed-by: import --from-repo, section: glossary -->',
+            'New glossary',
+            '<!-- /managed-by: glossary -->',
+        ].join('\n'));
+    });
+
     it('patchManagedSection 在含 --from-iwiki 锚点的 md 上 patch 成功', () => {
         const result = patchManagedSection(
             iwikiMd,

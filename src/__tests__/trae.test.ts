@@ -200,7 +200,10 @@ describe('Trae support', () => {
     expect(shared.success).toBe(true);
   });
 
-  it('keeps a tools-filtered server in the shared file while either edition targets it', async () => {
+  // This one writes and re-reads both editions' skills trees while the rest of the
+  // Windows job runs in parallel, and 15 s is not enough on a loaded runner: it
+  // passes alone and times out in the suite.
+  it('keeps a tools-filtered server in the shared file while either edition targets it', { timeout: 120_000 }, async () => {
     const tmp = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-trae-filtered-'));
     try {
       const home = path.join(tmp, 'home');

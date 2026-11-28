@@ -869,6 +869,23 @@ describe('recallFeedback', () => {
     vi.doUnmock('../config.js');
   });
 
+  it.each([{}, { positive: 'doc-a', negative: 'doc-b' }])('refuses ambiguous or missing feedback options without writing', async (options) => {
+    const votesDir = path.join(tmpDir, '.teamai', 'user-votes');
+    fs.mkdirSync(votesDir, { recursive: true });
+    const votePath = path.join(votesDir, 'testuser.yaml');
+    await incrementRecalled(votePath, ['doc-a']);
+    const before = fs.readFileSync(votePath, 'utf8');
+    const previousExitCode = process.exitCode;
+    try {
+      process.exitCode = 0;
+      await recallFeedback(options);
+      expect(process.exitCode).toBe(1);
+      expect(fs.readFileSync(votePath, 'utf8')).toBe(before);
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
+
   it('positive increments upvoted_count', async () => {
     const votesDir = path.join(tmpDir, '.teamai', 'user-votes');
     fs.mkdirSync(votesDir, { recursive: true });

@@ -6,7 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { transformSync } from 'esbuild';
 import { parseDocument } from 'yaml';
 import {
-  removeOpenClawAgentHook, injectOpenClawHooks, removeOpenClawHookEntry, removeOpenClawHooks, OPENCLAW_HOOK_DIR,
+  removeOpenClawAgentHook, injectOpenClawHooks, refreshOpenClawA2aControl, removeOpenClawA2aControl,
+  removeOpenClawHookEntry, removeOpenClawHooks, OPENCLAW_HOOK_DIR,
 } from '../openclaw-hooks.js';
 import { injectHooksToAllTools, reconcileHooksToAllTools } from '../hooks.js';
 import { openclawWorkspaceDir } from '../locate.js';
@@ -73,6 +74,112 @@ describe('injectOpenClawHooks', () => {
       expect(success).not.toHaveBeenCalled();
     } finally {
       success.mockRestore();
+    }
+  });
+});
+
+describe('OpenClaw A2A control service', () => {
+  it('registers a Gateway service without team hooks and cleans up only its own entry', async () => {
+    const id = 'teamai-a2a-control';
+    const configPath = path.join(tmpDir, 'openclaw.json');
+    const entry = path.join(tmpDir, 'cli.mjs');
+    const output = path.join(tmpDir, 'args.json');
+    const plugin = path.join(tmpDir, id, 'index.mjs');
+    const original = { agents: { defaults: { workspace: wsDir } }, plugins: { entries: { other: { enabled: true } } } };
+    fs.writeFileSync(configPath, JSON.stringify(original));
+    fs.writeFileSync(entry, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(output)}, JSON.stringify(process.argv.slice(2)));\n`);
+    const local = await import('../local-agent.js');
+    const eligible = vi.spyOn(local, 'canRunOpenClawA2aControl').mockReturnValue(true);
+    const config = vi.spyOn(local, 'loadLocalAgentConfig').mockResolvedValue({ endpoint: 'https://example.test', workspaceBindings: {} });
+    let service: { id: string; start(): void; stop(): void } | undefined;
+
+    try {
+      await refreshOpenClawA2aControl(entry);
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).plugins).toEqual({
+        entries: { other: { enabled: true }, [id]: { enabled: true } },
+        load: { paths: [plugin] },
+      });
+      expect(JSON.parse(fs.readFileSync(path.join(tmpDir, id, 'openclaw.plugin.json'), 'utf8')).id).toBe(id);
+      const { default: installed } = await import(pathToFileURL(plugin).href);
+      installed.register({ registerService(value: typeof service) { service = value; } });
+      expect(service?.id).toBe(id);
+      service?.start();
+      service?.start();
+      await expect.poll(() => fs.existsSync(output)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(output, 'utf8'))).toEqual(['source', 'a2a-control', '--report']);
+
+      await removeOpenClawA2aControl();
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual(original);
+      expect(fs.existsSync(plugin)).toBe(false);
+    } finally {
+      service?.stop();
+      config.mockRestore();
+      eligible.mockRestore();
+    }
+  });
+
+  it.each([
+    { kind: 'malformed', legacy: false },
+    { kind: 'JSON5', legacy: false },
+    { kind: 'malformed', legacy: true },
+  ])('retries removal in the original profile after its $kind config is repaired (legacy=$legacy)', async ({ kind, legacy }) => {
+    const id = 'teamai-a2a-control';
+    const localAgentDir = path.join(tmpDir, 'home', '.teamai', 'local-agent');
+    const agentConfig = path.join(localAgentDir, 'config.json');
+    const cfgPath = path.join(tmpDir, 'settings', 'custom-openclaw.json');
+    const plugin = path.join(tmpDir, id, 'index.mjs');
+    const otherState = path.join(tmpDir, 'other-state');
+    const otherConfig = path.join(otherState, 'openclaw.json');
+    const note = path.join(tmpDir, id, 'member-note.txt');
+    const original = { agents: { defaults: { workspace: wsDir } }, plugins: { entries: { other: { enabled: true } } } };
+    const { shutdownLocalAgentHttp } = await import('../local-agent.js');
+    const exitCode = process.exitCode;
+    const platform = vi.spyOn(os, 'platform').mockReturnValue('linux');
+    vi.stubEnv('HOME', path.join(tmpDir, 'home'));
+    vi.stubEnv('OPENCLAW_CONFIG_PATH', cfgPath);
+
+    try {
+      fs.mkdirSync(localAgentDir, { recursive: true });
+      fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+      fs.mkdirSync(otherState);
+      fs.writeFileSync(agentConfig, JSON.stringify({ endpoint: 'https://example.test', agentTokens: { openclaw: 'sk-fixture' }, workspaceBindings: {} }));
+      fs.writeFileSync(cfgPath, JSON.stringify(original));
+      fs.writeFileSync(otherConfig, '{"differentProfile":true}');
+      await refreshOpenClawA2aControl(path.join(tmpDir, 'cli.mjs'));
+      fs.writeFileSync(note, 'member-owned note');
+      const installed = fs.readFileSync(cfgPath, 'utf8');
+      expect(JSON.parse(installed).plugins.load.paths).toEqual([plugin]);
+      const broken = kind === 'malformed' ? `${installed},` : `// member comment\n${installed}`;
+      fs.writeFileSync(cfgPath, broken);
+
+      if (legacy) {
+        fs.rmSync(path.join(localAgentDir, 'openclaw-a2a-control.json'));
+      } else {
+        vi.stubEnv('OPENCLAW_STATE_DIR', otherState);
+        vi.stubEnv('OPENCLAW_CONFIG_PATH', otherConfig);
+      }
+
+      expect(await shutdownLocalAgentHttp('teamai source remove-http')).toBe('incomplete');
+      expect(JSON.parse(fs.readFileSync(agentConfig, 'utf8'))).toEqual({ disabled: true });
+      expect(process.exitCode).toBe(1);
+      vi.stubEnv('OPENCLAW_STATE_DIR', otherState);
+      vi.stubEnv('OPENCLAW_CONFIG_PATH', otherConfig);
+      expect(await shutdownLocalAgentHttp('teamai source remove-http')).toBe('incomplete');
+      expect(fs.readFileSync(cfgPath, 'utf8')).toBe(broken);
+      expect(fs.existsSync(plugin)).toBe(true);
+
+      fs.writeFileSync(cfgPath, installed);
+      expect(await shutdownLocalAgentHttp('teamai source remove-http')).toBe('removed');
+      expect(JSON.parse(fs.readFileSync(cfgPath, 'utf8'))).toEqual(original);
+      expect(fs.existsSync(plugin)).toBe(false);
+      expect(fs.existsSync(path.join(path.dirname(plugin), 'openclaw.plugin.json'))).toBe(false);
+      expect(fs.readFileSync(note, 'utf8')).toBe('member-owned note');
+      expect(fs.readFileSync(otherConfig, 'utf8')).toBe('{"differentProfile":true}');
+      expect(fs.readdirSync(localAgentDir)).toEqual(['config.json']);
+    } finally {
+      process.exitCode = exitCode;
+      vi.unstubAllEnvs();
+      platform.mockRestore();
     }
   });
 });

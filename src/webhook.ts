@@ -202,6 +202,7 @@ export async function testWebhook(url?: string, options: { dryRun?: boolean } = 
       log.success(`Webhook test successful: ${endpoint.url}`);
     } else {
       log.error(`Webhook test failed: ${endpoint.url}`);
+      process.exitCode = 1;
     }
   }
 }
