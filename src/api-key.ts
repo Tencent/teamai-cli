@@ -28,9 +28,13 @@ export function getApiKeyPath(): string {
  * configured (callers surface a friendly "pass --token to init" hint).
  */
 export function resolveApiKey(): string | null {
-  const fromEnv = process.env.TEAMAI_API_TOKEN || process.env.TEAMAI_API_KEY;
+  // First non-empty wins. Checking the raw `||` value lets a whitespace-only
+  // TEAMAI_API_TOKEN shadow a valid TEAMAI_API_KEY (and the on-disk key).
+  for (const raw of [process.env.TEAMAI_API_TOKEN, process.env.TEAMAI_API_KEY]) {
+    const value = raw?.trim();
 
-  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+    if (value) return value;
+  }
 
   try {
     const content = readRegularFileSync(getApiKeyPath(), 'utf-8').trim();
